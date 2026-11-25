@@ -1,6 +1,6 @@
 use kings_cove_engine::{
-    Action, Board, Building, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, Rng, Robber, RobberId,
-    RuleError, SetupPlacing, Spell, Target, TileId, Unit, UnitId, UnitKind, VertexId, balance,
+    Action, Board, Building, BuildingKind, Event, Game, Item, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
+    Robber, RobberId, RuleError, SetupPlacing, Spell, Target, TileId, Unit, UnitId, UnitKind, VertexId, balance,
 };
 
 const P0: PlayerId = PlayerId(0);
@@ -32,7 +32,7 @@ fn put(g: &mut Game, v: VertexId, owner: PlayerId, kind: BuildingKind) {
 }
 
 fn unit(g: &mut Game, id: u32, owner: PlayerId, kind: UnitKind, tile: TileId) -> UnitId {
-    g.units.push(Unit { id: UnitId(id), owner, kind, tile, ready: true });
+    g.units.push(Unit { id: UnitId(id), owner, kind, tile, ready: true, relics: 0 });
     UnitId(id)
 }
 
@@ -486,15 +486,15 @@ fn spells_need_a_city_full_mana_fitting_targets_and_their_price() {
     let (mut g, t) = spellbook();
     let mut r = rng();
     assert_eq!(g.apply(P1, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::NotYourTurn));
+    // Frost and bounty reach any tile, whatever its resource.
     let stone = g.board.tiles.iter().find(|x| x.id != t).unwrap().id;
     g.board.tiles[stone.index()].resource = Resource::Stone;
-    assert_eq!(g.apply(P0, cast(Spell::Frost, &[stone]), &mut r), Err(RuleError::SpellTarget));
-    assert_eq!(g.apply(P0, cast(Spell::Rockslide, &[t]), &mut r), Err(RuleError::SpellTarget), "wood is not stone");
+    assert!(g.can_cast(P0, Spell::Frost, &[stone]).is_ok());
     assert_eq!(g.apply(P0, cast(Spell::Frost, &[]), &mut r), Err(RuleError::InvalidTarget));
     let before = g.players[0].resources;
     g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
     assert_eq!(before.total() - g.players[0].resources.total(), balance::FROST_COST.total());
-    assert_eq!(g.apply(P0, cast(Spell::Rockslide, &[stone]), &mut r), Err(RuleError::ManaEmpty), "one mana for all");
+    assert_eq!(g.apply(P0, cast(Spell::Bounty, &[stone]), &mut r), Err(RuleError::ManaEmpty), "one mana for all");
     // Mana is back after its recharge rounds; a new spell replaces the old one.
     g.round += balance::MANA_RECHARGE_ROUNDS;
     g.apply(P0, cast(Spell::Bounty, &[t]), &mut r).unwrap();
@@ -534,40 +534,37 @@ fn stopping_spells_stop_and_doubling_spells_double_the_next_two_rolls() {
     g.produce(6);
     assert_eq!((wood(&g, 0), wood(&g, 1)), (w0 + 5, w1 + 5));
 
-    // Rockslide and motherlode do the same for stone and iron.
+    // The same on an iron tile.
     g.board.tiles[t.index()].resource = Resource::Iron;
     g.round += balance::MANA_RECHARGE_ROUNDS;
-    g.apply(P0, cast(Spell::Rockslide, &[t]), &mut r).unwrap();
+    g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
     let iron = g.players[1].resources.iron;
     g.produce(6);
     assert_eq!(g.players[1].resources.iron, iron);
     g.round += balance::MANA_RECHARGE_ROUNDS;
-    g.apply(P0, cast(Spell::Motherlode, &[t]), &mut r).unwrap();
+    g.apply(P0, cast(Spell::Bounty, &[t]), &mut r).unwrap();
     g.produce(6);
     assert_eq!(g.players[1].resources.iron, iron + 2);
 }
 
 #[test]
-fn a_ward_pushes_robbers_off_and_keeps_them_off_for_two_rounds() {
+fn luck_makes_the_next_roll_its_tiles_number_half_the_time() {
     let (mut g, t) = spellbook();
     let mut r = rng();
-    let rb = robber(&mut g, 90, t);
-    g.apply(P0, cast(Spell::Ward, &[t]), &mut r).unwrap();
-    let pushed = g.robber(rb).unwrap().tile;
-    assert!(pushed != t && g.board.are_adjacent(pushed, t), "pushed to a neighbour");
-    g.robber_relocation = true;
-    assert_eq!(g.apply(P0, Action::RelocateRobber { robber: rb, to: t }, &mut r), Err(RuleError::Warded));
-    // No wander or spawn lands on it while it lasts.
-    for s in 0..30 {
-        let mut copy = g.clone();
-        copy.end_round(&mut Rng::new(s));
-        assert!(copy.robber_at(t).is_none());
-    }
-    g.end_round(&mut Rng::new(1));
-    assert!(g.warded(t), "one round left");
-    g.round += 1;
-    g.end_round(&mut Rng::new(1));
-    assert!(!g.warded(t), "gone after two rounds");
+    g.apply(P0, cast(Spell::Luck, &[t]), &mut r).unwrap();
+    assert_eq!(g.luck, Some(t));
+    g.dice = None;
+    let trials = 2000;
+    let hits = (0..trials)
+        .filter(|&s| {
+            let mut copy = g.clone();
+            copy.apply(P0, Action::Roll, &mut Rng::new(s)).unwrap();
+            assert_eq!(copy.luck, None, "spent by one roll");
+            let (a, b) = copy.dice.unwrap();
+            a + b == 6
+        })
+        .count();
+    assert!((900..=1100).contains(&hits), "about half of {trials} rolls hit: {hits}");
 }
 
 #[test]
@@ -600,16 +597,9 @@ fn swap_trades_two_numbers_for_two_rolls_and_lure_moves_a_robber() {
 }
 
 #[test]
-fn rally_readies_knights_and_windfall_pays_on_the_next_roll() {
-    let (mut g, t) = spellbook();
+fn windfall_pays_on_the_next_roll() {
+    let (mut g, _) = spellbook();
     let mut r = rng();
-    assert_eq!(g.apply(P0, cast(Spell::Rally, &[]), &mut r), Err(RuleError::NoKnights));
-    let k = unit(&mut g, 50, P0, UnitKind::Knight, t);
-    g.units[0].ready = false;
-    g.apply(P0, cast(Spell::Rally, &[]), &mut r).unwrap();
-    assert!(g.unit(k).unwrap().ready);
-
-    g.round += balance::MANA_RECHARGE_ROUNDS;
     g.apply(P0, cast(Spell::Windfall, &[]), &mut r).unwrap();
     assert!(g.players[0].windfall);
     // P0's buildings touch the wood centre and the tiles round the far city.
@@ -633,6 +623,117 @@ fn rally_readies_knights_and_windfall_pays_on_the_next_roll() {
         assert_eq!(gained.get(res), u32::from(touched.contains(&res)));
         assert!(g.players[0].resources.get(res) >= before.get(res) + gained.get(res));
     }
+}
+
+// ----- Items -----
+
+/// An unfound item of `kind` on `tile`, lasting through `last_round`.
+fn item(g: &mut Game, tile: TileId, kind: ItemKind, last_round: u32) {
+    g.items.push(Item { tile, kind: Some(kind), revealed: false, count: 1, last_round });
+}
+
+#[test]
+fn items_appear_half_the_rounds_away_from_towns_and_vanish_after_three() {
+    let mut g = playing(2);
+    let town = g.board.tile(centre(&g)).vertices[0];
+    put(&mut g, town, P0, BuildingKind::Town);
+    let near: Vec<TileId> = g.board.tile_ids().filter(|&x| g.board.tile(x).vertices.contains(&town)).collect();
+    let trials = 400;
+    let mut appeared = 0;
+    for s in 0..trials {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        if let Some(it) = copy.items.first() {
+            appeared += 1;
+            assert!(!near.contains(&it.tile), "never on a tile touching a town");
+            assert!(copy.robber_at(it.tile).is_none());
+            assert_eq!(it.last_round, g.round + balance::ITEM_ROUNDS);
+        }
+    }
+    assert!((150..=250).contains(&appeared), "about half the rounds: {appeared} of {trials}");
+
+    // One left at the end of this round lasts the next three, guarded from
+    // robbers by a knight standing on it.
+    let far = g.board.tile_ids().find(|x| !near.contains(x)).unwrap();
+    let last = g.round + balance::ITEM_ROUNDS;
+    item(&mut g, far, ItemKind::IronOre, last);
+    unit(&mut g, 1, P1, UnitKind::Knight, far);
+    let present = |g: &Game| g.items.iter().any(|i| i.tile == far && i.last_round == last);
+    for _ in 0..balance::ITEM_ROUNDS {
+        g.end_round(&mut Rng::new(7));
+        g.round += 1;
+        assert!(present(&g), "still there in round {}", g.round);
+    }
+    g.end_round(&mut Rng::new(7));
+    assert!(!present(&g), "gone after {} rounds", balance::ITEM_ROUNDS);
+}
+
+#[test]
+fn knights_take_items_by_walking_onto_them_and_drop_relics_when_they_fall() {
+    let mut g = playing(2);
+    let mut r = rng();
+    let t = centre(&g);
+    let ns = g.board.tile(t).neighbors.clone();
+    let k = unit(&mut g, 1, P0, UnitKind::Knight, t);
+    item(&mut g, ns[0], ItemKind::IronOre, 9);
+    g.apply(P0, Action::MoveUnit { unit: k, to: ns[0] }, &mut r).unwrap();
+    assert_eq!(g.players[0].resources, balance::IRON_ORE_FIND);
+    assert!(g.items.is_empty());
+
+    item(&mut g, t, ItemKind::Relic, 9);
+    g.units[0].ready = true;
+    g.apply(P0, Action::MoveUnit { unit: k, to: t }, &mut r).unwrap();
+    assert_eq!(g.unit(k).unwrap().relics, 1);
+    assert_eq!(g.points(P0), balance::RELIC_POINTS);
+
+    // A trap fells the knight; its relic drops where it fell, for all to see.
+    item(&mut g, ns[1], ItemKind::Trap, 9);
+    g.units[0].ready = true;
+    g.apply(P0, Action::MoveUnit { unit: k, to: ns[1] }, &mut r).unwrap();
+    assert!(g.unit(k).is_none());
+    assert_eq!(g.points(P0), 0);
+    let dropped = g.item_at(ns[1]).unwrap();
+    assert_eq!((dropped.kind, dropped.revealed, dropped.count), (Some(ItemKind::Relic), true, 1));
+
+    // Deploying onto it does not count: knights must walk there.
+    let v = g.board.tile(ns[1]).vertices[0];
+    put(&mut g, v, P0, BuildingKind::Town);
+    g.players[0].cards.knights = 1;
+    assert_eq!(g.can_deploy(P0, UnitKind::Knight, ns[1]), Err(RuleError::TileOccupied));
+}
+
+#[test]
+fn a_scroll_casts_its_spell_free_without_a_city_or_mana() {
+    let mut g = playing(2);
+    let mut r = rng();
+    let t = centre(&g);
+    g.players[0].scrolls.push(Spell::Frost);
+    g.players[0].mana_ready_round = g.round + 3;
+    g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
+    assert!(g.players[0].scrolls.is_empty());
+    assert_eq!(g.players[0].mana_ready_round, g.round + 3, "the mana is untouched");
+    assert_eq!(g.enchantment_at(t).unwrap().spell, Spell::Frost);
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::SpellsLocked), "used up");
+}
+
+#[test]
+fn robbers_take_items_they_land_on_and_views_hide_unfound_ones() {
+    let mut g = playing(2);
+    let mut r = rng();
+    let t = centre(&g);
+    let ns = g.board.tile(t).neighbors.clone();
+    let rb = robber(&mut g, 1, ns[0]);
+    item(&mut g, t, ItemKind::Hoard, 9);
+    g.robber_relocation = true;
+    g.apply(P0, Action::RelocateRobber { robber: rb, to: t }, &mut r).unwrap();
+    assert!(g.items.is_empty());
+    assert!(matches!(g.events.last().unwrap().event, Event::ItemStolen { tile } if tile == t));
+
+    item(&mut g, ns[1], ItemKind::Trap, 9);
+    g.items.push(Item { tile: ns[2], kind: Some(ItemKind::Relic), revealed: true, count: 1, last_round: 9 });
+    g.hide_items();
+    assert_eq!(g.item_at(ns[1]).unwrap().kind, None);
+    assert_eq!(g.item_at(ns[2]).unwrap().kind, Some(ItemKind::Relic));
 }
 
 // ----- Robbers -----

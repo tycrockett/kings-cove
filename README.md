@@ -80,17 +80,23 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a robber or an enemy
   knight falls with it. One knight or robber per tile.
 - **Spells** unlock with a player's first city and are cast from the spellbook on their turn; any spell empties the
-  caster's mana for 4 rounds. *Frost* and *Rockslide* stop a wood/food or stone/iron tile producing for the next 2 rolls
-  of its number; *Bounty* and *Motherlode* double it. *Ward* keeps robbers off a tile for 2 rounds (pushing one off).
-  *Lure* moves any robber to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Rally* readies all the
-  caster's knights again. *Windfall* pays 1 of each resource the caster's buildings touch on their next roll. Tile spells
-  affect everyone on the tile, and a new one on a tile replaces the old.
+  caster's mana for 4 rounds. *Frost* stops any tile producing for the next 2 rolls of its number; *Bounty* doubles it.
+  *Lure* moves any robber to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Windfall* pays 1 of each
+  resource the caster's buildings touch on their next roll. *Luck* gives the next roll, whoever makes it, a 50% chance
+  of coming up as a chosen tile's number. Tile spells affect everyone on the tile, and a new one on a tile replaces the
+  old.
 - **Robbers** block production on their tile. The island always has at least one, from the start. At the end of each
   round they wander to a free neighbouring tile; then, while there are fewer than `floor(towns and cities / 4)`, another
   appears on a free tile with a 25% chance. After a knight removes a robber none appear for two full rounds; then one
   appears if the island has none. Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place
   a new one when the island has none; it then stays put through the next complete round.
-- **Victory**: the first player to reach the match's goal (10, 20 or 30 victory points) wins.
+- **Items**: at the end of each round, with a 50% chance, an item appears on a free tile touching no town or city. It
+  stays hidden until a knight walks onto its tile (knights can't deploy onto it), vanishes after 3 rounds, and is taken
+  by any robber landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one random resource; a *mana crystal* refills
+  the finder's mana; a *spell scroll* one free cast of a random spell (no price, city or mana needed); a *recruit* a
+  knight card; a *relic* is carried by the knight for 1 VP and dropped where it falls; a *trap* fells the knight; a
+  *robber's hoard* gives 2 of each resource but brings a robber next to it.
+- **Victory**: the first player to reach the match's goal (10, 20 or 30 victory points, relics included) wins.
 
 Costs (all in `engine/src/balance.rs`):
 
@@ -98,18 +104,15 @@ Costs (all in `engine/src/balance.rs`):
 |---|---|
 | Road | 1 wood, 1 stone |
 | Outpost | 2 wood, 1 stone |
-| Town upgrade | 1 stone, 2 food |
+| Town upgrade | 1 stone, 2 food, 1 iron |
 | City upgrade | 3 stone, 2 food, 2 iron |
 | Knight card | 1 food, 1 iron |
-| Frost spell | 1 stone, 2 iron |
-| Bounty spell | 1 wood, 2 food |
-| Rockslide spell | 2 wood, 1 food |
-| Motherlode spell | 1 stone, 1 food, 1 iron |
-| Ward spell | 1 stone, 1 iron |
-| Lure spell | 1 food, 1 iron |
-| Swap spell | 1 of each |
-| Rally spell | 2 food |
-| Windfall spell | 1 wood, 1 stone, 1 food |
+| Frost spell | 1 stone, 3 iron |
+| Bounty spell | 1 wood, 1 food, 3 iron |
+| Lure spell | 1 food, 3 iron |
+| Swap spell | 1 wood, 1 stone, 1 food, 3 iron |
+| Windfall spell | 1 wood, 1 food, 1 iron |
+| Luck spell | 1 wood, 3 iron |
 
 ## Playing on a phone
 

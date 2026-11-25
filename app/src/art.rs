@@ -341,13 +341,10 @@ pub fn spell_colors(spell: Spell) -> (u32, u32, u32) {
     match spell {
         Spell::Frost => (0xcfeeff, 0x2f7fb8, 0x9fdcff),
         Spell::Bounty => (0xffe58a, 0xb7791f, 0xffd447),
-        Spell::Rockslide => (0xe3cfb2, 0x6b4a2f, 0xc29a6b),
-        Spell::Motherlode => (0xd2f5dc, 0x1f7a44, 0x6fe09a),
-        Spell::Ward => (0xd8fff4, 0x1f8a74, 0x7fe8cf),
         Spell::Lure => (0xffd9d0, 0xa33a2a, 0xff8a6a),
         Spell::Swap => (0xf0dcff, 0x7a3fb8, 0xc99cff),
-        Spell::Rally => (0xffdcd6, 0xb3261e, 0xff7a6a),
         Spell::Windfall => (0xfff0c8, 0xa86b00, 0xffc94a),
+        Spell::Luck => (0xd2f5dc, 0x1f7a44, 0x6fe09a),
     }
 }
 
@@ -417,35 +414,6 @@ pub fn spell_emblem(p: Painter, spell: Spell, (x, y): (f32, f32), r: f32, line: 
             }
             circle(p, (x, y), r * 0.3).fill_color(hex(0xffffff)).fill().stroke_color(ink).line_width(line).stroke()
         }
-        Spell::Rockslide => {
-            let mut p = p;
-            for (dx, dy, rr) in [(-0.3, 0.24, 0.26), (0.3, 0.27, 0.24), (0.0, -0.18, 0.3)] {
-                p = circle(p, at(dx, dy), rr * r).fill_color(ink).fill();
-                p = circle(p, at(dx - 0.08, dy - 0.08), rr * r * 0.35).fill_color(hexa(0xffffff, 0.45)).fill();
-            }
-            p
-        }
-        Spell::Motherlode => {
-            let gem = [at(-0.48, -0.12), at(-0.24, -0.46), at(0.24, -0.46), at(0.48, -0.12), at(0.0, 0.56)];
-            let p = poly(p, &gem).fill_color(ink).fill().stroke_color(hexa(0xffffff, 0.7)).line_width(line);
-            let p = segment(p, at(-0.48, -0.12), at(0.48, -0.12));
-            let p = segment(p, at(-0.24, -0.46), at(0.0, 0.56));
-            segment(p, at(0.24, -0.46), at(0.0, 0.56))
-        }
-        Spell::Ward => {
-            let shield = [
-                at(-0.45, -0.5),
-                at(0.45, -0.5),
-                at(0.45, 0.02),
-                at(0.3, 0.32),
-                at(0.0, 0.58),
-                at(-0.3, 0.32),
-                at(-0.45, 0.02),
-            ];
-            let p = poly(p, &shield).fill_color(ink).fill().stroke_color(hex(0xffffff)).line_width(stroke);
-            let p = segment(p, at(0.0, -0.35), at(0.0, 0.35));
-            segment(p, at(-0.25, -0.08), at(0.25, -0.08))
-        }
         Spell::Lure => {
             let (a, b, c, d) = (at(0.15, 0.62), at(0.15, -0.18), at(0.15, -0.58), at(-0.18, -0.52));
             let (e, f) = (at(-0.46, -0.44), at(-0.4, -0.16));
@@ -470,11 +438,13 @@ pub fn spell_emblem(p: Painter, spell: Spell, (x, y): (f32, f32), r: f32, line: 
             }
             p
         }
-        Spell::Rally => {
-            let p = segment(p.stroke_color(ink).line_width(stroke), at(-0.3, 0.6), at(-0.3, -0.6));
-            poly(p, &[at(-0.3, -0.6), at(0.52, -0.4), at(0.2, -0.22), at(0.52, -0.04), at(-0.3, 0.04)])
-                .fill_color(ink)
-                .fill()
+        Spell::Luck => {
+            let mut p = segment(p.stroke_color(ink).line_width(stroke), at(0.0, 0.05), at(0.22, 0.66));
+            p = p.fill_color(ink);
+            for (dx, dy) in [(-0.22, -0.22), (0.22, -0.22), (-0.22, 0.22), (0.22, 0.22)] {
+                p = circle(p, at(dx, dy), r * 0.25).fill();
+            }
+            p
         }
         Spell::Windfall => {
             let mut p = p;
@@ -537,6 +507,47 @@ pub fn robber(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
     )
 }
 
+/// A treasure chest: an item nobody has found yet.
+pub fn chest(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
+    let ink = hex(palette::INK);
+    let p = ground_shadow(p, (x, y + 0.75 * u), 0.9 * u);
+    let p = rrect(p, (x, y + 0.25 * u), 1.6 * u, 0.9 * u, 0.1 * u)
+        .fill_style(vgrad(y - 0.2 * u, y + 0.7 * u, 0xb7793f, 0x7a4a22))
+        .fill()
+        .stroke_color(ink)
+        .line_width(line)
+        .stroke();
+    let p = p
+        .begin_path()
+        .move_to(x - 0.8 * u, y - 0.2 * u)
+        .arc(x, y - 0.2 * u, 0.8 * u, PI, 0.0)
+        .close_path()
+        .fill_style(vgrad(y - u, y - 0.2 * u, 0xd08a48, 0x8f5a2b))
+        .fill()
+        .stroke();
+    let p = p.fill_color(hex(palette::GOLD)).fill_rect(x - 0.12 * u, y - 0.98 * u, 0.24 * u, 1.66 * u);
+    rrect(p, (x, y - 0.15 * u), 0.38 * u, 0.38 * u, 0.06 * u)
+        .fill_color(hex(palette::GOLD))
+        .fill()
+        .stroke_color(ink)
+        .line_width(line)
+        .stroke()
+}
+
+/// A golden chalice set with a ruby: a relic.
+pub fn relic(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
+    let gold = vgrad(y - u, y + u, 0xffe58a, 0xb7791f);
+    let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
+    let cup = [at(-0.7, -0.9), at(0.7, -0.9), at(0.5, -0.25), at(0.15, 0.0), at(-0.15, 0.0), at(-0.5, -0.25)];
+    let stem = [at(-0.12, 0.0), at(0.12, 0.0), at(0.12, 0.5), at(-0.12, 0.5)];
+    let base = [at(-0.5, 0.8), at(0.5, 0.8), at(0.25, 0.5), at(-0.25, 0.5)];
+    let mut p = ground_shadow(p, (x, y + 0.85 * u), 0.7 * u).stroke_color(hex(palette::INK)).line_width(line);
+    for shape in [&cup[..], &stem[..], &base[..]] {
+        p = poly(p, shape).fill_style(gold.clone()).fill().stroke();
+    }
+    circle(p, at(0.0, -0.55), 0.16 * u).fill_color(hex(0xd8342c)).fill()
+}
+
 /// A road from `a` to `b`, `w` wide.
 pub fn road(p: Painter, a: (f32, f32), b: (f32, f32), color: u32, w: f32) -> Painter {
     let seg = |p: Painter| p.begin_path().move_to(a.0, a.1).line_to(b.0, b.1);
@@ -579,6 +590,7 @@ pub enum Glyph {
     Spellbook,
     Trade,
     Robber,
+    Chest,
 }
 
 /// `glyph` drawn to fit a `w` × `h` box at the origin, in `color`.
@@ -595,6 +607,7 @@ pub fn glyph(p: Painter, glyph: Glyph, color: u32, w: f32, h: f32) -> Painter {
         Glyph::Spell(spell) => spell_emblem(p, spell, c, h * 0.44, 1.2),
         Glyph::Spellbook => spellbook(p, w, h),
         Glyph::Robber => robber(p, (c.0, h * 0.5), h * 0.36, 1.2),
+        Glyph::Chest => chest(p, (c.0, h * 0.55), h * 0.4, 1.2),
         Glyph::Trade => {
             let arrow = |p: Painter, y: f32, dir: f32, color: u32| {
                 let (x0, x1) = if dir > 0.0 { (w * 0.2, w * 0.8) } else { (w * 0.8, w * 0.2) };

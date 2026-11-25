@@ -1,6 +1,9 @@
 //! Every balancing constant of the game, in one place.
 
-use crate::types::{Resource, Resources};
+use crate::{
+    game::ItemKind,
+    types::{Resource, Resources},
+};
 
 /// The victory points a match may be played to, chosen when it is created.
 pub const VICTORY_POINT_GOALS: [u32; 3] = [10, 20, 30];
@@ -48,33 +51,52 @@ pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 4);
 /// below its minimum.
 pub const ROBBER_RESPAWN_ROUNDS: u32 = 2;
 
-/// Spells, unlocked by a city, all sharing the caster's mana. Each is priced
-/// in what fits it: the spells that stop or double wood and food are paid
-/// in stone and iron or sown with food and wood, and the stone and iron
-/// ones the other way round.
-pub const FROST_COST: Resources = res(0, 1, 0, 2);
-pub const BOUNTY_COST: Resources = res(1, 0, 2, 0);
-/// Timber and grain to dig the slide.
-pub const ROCKSLIDE_COST: Resources = res(2, 0, 1, 0);
-/// Stone, iron and food to open the seam.
-pub const MOTHERLODE_COST: Resources = res(0, 1, 1, 1);
-/// A stone and iron wall.
-pub const WARD_COST: Resources = res(0, 1, 0, 1);
+// Spells, unlocked by a city, all sharing the caster's mana. Iron is the
+// heart of every one of them.
+
+/// Iron and stone to freeze a field or a mine.
+pub const FROST_COST: Resources = res(0, 1, 0, 3);
+/// Timber, grain and iron tools for a double harvest.
+pub const BOUNTY_COST: Resources = res(1, 0, 1, 3);
 /// Bait and a hook.
-pub const LURE_COST: Resources = res(0, 0, 1, 1);
-/// One of each, traded around.
-pub const SWAP_COST: Resources = res(1, 1, 1, 1);
-/// A feast for the troops.
-pub const RALLY_COST: Resources = res(0, 0, 2, 0);
-/// A cartload of goods.
-pub const WINDFALL_COST: Resources = res(1, 1, 1, 0);
-/// Rolls of its tile's number a lingering spell lasts (frost, bounty,
-/// rockslide, motherlode, swap).
+pub const LURE_COST: Resources = res(0, 0, 1, 3);
+/// One of each, traded around, with iron to bind it.
+pub const SWAP_COST: Resources = res(1, 1, 1, 3);
+/// A cartload of goods on iron wheels.
+pub const WINDFALL_COST: Resources = res(1, 0, 1, 1);
+/// An iron horseshoe nailed to a post.
+pub const LUCK_COST: Resources = res(1, 0, 0, 3);
+/// Chance (numerator / denominator) the roll after a Luck comes up as its
+/// tile's number; otherwise any other total does.
+pub const LUCK_CHANCE: (u64, u64) = (1, 2);
+/// Rolls of its tile's number a lingering spell lasts (frost, bounty, swap).
 pub const SPELL_CHARGES: u32 = 2;
-/// Rounds a ward lasts.
-pub const WARD_ROUNDS: u32 = 2;
 /// Rounds the caster's mana takes to refill after any spell.
 pub const MANA_RECHARGE_ROUNDS: u32 = 4;
+
+// Items turn up on the island for knights to walk onto.
+
+/// Chance (numerator / denominator) an item appears at the end of a round.
+pub const ITEM_SPAWN_CHANCE: (u64, u64) = (1, 2);
+/// Rounds an item lies unclaimed before it vanishes.
+pub const ITEM_ROUNDS: u32 = 3;
+/// How often each item turns up, against the others.
+pub const ITEM_WEIGHTS: [(ItemKind, u32); 8] = [
+    (ItemKind::IronOre, 3),
+    (ItemKind::Supplies, 3),
+    (ItemKind::ManaCrystal, 2),
+    (ItemKind::Scroll, 2),
+    (ItemKind::Recruit, 2),
+    (ItemKind::Relic, 1),
+    (ItemKind::Trap, 2),
+    (ItemKind::Hoard, 1),
+];
+pub const IRON_ORE_FIND: Resources = res(0, 0, 0, 2);
+/// Of one resource, drawn when found.
+pub const SUPPLIES_FIND: u32 = 2;
+pub const HOARD_FIND: Resources = res(2, 2, 2, 2);
+/// Victory points of each relic a player's knights carry.
+pub const RELIC_POINTS: u32 = 1;
 
 /// How many of one resource the bank takes for one of another.
 pub const BANK_TRADE_RATE: u32 = 4;
@@ -97,7 +119,7 @@ pub const ROAD_COST: Resources = res(1, 1, 0, 0);
 /// Every new building starts as an outpost.
 pub const OUTPOST_COST: Resources = res(2, 1, 0, 0);
 /// Outpost → town.
-pub const TOWN_UPGRADE_COST: Resources = res(0, 1, 2, 0);
+pub const TOWN_UPGRADE_COST: Resources = res(0, 1, 2, 1);
 /// Town → city.
 pub const CITY_UPGRADE_COST: Resources = res(0, 3, 2, 2);
 pub const KNIGHT_CARD_COST: Resources = res(0, 0, 1, 1);

@@ -171,6 +171,15 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::SpellCast { player, spell, .. } => format!("{} cast {}", n(*player), spell.name()),
         Event::ProductionStopped { spell, .. } => format!("{} stopped a harvest", rules::spell_title(*spell)),
         Event::WindfallPaid { player, gained } => format!("{} collected a windfall: {gained}", n(*player)),
+        Event::ItemAppeared { .. } => "Something appeared on the island".to_owned(),
+        Event::ItemFound { player, kind, count, gained, scroll, .. } => {
+            format!("{}'s knight found {}", n(*player), rules::item_found(*kind, *count, gained, *scroll))
+        }
+        Event::ItemVanished { .. } => "An item vanished".to_owned(),
+        Event::ItemStolen { .. } => "A robber took an item".to_owned(),
+        Event::RelicDropped { player, count, .. } => {
+            format!("{}'s fallen knight dropped {count} relic{}", n(*player), if *count == 1 { "" } else { "s" })
+        }
         Event::SpellFaded { spell, .. } => {
             format!("The {} faded", spell.name())
         }
@@ -358,8 +367,13 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
             let tile = g.board.tile(t);
             let mut s = format!("{} · {}", tile.resource.name(), tile.number);
             if let Some(u) = g.unit_at(t) {
+                let relics = match u.relics {
+                    0 => String::new(),
+                    1 => " carrying a relic".to_owned(),
+                    n => format!(" carrying {n} relics"),
+                };
                 s += &format!(
-                    " · {}'s {}{}",
+                    " · {}'s {}{relics}{}",
                     name(names, u.owner),
                     u.kind.name(),
                     if u.ready { "" } else { " (resting)" }
@@ -369,7 +383,14 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
                 s += " · robber (blocked)";
             }
             if let Some(e) = g.enchantment_at(t) {
-                s += &format!(" · {} ({})", e.spell.name(), rules::charges_word(e.spell, e.charges));
+                s += &format!(" · {} ({})", e.spell.name(), rules::charges_word(e.charges));
+            }
+            if g.luck == Some(t) {
+                s += " · luck (next roll)";
+            }
+            if let Some(item) = g.item_at(t) {
+                let what = item.kind.map_or("an unknown item", rules::item_title);
+                s += &format!(" · {what} (gone after round {})", item.last_round);
             }
             s
         }
@@ -663,7 +684,8 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
     // One card for all the spells: it opens the spellbook.
     let casting = matches!(current, Mode::Cast(..));
     let mana = mana_state(g, seat);
-    let spells = tile(Glyph::Spellbook, "Spells", casting, if my_move && mana == "ready" { 1.0 } else { 0.62 })
+    let castable = my_move && (mana == "ready" || !g.players[seat.index()].scrolls.is_empty());
+    let spells = tile(Glyph::Spellbook, "Spells", casting, if castable { 1.0 } else { 0.62 })
         .child(label(mana, 11.0, palette::MUTED))
         .active(|s| s.opacity(0.75).scale(0.95))
         .on_press(move || {
@@ -677,10 +699,14 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
     view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)))
 }
 
-/// The player's mana, in a word or two.
+/// The player's mana, in a word or two; their scrolls when they have no city.
 fn mana_state(g: &Game, seat: PlayerId) -> String {
     if !g.has_city(seat) {
-        return "need a city".to_owned();
+        return match g.players[seat.index()].scrolls.len() {
+            0 => "need a city".to_owned(),
+            1 => "1 scroll".to_owned(),
+            n => format!("{n} scrolls"),
+        };
     }
     match g.players[seat.index()].mana_ready_round.saturating_sub(g.round) {
         0 => "ready".to_owned(),
@@ -697,15 +723,18 @@ fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
     if g.dice.is_none() {
         return Some("Roll the dice first".to_owned());
     }
-    if !g.has_city(seat) {
-        return Some("Build a city to unlock spells".to_owned());
-    }
-    let wait = g.players[seat.index()].mana_ready_round.saturating_sub(g.round);
-    if wait > 0 {
-        return Some(format!("Your mana refills in {wait} round{}", if wait == 1 { "" } else { "s" }));
-    }
-    if !g.players[seat.index()].resources.covers(&spell.cost()) {
-        return Some("Not enough resources".to_owned());
+    // A scroll of the spell casts it free, with no city and whatever the mana.
+    if !g.players[seat.index()].scrolls.contains(&spell) {
+        if !g.has_city(seat) {
+            return Some("Build a city to unlock spells".to_owned());
+        }
+        let wait = g.players[seat.index()].mana_ready_round.saturating_sub(g.round);
+        if wait > 0 {
+            return Some(format!("Your mana refills in {wait} round{}", if wait == 1 { "" } else { "s" }));
+        }
+        if !g.players[seat.index()].resources.covers(&spell.cost()) {
+            return Some("Not enough resources".to_owned());
+        }
     }
     if spell.targets() == 0 {
         return g.can_cast(seat, spell, &[]).err().map(|e| e.to_string());
@@ -732,6 +761,7 @@ fn spellbook(app: AppState) -> impl IntoElement {
             .into_iter()
             .map(|spell| {
                 let open = spell == picked;
+                let free = g.players[seat.index()].scrolls.iter().filter(|&&s| s == spell).count();
                 let head = view()
                     .flex_row()
                     .items_center()
@@ -742,7 +772,14 @@ fn spellbook(app: AppState) -> impl IntoElement {
                             .flex_1()
                             .gap(px(1.0))
                             .child(bold(rules::spell_title(spell), 15.0, palette::INK))
-                            .child(label(rules::spell_summary(spell), 12.0, palette::MUTED)),
+                            .child(label(rules::spell_summary(spell), 12.0, palette::MUTED))
+                            .child((free > 0).then(|| {
+                                bold(
+                                    format!("{free} free scroll{}", if free == 1 { "" } else { "s" }),
+                                    12.0,
+                                    palette::GO,
+                                )
+                            })),
                     )
                     .child(cost_row(&spell.cost(), Some(&have), 16.0, 12.0));
                 let row = view()

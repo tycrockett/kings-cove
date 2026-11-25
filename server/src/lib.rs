@@ -55,7 +55,11 @@ impl Match {
             version: self.version,
             seat,
             players: self.seats.iter().map(|s| s.name.clone()).collect(),
-            game: self.game.clone(),
+            // What an item is stays secret until a knight finds it.
+            game: self.game.clone().map(|mut g| {
+                g.hide_items();
+                g
+            }),
             ended: self.ended,
             victory_points: self.victory_points,
         }

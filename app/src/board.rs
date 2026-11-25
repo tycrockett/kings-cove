@@ -4,8 +4,8 @@
 use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{
-    Action, BuildingKind, EdgeId, Enchantment, Event, Game, Phase, PlayerId, Resource, RobberId, SetupPlacing, Spell,
-    Target, TileId, UnitId, VertexId,
+    Action, BuildingKind, EdgeId, Enchantment, Event, Game, ItemKind, Phase, PlayerId, Resource, RobberId,
+    SetupPlacing, Spell, Target, TileId, UnitId, VertexId,
 };
 use nsh_core::{
     TouchPhase,
@@ -404,19 +404,45 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
                 a(650.0, AnimKind::Burst { at: piece_pos(g, y) }),
             ]
         }
-        Event::SpellCast { player, spell, ref tiles } => {
+        Event::SpellCast { spell, ref tiles, .. } => {
             let (_, deep, _) = art::spell_colors(spell);
             let label = format!("{}!", crate::rules::spell_title(spell));
-            // Lure lands where the robber goes; Rally on the caster's knights.
+            // Lure lands where the robber goes.
             let struck: Vec<TileId> = match spell {
                 Spell::Lure => tiles.get(1).copied().into_iter().collect(),
-                Spell::Rally => g.units.iter().filter(|u| u.owner == player).map(|u| u.tile).collect(),
                 _ => tiles.clone(),
             };
             let at = struck.first().map_or((0.0, 0.0), |&t| tile_pos(g, t));
             let mut v: Vec<Anim> = struck.into_iter().map(|tile| a(1200.0, AnimKind::Cast { tile, spell })).collect();
             v.push(Anim { start: start + 350.0, dur: 1400.0, kind: AnimKind::Float { at, color: deep, label } });
             v
+        }
+        Event::ItemAppeared { tile } => {
+            let (at, label) = (piece_pos(g, tile), "Something appeared!".to_owned());
+            vec![
+                a(800.0, AnimKind::Pop { at, color: palette::GOLD }),
+                a(1300.0, AnimKind::Float { at, color: palette::GOLD, label }),
+            ]
+        }
+        Event::ItemFound { player, tile, kind, count, gained, scroll } => {
+            let at = piece_pos(g, tile);
+            let label = crate::rules::item_found(kind, count, &gained, scroll);
+            let mut v = vec![
+                a(700.0, AnimKind::Pop { at, color: color(player) }),
+                a(1700.0, AnimKind::Float { at, color: color(player), label }),
+            ];
+            if kind == ItemKind::Trap {
+                v.push(a(650.0, AnimKind::Burst { at }));
+            }
+            v
+        }
+        Event::ItemVanished { tile } | Event::ItemStolen { tile } | Event::RelicDropped { tile, .. } => {
+            let label = match *event {
+                Event::ItemVanished { .. } => "Vanished",
+                Event::ItemStolen { .. } => "Stolen by a robber!",
+                _ => "Relic dropped",
+            };
+            vec![a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: label.to_owned() })]
         }
         _ => Vec::new(),
     }
@@ -500,6 +526,9 @@ pub fn draw(s: &Scene) -> Painter {
     for (e, t) in spelled() {
         p = spell_seal(p, g, e, t, px1);
     }
+    if let Some(t) = g.luck {
+        p = lucky_tile(p, g, t, s.now, px1);
+    }
 
     // Tile highlights.
     for o in s.opts {
@@ -563,6 +592,20 @@ pub fn draw(s: &Scene) -> Painter {
         }
     }
 
+    // Items waiting for a knight: a chest, or a relic everyone saw drop,
+    // with the rounds it has left.
+    for item in &g.items {
+        let at = piece_pos(g, item.tile);
+        p = match item.kind {
+            Some(ItemKind::Relic) => art::relic(p, at, 0.22 * S, 1.6 * px1),
+            _ => art::chest(p, at, 0.2 * S, 1.6 * px1),
+        };
+        let badge = (at.0 + 0.24 * S, at.1 - 0.22 * S);
+        let left = (item.last_round + 1).saturating_sub(g.round);
+        p = circle(p, badge, 0.09 * S).fill_color(hex(palette::INK)).fill();
+        p = text_at(p, &left.to_string(), badge, 0.12 * S, 0xffffff, 900, px1);
+    }
+
     // Units and robbers (sliding when they just moved).
     let slide_pos = |piece: &Piece, to: (f32, f32)| {
         s.anims
@@ -581,6 +624,9 @@ pub fn draw(s: &Scene) -> Painter {
     for u in &g.units {
         let at = slide_pos(&Piece::Unit(u.id), piece_pos(g, u.tile));
         p = art::knight(p, at, palette::player(u.owner), 0.25 * S, 2.0 * px1);
+        if u.relics > 0 {
+            p = art::relic(p, (at.0 - 0.26 * S, at.1 + 0.12 * S), 0.11 * S, px1);
+        }
         if my_turn && u.owner == s.seat && u.ready {
             p = circle(p, (at.0 + 0.24 * S, at.1 - 0.24 * S), 0.08 * S)
                 .fill_color(hex(palette::GOLD))
@@ -693,9 +739,6 @@ pub fn draw(s: &Scene) -> Painter {
                     let at = (c.0 + r * ang.cos(), c.1 + r * ang.sin());
                     p = match spell {
                         Spell::Frost => art::snowflake(p, at, 0.13 * S * (1.0 - t) + px1, 0xffffff, 1.6 * px1),
-                        Spell::Rockslide => {
-                            circle(p, at, 0.07 * S * (1.0 - t) + px1).fill_color(hexa(0x6b4a2f, 1.0 - t * 0.6)).fill()
-                        }
                         _ => art::sparkle(p, at, 0.14 * S * (1.0 - t) + px1)
                             .fill_color(hexa(if k % 2 == 0 { glow } else { 0xffffff }, 1.0 - t * 0.6))
                             .fill(),
@@ -841,72 +884,6 @@ fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: 
             p = rising_motes(p, c, t, seed, 0xffe066);
             p = twinkles(p, c, t, seed, 0xffffff);
         }
-        Spell::Rockslide => {
-            p = poly(p, &outline).fill_color(hexa(fill, 0.55)).fill();
-            // Cracks across the ground.
-            p = p.stroke_color(hexa(deep, 0.7)).line_width(2.0 * px1);
-            for i in 0..4 {
-                let a = hash01(seed + i) * TAU;
-                let mut at = (c.0 + a.cos() * 0.15 * S, c.1 + a.sin() * 0.15 * S);
-                p = p.begin_path().move_to(at.0, at.1);
-                for j in 0..4 {
-                    let b = a + (hash01(seed + i * 9 + j) - 0.5) * 1.2;
-                    at = (at.0 + b.cos() * 0.22 * S, at.1 + b.sin() * 0.22 * S);
-                    p = p.line_to(at.0, at.1);
-                }
-                p = p.stroke();
-            }
-            // Rocks tumbling down, turning as they fall.
-            for i in 0..8 {
-                let x = c.0 + (hash01(seed + i + 40) - 0.5) * 1.5 * S;
-                let fall = (t * 0.35 + hash01(seed + i + 60)) % 1.0;
-                let y = c.1 - S + fall * 2.0 * S;
-                let r = (0.06 + 0.05 * hash01(seed + i + 80)) * S;
-                let spin = t * (2.0 + 3.0 * hash01(seed + i + 90));
-                let rock: Vec<(f32, f32)> = (0..5)
-                    .map(|k| {
-                        let a = spin + k as f32 * TAU / 5.0;
-                        let rr = r * (0.75 + 0.35 * hash01(seed + i * 5 + k));
-                        (x + a.cos() * rr, y + a.sin() * rr)
-                    })
-                    .collect();
-                p = poly(p, &rock).fill_color(hex(palette::shade(fill, 0.55))).fill();
-            }
-        }
-        Spell::Motherlode => {
-            p = poly(p, &outline).fill_color(hexa(glow, 0.2 + 0.15 * pulse)).fill();
-            p = light_rays(p, c, t, 0xeafff0, 0.16 + 0.1 * pulse);
-            for i in 0..6 {
-                let a = hash01(seed + i + 100) * TAU;
-                let d = (0.3 + 0.45 * hash01(seed + i + 120)) * S;
-                let at = (c.0 + a.cos() * d, c.1 + a.sin() * d);
-                let r = 0.09 * S;
-                let gem = [(at.0, at.1 - r), (at.0 + r * 0.7, at.1), (at.0, at.1 + r * 1.2), (at.0 - r * 0.7, at.1)];
-                p = poly(p, &gem)
-                    .fill_color(hex(deep))
-                    .fill()
-                    .stroke_color(hexa(0xffffff, 0.8))
-                    .line_width(px1)
-                    .stroke();
-            }
-            p = twinkles(p, c, t, seed, 0xffffff);
-        }
-        Spell::Ward => {
-            p = poly(p, &outline).fill_color(hexa(glow, 0.16 + 0.1 * pulse)).fill();
-            // A shimmer sweeping up the dome.
-            let band = c.1 + S - ((t * 0.5) % 1.0) * 2.0 * S;
-            p = p.fill_color(hexa(0xffffff, 0.18)).fill_rect(c.0 - S, band - 0.08 * S, 2.0 * S, 0.16 * S);
-            // A turning ring of runes.
-            p = p.stroke_color(hexa(deep, 0.85)).line_width(2.5 * px1);
-            for i in 0..12 {
-                let a = t * 0.6 + i as f32 * TAU / 12.0;
-                p = p.begin_path().arc(c.0, c.1, 0.68 * S, a, a + 0.32).stroke();
-            }
-            p = poly(p, &hex_points(c, S * (0.8 + 0.04 * pulse)))
-                .stroke_color(hexa(0xffffff, 0.7))
-                .line_width(2.0 * px1)
-                .stroke();
-        }
         Spell::Swap => {
             p = poly(p, &outline).fill_color(hexa(glow, 0.2 + 0.1 * pulse)).fill();
             // Two arrows chasing each other round the number.
@@ -926,7 +903,7 @@ fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: 
                 .fill();
             }
         }
-        Spell::Lure | Spell::Rally | Spell::Windfall => {}
+        Spell::Lure | Spell::Windfall | Spell::Luck => {}
     }
     p = p.restore();
     // A bright rim in the spell's glow, lined in white.
@@ -937,6 +914,27 @@ fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: 
     // The number stays readable above the spell.
     let number = g.board.tile(tile).number;
     token(p, (c.0, c.1 - 0.08 * S), number, g.robber_at(tile).is_some(), px1)
+}
+
+/// The tile a cast Luck favours until the next roll: a green shimmer and a
+/// clover seal on its upper left.
+fn lucky_tile(mut p: Painter, g: &Game, tile: TileId, now: f64, px1: f32) -> Painter {
+    let c = tile_pos(g, tile);
+    let t = ((now / 1000.0) % 10_000.0) as f32;
+    let outline = hex_points(c, S * 0.96);
+    let (_, _, glow) = art::spell_colors(Spell::Luck);
+    let pulse = 0.5 + 0.5 * (t * 2.4).sin();
+    p = poly(p.save(), &outline).clip();
+    p = poly(p, &outline).fill_color(hexa(glow, 0.2 + 0.15 * pulse)).fill();
+    p = twinkles(p, c, t, tile.0 as u32 * 37, 0xffffff);
+    p = p.restore();
+    p = poly(p, &outline).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
+    p = poly(p, &hex_points(c, S * 0.92)).stroke_color(hexa(0xffffff, 0.9)).line_width(2.5 * px1).stroke();
+    p = token(p, (c.0, c.1 - 0.08 * S), g.board.tile(tile).number, g.robber_at(tile).is_some(), px1);
+    p = p.save().translate(c.0 - 0.5 * S, c.1 - 0.5 * S).scale(px1, px1);
+    p = art::shadow(p, 0.45, 6.0, 2.0);
+    p = art::spell_emblem(p, Spell::Luck, (0.0, 0.0), 11.0, 1.5);
+    art::no_shadow(p).restore()
 }
 
 /// Slowly turning rays of light from a tile's centre.
@@ -1267,8 +1265,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         let (w, h) = size.get();
         let anims = app.anims.get();
         // Spells on the board move continuously; otherwise only animations do.
-        let enchanted =
-            app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(|g| !g.enchantments.is_empty()));
+        let enchanted = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board));
         let now = if anims.is_empty() && !enchanted { now_ms() } else { app.clock.get() };
         let Some(view) = app.view.get() else {
             return Painter::new();

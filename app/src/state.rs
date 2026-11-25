@@ -357,7 +357,7 @@ impl AppState {
                 self.mode.set(Mode::Idle);
             }
         }
-        let enchanted = view.game.as_ref().is_some_and(|g| !g.enchantments.is_empty());
+        let enchanted = view.game.as_ref().is_some_and(Game::spells_on_board);
         self.view.set(Some(view));
         // Spells on the board shimmer for as long as they last.
         if enchanted {
@@ -486,15 +486,12 @@ impl AppState {
                 | Event::SpellFaded { tile, .. } => {
                     let (label, delay) = match *event {
                         Event::ProductionBlocked { .. } => ("Blocked", 250.0),
-                        Event::ProductionStopped { spell: Spell::Frost, .. } => ("Frozen!", 250.0),
-                        Event::ProductionStopped { .. } => ("Buried!", 250.0),
+                        Event::ProductionStopped { .. } => ("Frozen!", 250.0),
                         Event::SpellFaded { spell, .. } => (
                             match spell {
                                 Spell::Frost => "The frost melts",
                                 Spell::Bounty => "Bounty spent",
-                                Spell::Rockslide => "The rubble clears",
-                                Spell::Motherlode => "The seam runs dry",
-                                Spell::Ward => "The ward fades",
+                                Spell::Luck => "Luck spent",
                                 _ => "The numbers swap back",
                             },
                             1100.0,
@@ -551,7 +548,7 @@ impl AppState {
                     || this.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
                     || dice_until > now;
                 let ambient = this.view.with_untracked(|v| {
-                    v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(|g| !g.enchantments.is_empty())
+                    v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board)
                 });
                 // Spells alone shimmer at about 30 frames a second.
                 if busy || now - this.clock.get_untracked() >= 30.0 {

@@ -2,7 +2,7 @@
 //! engine's `balance` and outcomes from its own rules, so the text cannot
 //! drift from the game.
 
-use kings_cove_engine::{BuildingKind, Game, Lasting, PlayerId, Resources, Spell, Target, UnitId, balance};
+use kings_cove_engine::{BuildingKind, Game, ItemKind, PlayerId, Resources, Spell, Target, UnitId, balance};
 
 use crate::art::Glyph;
 
@@ -131,47 +131,35 @@ pub fn spell_title(spell: Spell) -> &'static str {
     match spell {
         Spell::Frost => "Frost",
         Spell::Bounty => "Bounty",
-        Spell::Rockslide => "Rockslide",
-        Spell::Motherlode => "Motherlode",
-        Spell::Ward => "Ward",
         Spell::Lure => "Lure",
         Spell::Swap => "Swap",
-        Spell::Rally => "Rally",
         Spell::Windfall => "Windfall",
+        Spell::Luck => "Luck",
     }
 }
 
 pub fn spell_summary(spell: Spell) -> &'static str {
     match spell {
-        Spell::Frost => "Freezes a wood or food tile solid.",
-        Spell::Bounty => "Blesses a wood or food tile with a double harvest.",
-        Spell::Rockslide => "Buries a stone or iron tile under rubble.",
-        Spell::Motherlode => "Opens a rich seam in a stone or iron tile.",
-        Spell::Ward => "Raises a shield no robber can cross.",
+        Spell::Frost => "Freezes a tile solid.",
+        Spell::Bounty => "Blesses a tile with a double harvest.",
         Spell::Lure => "Draws a robber wherever you want it.",
         Spell::Swap => "Two tiles trade their numbers.",
-        Spell::Rally => "Your knights stand ready again.",
         Spell::Windfall => "Your next roll brings a bit of everything.",
+        Spell::Luck => "Tilts the next roll toward a tile.",
     }
 }
 
 /// What the spell does, then the rules every spell shares.
 pub fn spell_rules(spell: Spell) -> Vec<String> {
-    let rolls = |effect: &str, tiles: &str| {
+    let rolls = |effect: &str| {
         format!(
-            "Cast on a {tiles} tile. {effect} for the next {} times its number is rolled, for everyone with a building on it.",
+            "Cast on any tile. {effect} for the next {} times its number is rolled, for everyone with a building on it.",
             balance::SPELL_CHARGES
         )
     };
     let mut lines = vec![match spell {
-        Spell::Frost => rolls("It produces nothing", "wood or food"),
-        Spell::Bounty => rolls("It produces double", "wood or food"),
-        Spell::Rockslide => rolls("It produces nothing", "stone or iron"),
-        Spell::Motherlode => rolls("It produces double", "stone or iron"),
-        Spell::Ward => format!(
-            "Cast on any tile. For {} rounds no robber may enter or stay there: one standing on it is pushed to a neighbouring tile.",
-            balance::WARD_ROUNDS
-        ),
+        Spell::Frost => rolls("It produces nothing"),
+        Spell::Bounty => rolls("It produces double"),
         Spell::Lure => {
             "Pick a robber, then any free tile: the robber moves there and stays put through the next full round."
                 .to_owned()
@@ -180,9 +168,15 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
             "Pick two tiles with different numbers: they trade numbers until either number has been rolled {} times between them.",
             balance::SPELL_CHARGES
         ),
-        Spell::Rally => "Every one of your knights can move or attack again this turn.".to_owned(),
         Spell::Windfall => {
             "On your next roll, whatever comes up, you collect 1 of each resource your buildings touch.".to_owned()
+        }
+        Spell::Luck => {
+            let (num, den) = balance::LUCK_CHANCE;
+            format!(
+                "Cast on any tile. The next roll, whoever makes it, has a {}% chance of coming up as its number.",
+                num * 100 / den
+            )
         }
     }];
     if spell.lasting().is_some() {
@@ -196,25 +190,63 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
 }
 
 /// What a lingering spell's counter counts.
-pub fn charges_word(spell: Spell, n: u32) -> String {
-    let word = match spell.lasting() {
-        Some((Lasting::Rounds, _)) => "round",
-        _ => "roll",
-    };
-    format!("{n} {word}{} left", if n == 1 { "" } else { "s" })
+pub fn charges_word(n: u32) -> String {
+    format!("{n} roll{} left", if n == 1 { "" } else { "s" })
 }
 
 /// What the board asks while a spell is being aimed.
 pub fn spell_hint(spell: Spell, picked_first: bool) -> String {
     match (spell, picked_first) {
-        (Spell::Frost | Spell::Bounty, _) => format!("Tap a wood or food tile for {}", spell.name()),
-        (Spell::Rockslide | Spell::Motherlode, _) => format!("Tap a stone or iron tile for {}", spell.name()),
-        (Spell::Ward, _) => "Tap a tile to ward".to_owned(),
+        (Spell::Frost | Spell::Bounty | Spell::Luck, _) => format!("Tap a tile for {}", spell.name()),
         (Spell::Lure, false) => "Tap the robber to lure".to_owned(),
         (Spell::Lure, true) => "Tap a free tile to lure it to".to_owned(),
         (Spell::Swap, false) => "Tap the first tile to swap".to_owned(),
         (Spell::Swap, true) => "Tap a tile with another number to swap with".to_owned(),
-        (Spell::Rally | Spell::Windfall, _) => String::new(),
+        (Spell::Windfall, _) => String::new(),
+    }
+}
+
+pub fn item_title(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::IronOre => "Iron ore",
+        ItemKind::Supplies => "Supplies",
+        ItemKind::ManaCrystal => "Mana crystal",
+        ItemKind::Scroll => "Spell scroll",
+        ItemKind::Recruit => "Recruit",
+        ItemKind::Relic => "Relic",
+        ItemKind::Trap => "Trap",
+        ItemKind::Hoard => "Robber's hoard",
+    }
+}
+
+/// What an item does when a knight finds it.
+pub fn item_rule(kind: ItemKind) -> String {
+    match kind {
+        ItemKind::IronOre => format!("{}.", balance::IRON_ORE_FIND),
+        ItemKind::Supplies => format!("{} of one resource, whichever turns up.", balance::SUPPLIES_FIND),
+        ItemKind::ManaCrystal => "Your mana refills at once.".to_owned(),
+        ItemKind::Scroll => {
+            "One free cast of a random spell: no price, no city needed, and your mana stays as it is.".to_owned()
+        }
+        ItemKind::Recruit => "A knight card.".to_owned(),
+        ItemKind::Relic => format!(
+            "The knight carries it, worth {} VP to you. If the knight falls, the relic drops where it fell.",
+            balance::RELIC_POINTS
+        ),
+        ItemKind::Trap => "The knight falls.".to_owned(),
+        ItemKind::Hoard => format!("{}, but a robber appears next to it.", balance::HOARD_FIND),
+    }
+}
+
+/// What finding an item gave, in a few words.
+pub fn item_found(kind: ItemKind, count: u32, gained: &Resources, scroll: Option<Spell>) -> String {
+    match kind {
+        ItemKind::IronOre | ItemKind::Supplies | ItemKind::Hoard => format!("{}: {gained}", item_title(kind)),
+        ItemKind::ManaCrystal => "Mana crystal: mana refilled".to_owned(),
+        ItemKind::Scroll => format!("Scroll: a free {}", scroll.map_or("spell", Spell::name)),
+        ItemKind::Recruit => "Recruit: a knight card".to_owned(),
+        ItemKind::Relic => format!("Relic: +{} VP", count * balance::RELIC_POINTS),
+        ItemKind::Trap => "A trap! The knight fell".to_owned(),
     }
 }
 
@@ -289,6 +321,19 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
         cost: Some(spell.cost()),
         lines: std::iter::once(spell_summary(spell).to_owned()).chain(spell_rules(spell)).collect(),
     }));
+    let (item_num, item_den) = balance::ITEM_SPAWN_CHANCE;
+    let mut items = vec![
+        format!(
+            "At the end of each round, an item appears with a {}% chance on a free tile touching no town or city.",
+            item_num * 100 / item_den
+        ),
+        format!(
+            "Nobody knows what it is until a knight walks onto its tile; knights can't deploy onto it. It vanishes after {} rounds, and a robber landing on it takes it.",
+            balance::ITEM_ROUNDS
+        ),
+    ];
+    items.extend(ItemKind::ALL.into_iter().map(|kind| format!("• {}: {}", item_title(kind), item_rule(kind))));
+    pages.push(page("Items", Some(Glyph::Chest), items));
     pages.extend([
         page(
             "Combat",
