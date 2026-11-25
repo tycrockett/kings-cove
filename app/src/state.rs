@@ -4,12 +4,16 @@
 
 use std::time::Duration;
 
-use kings_cove_engine::{Action, Event, Game, PlayerId, RobberId, UnitId, UnitKind};
+use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, TileId, UnitId, UnitKind};
 use kings_cove_protocol::{ActionRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, Session, SessionRequest};
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::board::{self, Anim};
+use crate::{
+    board::{self, Anim, AnimKind},
+    fx::{self, Fx, FxKind},
+    palette,
+};
 
 const SERVER_KEY: &str = "server";
 const SESSION_KEY: &str = "session";
@@ -54,10 +58,18 @@ pub struct AppState {
     pub busy: Signal<bool>,
     pub connected: Signal<bool>,
     pub anims: Signal<Vec<Anim>>,
+    /// Screen-wide effects: turn banners, the dice roll, confetti.
+    pub fx: Signal<Vec<Fx>>,
     /// Milliseconds, ticking while animations run.
     pub clock: Signal<f64>,
-    /// Until when the dice tumble (ms).
-    pub dice_until: Signal<f64>,
+    /// The HUD's dice hide while the rolled ones fly to them.
+    pub dice_hidden: Signal<bool>,
+    dice_until: Stored<f64>,
+    /// When the last queued effect's beat ends (ms): later ones follow it.
+    fx_cursor: Stored<f64>,
+    /// When the badges of resources the player just collected rise, so the
+    /// inventory can bounce as they do (ms).
+    pub gains_at: Stored<f64>,
     pub trade_open: Signal<bool>,
     pub history_open: Signal<bool>,
     /// Bumped to fit the board to the screen again.
@@ -88,8 +100,12 @@ impl AppState {
             busy: signal(false),
             connected: signal(true),
             anims: signal(Vec::new()),
+            fx: signal(Vec::new()),
             clock: signal(now_ms()),
-            dice_until: signal(0.0),
+            dice_hidden: signal(false),
+            dice_until: stored(0.0),
+            fx_cursor: stored(0.0),
+            gains_at: stored(0.0),
             trade_open: signal(false),
             history_open: signal(false),
             fit_request: signal(0),
@@ -260,13 +276,17 @@ impl AppState {
         if let Some(game) = &view.game {
             let latest = game.event_seq;
             match self.last_seq.get() {
-                // First sight of this match: show it as it is, animate nothing old.
+                // First sight of this match: show it as it is, animate nothing
+                // old, but say whose turn it is while the island is set up.
+                None if matches!(game.phase, Phase::Setup { .. }) => {
+                    self.animate(None, game, view.seat, &view.players, &[])
+                }
                 None => {}
                 Some(seen) => {
                     let previous = self.game();
                     let fresh: Vec<Event> =
                         game.events.iter().filter(|e| e.seq > seen).map(|e| e.event.clone()).collect();
-                    self.animate(previous.as_ref(), game, &fresh);
+                    self.animate(previous.as_ref(), game, view.seat, &view.players, &fresh);
                 }
             }
             self.last_seq.replace(Some(latest));
@@ -277,21 +297,116 @@ impl AppState {
         self.view.set(Some(view));
     }
 
-    fn animate(&self, before: Option<&Game>, after: &Game, events: &[Event]) {
+    /// Schedules what `events` show, one beat after another: a turn's
+    /// banner, then the dice, then the tiles they hit and what they yield.
+    fn animate(&self, before: Option<&Game>, after: &Game, seat: PlayerId, names: &[String], events: &[Event]) {
         let now = now_ms();
-        let mut new = Vec::new();
-        for (i, event) in events.iter().enumerate() {
-            if let Event::Rolled { .. } = event {
-                self.dice_until.set(now + 650.0);
+        // Catching up on several turns at once, only the latest is worth showing.
+        let turns: Vec<usize> =
+            events.iter().enumerate().filter(|(_, e)| matches!(e, Event::TurnStarted { .. })).map(|(i, _)| i).collect();
+        let events = &events[turns.len().checked_sub(2).map_or(0, |i| turns[i] + 1)..];
+        let name = |p: PlayerId| names.get(p.index()).cloned().unwrap_or_else(|| format!("Player {}", p.0 + 1));
+        let banner = |player: PlayerId, round: u32, start: f64| {
+            let mine = player == seat;
+            let subtitle = match after.phase {
+                Phase::Setup { step, .. } if mine => format!("Place your {}", after.setup_building_kind(step).name()),
+                Phase::Setup { .. } => "Setting up the island".to_owned(),
+                _ if mine => format!("Round {round} · roll the dice"),
+                _ => format!("Round {round}"),
+            };
+            if mine {
+                haptic(Haptic::Notification(HapticNotification::Success));
             }
-            // Production lands after the dice settle.
-            let delay = if matches!(event, Event::Produced { .. }) { 600.0 + i as f64 * 40.0 } else { 0.0 };
-            new.extend(board::anims_for(before, after, event, now + delay));
+            Fx {
+                start,
+                dur: if mine { fx::MY_BANNER_MS } else { fx::BANNER_MS },
+                kind: FxKind::Banner {
+                    title: if mine { "Your turn!".to_owned() } else { format!("{}'s turn", name(player)) },
+                    subtitle,
+                    color: palette::player(player),
+                    mine,
+                },
+            }
+        };
+
+        let (mut anims, mut effects) = (Vec::new(), Vec::new());
+        // Effects play one after another, after those already queued.
+        let mut cursor = now.max(self.fx_cursor.get());
+        // When this batch's tiles light up, and how many badges each has had.
+        let mut harvest = cursor;
+        let mut badges: Vec<(TileId, u32)> = Vec::new();
+        for event in events {
+            match *event {
+                Event::Rolled { player, dice } => {
+                    let sum = dice.0 + dice.1;
+                    let mine = player == seat;
+                    effects.push(Fx {
+                        start: cursor,
+                        dur: fx::DICE_MS,
+                        kind: FxKind::Dice {
+                            dice,
+                            caption: if mine { "You rolled".to_owned() } else { format!("{} rolled", name(player)) },
+                            note: (sum == 7)
+                                .then(|| if mine { "Move a robber!".to_owned() } else { "A robber moves".to_owned() }),
+                        },
+                    });
+                    self.dice_hidden.set(true);
+                    self.dice_until.replace(cursor + fx::DICE_LANDED_MS);
+                    harvest = cursor + fx::DICE_LANDED_MS - 100.0;
+                    for t in after.board.tiles.iter().filter(|t| t.number == sum) {
+                        let blocked = after.robber_at(t.id).is_some();
+                        let kind = AnimKind::Jelly { tile: t.id, blocked };
+                        anims.push(Anim { start: harvest, dur: board::JELLY_MS, kind });
+                    }
+                    badges.clear();
+                    cursor = harvest + 300.0;
+                    if mine {
+                        haptic(Haptic::Impact(HapticImpact::Medium));
+                    }
+                }
+                Event::Produced { player, tile, resource, amount } => {
+                    let of =
+                        events.iter().filter(|e| matches!(e, Event::Produced { tile: t, .. } if *t == tile)).count();
+                    let slot = match badges.iter_mut().find(|(t, _)| *t == tile) {
+                        Some((_, n)) => {
+                            *n += 1;
+                            *n - 1
+                        }
+                        None => {
+                            badges.push((tile, 1));
+                            0
+                        }
+                    };
+                    let start = harvest + 250.0 + slot as f64 * 120.0;
+                    let mine = player == seat;
+                    let color = palette::player(player);
+                    let kind = AnimKind::Gain { tile, resource, amount, color, mine, slot, of: of as u32 };
+                    anims.push(Anim { start, dur: board::GAIN_MS, kind });
+                    if mine {
+                        self.gains_at.replace(start + 500.0);
+                    }
+                }
+                Event::TurnStarted { player, round } => {
+                    let b = banner(player, round, cursor);
+                    cursor = b.end() - 300.0;
+                    effects.push(b);
+                }
+                Event::Won { .. } => effects.push(Fx { start: cursor, dur: fx::CONFETTI_MS, kind: FxKind::Confetti }),
+                _ => anims.extend(board::anims_for(after, event, cursor)),
+            }
         }
-        if new.is_empty() && self.dice_until.get_untracked() < now {
+        // Setup turns pass without a TurnStarted.
+        if matches!(after.phase, Phase::Setup { .. }) && before.is_none_or(|b| b.current != after.current) {
+            let b = banner(after.current, 0, cursor + 250.0);
+            cursor = b.end() - 300.0;
+            effects.push(b);
+        }
+        self.fx_cursor.replace(cursor);
+        if anims.is_empty() && effects.is_empty() {
             return;
         }
-        self.anims.update(|a| a.extend(new));
+        self.anims.update(|a| a.extend(anims));
+        self.fx.update(|f| f.extend(effects));
         self.run_clock();
     }
 
@@ -305,10 +420,16 @@ impl AppState {
             set_interval(Duration::from_millis(16), move || {
                 let now = now_ms();
                 this.clock.set(now);
+                let dice_until = this.dice_until.get();
+                if dice_until <= now && this.dice_hidden.get_untracked() {
+                    this.dice_hidden.set(false);
+                }
                 let animating = this.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
-                    || this.dice_until.get_untracked() > now;
+                    || this.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
+                    || dice_until > now;
                 if !animating {
                     this.anims.set(Vec::new());
+                    this.fx.set(Vec::new());
                     if let Some(t) = this.ticker.replace(None) {
                         t.cancel();
                     }

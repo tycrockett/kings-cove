@@ -5,16 +5,17 @@ use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{
     Action, BuildingKind, EdgeId, Event, Game, Phase, PlayerId, Resource, RobberId, SetupPlacing, Target, TileId,
-    UnitId, UnitKind, VertexId,
+    UnitId, VertexId,
 };
 use nsh_core::{
     TouchPhase,
-    canvas::{CanvasTextAlign, CanvasTextBaseline, LineCap, LineJoin},
+    canvas::{CanvasGradient, LineCap, LineJoin},
     element::TouchEvent,
     prelude::*,
 };
 
 use crate::{
+    art::{self, circle, ease_out, ease_out_back, hash01, lerp, phase, poly, text_at},
     palette::{self, hex, hexa},
     state::{AppState, Inspect, Mode, now_ms},
 };
@@ -24,7 +25,7 @@ pub const S: f32 = 50.0;
 const HALF_SQRT3: f32 = 0.866_025_4;
 /// Space the HUD covers at the top and bottom, kept clear when fitting.
 const FIT_TOP: f32 = 118.0;
-const FIT_BOTTOM: f32 = 214.0;
+const FIT_BOTTOM: f32 = 218.0;
 
 // ----- Geometry -----
 
@@ -60,10 +61,6 @@ pub fn piece_pos(g: &Game, t: TileId) -> (f32, f32) {
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
-}
-
-fn lerp(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
-    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
 /// Screen = world × scale + offset.
@@ -260,9 +257,17 @@ pub enum Piece {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnimKind {
-    /// A label rising and fading: collected resources.
+    /// A tile whose number came up wobbling like jelly; a `blocked` one
+    /// (a robber stands on it) shakes no instead.
+    Jelly { tile: TileId, blocked: bool },
+    /// Collected resources: a badge with the amount rising from the tile,
+    /// `slot` of `of` badges side by side.
+    Gain { tile: TileId, resource: Resource, amount: u32, color: u32, mine: bool, slot: u32, of: u32 },
+    /// Victory points gained, rising from a building.
+    Points { at: (f32, f32), amount: u32 },
+    /// A label rising and fading.
     Float { at: (f32, f32), color: u32, label: String },
-    /// A ring swelling out: something built or placed.
+    /// A ring swelling out with sparks: something built or placed.
     Pop { at: (f32, f32), color: u32 },
     /// A burst: combat.
     Burst { at: (f32, f32) },
@@ -290,44 +295,45 @@ impl Anim {
     fn running(&self, now: f64) -> bool {
         now >= self.start && now < self.end()
     }
+
+    /// Started or about to: a slide holds its piece at the start until it runs.
+    fn now_or_pending(&self, now: f64) -> bool {
+        now < self.end()
+    }
 }
 
-fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t).powi(3)
-}
+pub const JELLY_MS: f64 = 1000.0;
+pub const GAIN_MS: f64 = 1900.0;
 
-/// The animations an event starts. `before` is the state the client showed
-/// (positions pieces slide from); `after` is the new one.
-pub fn anims_for(before: Option<&Game>, after: &Game, event: &Event, start: f64) -> Vec<Anim> {
+/// The animations an event other than a roll's starts at `start`.
+pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
     let a = |dur, kind| Anim { start, dur, kind };
-    let player_color = |p: PlayerId| palette::player(p);
-    let g = after;
+    let color = palette::player;
+    let points = |vertex: VertexId, amount: u32| {
+        let (x, y) = vertex_pos(g, vertex);
+        a(1500.0, AnimKind::Points { at: (x, y - 0.3 * S), amount })
+    };
     match *event {
-        Event::Produced { tile, resource, amount, player } => {
-            let (x, y) = tile_pos(g, tile);
-            let offset = (player.index() as f32 - 1.5) * 0.28 * S;
-            vec![a(
-                1100.0,
-                AnimKind::Float {
-                    at: (x + offset, y - 0.1 * S),
-                    color: palette::resource(resource),
-                    label: format!("+{amount}"),
-                },
-            )]
+        Event::Built { player, vertex, kind } => {
+            let mut v = vec![a(700.0, AnimKind::Pop { at: vertex_pos(g, vertex), color: color(player) })];
+            if kind.points() > 0 {
+                v.push(points(vertex, kind.points()));
+            }
+            v
         }
-        Event::ProductionBlocked { tile } => {
-            vec![a(900.0, AnimKind::Float { at: tile_pos(g, tile), color: 0x444444, label: "blocked".to_owned() })]
-        }
-        Event::Built { player, vertex, .. } | Event::Upgraded { player, vertex, .. } => {
-            vec![a(500.0, AnimKind::Pop { at: vertex_pos(g, vertex), color: player_color(player) })]
+        Event::Upgraded { player, vertex, .. } => {
+            vec![a(700.0, AnimKind::Pop { at: vertex_pos(g, vertex), color: color(player) }), points(vertex, 1)]
         }
         Event::BuiltRoad { player, edge } => {
-            vec![a(450.0, AnimKind::Pop { at: edge_mid(g, edge), color: player_color(player) })]
+            vec![a(550.0, AnimKind::Pop { at: edge_mid(g, edge), color: color(player) })]
         }
         Event::Deployed { player, tile, .. } => {
-            vec![a(500.0, AnimKind::Pop { at: piece_pos(g, tile), color: player_color(player) })]
+            vec![a(650.0, AnimKind::Pop { at: piece_pos(g, tile), color: color(player) })]
         }
-        Event::RobberSpawned { tile, .. } => vec![a(700.0, AnimKind::Pop { at: piece_pos(g, tile), color: 0x222222 })],
+        Event::RobberSpawned { tile, .. } => vec![
+            a(800.0, AnimKind::Pop { at: piece_pos(g, tile), color: 0x222222 }),
+            a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: "A robber!".to_owned() }),
+        ],
         Event::UnitMoved { unit, from, .. } => {
             vec![a(380.0, AnimKind::Slide { piece: Piece::Unit(unit), from: piece_pos(g, from) })]
         }
@@ -335,21 +341,18 @@ pub fn anims_for(before: Option<&Game>, after: &Game, event: &Event, start: f64)
             vec![a(520.0, AnimKind::Slide { piece: Piece::Robber(robber), from: piece_pos(g, from) })]
         }
         Event::KnightKilledRobber { tile, .. } | Event::RamDestroyed { tile, .. } => {
-            vec![a(600.0, AnimKind::Burst { at: piece_pos(g, tile) })]
+            vec![a(650.0, AnimKind::Burst { at: piece_pos(g, tile) })]
         }
         Event::KnightsClashed { tiles: (x, y), .. } => {
             let mid = lerp(piece_pos(g, x), piece_pos(g, y), 0.5);
             vec![
-                a(600.0, AnimKind::Burst { at: mid }),
-                a(600.0, AnimKind::Burst { at: piece_pos(g, x) }),
-                a(600.0, AnimKind::Burst { at: piece_pos(g, y) }),
+                a(650.0, AnimKind::Burst { at: mid }),
+                a(650.0, AnimKind::Burst { at: piece_pos(g, x) }),
+                a(650.0, AnimKind::Burst { at: piece_pos(g, y) }),
             ]
         }
-        Event::BuildingRammed { vertex, .. } => vec![a(650.0, AnimKind::Burst { at: vertex_pos(g, vertex) })],
-        _ => {
-            let _ = before;
-            Vec::new()
-        }
+        Event::BuildingRammed { vertex, .. } => vec![a(700.0, AnimKind::Burst { at: vertex_pos(g, vertex) })],
+        _ => Vec::new(),
     }
 }
 
@@ -367,18 +370,6 @@ pub struct Scene<'a> {
     pub now: f64,
 }
 
-fn poly(mut p: Painter, pts: &[(f32, f32)]) -> Painter {
-    p = p.begin_path();
-    for (i, &(x, y)) in pts.iter().enumerate() {
-        p = if i == 0 { p.move_to(x, y) } else { p.line_to(x, y) };
-    }
-    p.close_path()
-}
-
-fn circle(p: Painter, (x, y): (f32, f32), r: f32) -> Painter {
-    p.begin_path().arc(x, y, r, 0.0, TAU)
-}
-
 fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
     (0..6)
         .map(|i| {
@@ -388,36 +379,48 @@ fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
+const SAND: u32 = 0xdcc893;
+
 pub fn draw(s: &Scene) -> Painter {
     let g = s.game;
     let (w, h) = s.size;
     let px1 = 1.0 / s.cam.scale; // one screen point in world units
-    let mut p = Painter::new().fill_color(hex(palette::TABLE)).fill_rect(0.0, 0.0, w, h);
+
+    // The sea, brightest around the island (the world origin is its center).
+    let center = point(px(s.cam.x), px(s.cam.y));
+    let sea = CanvasGradient::radial(center, px(0.0), center, px(w.max(h) * 0.9))
+        .add_color_stop(percentage(0.0), hex(0x3c8597))
+        .add_color_stop(percentage(0.5), hex(0x2a6475))
+        .add_color_stop(percentage(1.0), hex(0x163845));
+    let mut p = Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w, h);
     p = p.save().translate(s.cam.x, s.cam.y).scale(s.cam.scale, s.cam.scale);
     p = p.line_join(LineJoin::Round).line_cap(LineCap::Round);
+    p = waves(p, px1);
 
-    // The island's shore.
+    // Shallows and the beach.
     for t in &g.board.tiles {
-        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.22)).fill_color(hex(palette::SEA)).fill();
+        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.34)).fill_color(hexa(0x8fd3d0, 0.22)).fill();
     }
     for t in &g.board.tiles {
-        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.08)).fill_color(hex(0xcdbb8f)).fill();
+        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.14)).fill_color(hex(SAND)).fill();
+    }
+    for t in &g.board.tiles {
+        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.04)).fill_color(hex(0xc9b47e)).fill();
     }
 
-    // Tiles.
-    for t in &g.board.tiles {
-        let c = tile_pos(g, t.id);
-        let base = palette::resource(t.resource);
-        p = poly(p, &hex_points(c, S * 0.97)).fill_color(hex(base)).fill();
-        p = poly(p, &hex_points(c, S * 0.97))
-            .stroke_color(hex(palette::shade(base, 0.72)))
-            .line_width(2.0 * px1)
-            .stroke();
-        p = glyph(p, t.resource, (c.0, c.1 - 0.56 * S), base);
-        let robbed = g.robber_at(t.id).is_some();
-        p = token(p, (c.0, c.1 - 0.08 * S), t.number, robbed, px1);
-        if robbed {
-            p = poly(p, &hex_points(c, S * 0.97)).fill_color(hexa(0x000000, 0.22)).fill();
+    // Tiles; those whose number just came up wobble on top of the rest.
+    let jelly = |t: TileId| {
+        s.anims.iter().filter(|a| a.running(s.now)).find_map(|a| match a.kind {
+            AnimKind::Jelly { tile, blocked } if tile == t => Some((a.t(s.now), blocked)),
+            _ => None,
+        })
+    };
+    for t in g.board.tile_ids().filter(|&t| jelly(t).is_none()) {
+        p = tile_art(p, g, t, px1);
+    }
+    for t in g.board.tile_ids() {
+        if let Some((k, blocked)) = jelly(t) {
+            p = wobbling_tile(p, g, t, k, blocked, px1);
         }
     }
 
@@ -426,8 +429,8 @@ pub fn draw(s: &Scene) -> Painter {
         if let Spot::Tile(t) = o.spot {
             let color = if o.hostile { palette::DANGER } else { palette::GOLD };
             let c = tile_pos(g, t);
-            p = poly(p, &hex_points(c, S * 0.9))
-                .fill_color(hexa(color, 0.3))
+            p = poly(p, &hex_points(c, S * 0.88))
+                .fill_color(hexa(color, 0.28))
                 .fill()
                 .stroke_color(hex(color))
                 .line_width(4.0 * px1)
@@ -439,20 +442,7 @@ pub fn draw(s: &Scene) -> Painter {
     for (i, owner) in g.roads.iter().enumerate() {
         if let Some(owner) = owner {
             let (a, b) = edge_ends(g, EdgeId(i as u16));
-            let (a, b) = (lerp(a, b, 0.16), lerp(a, b, 0.84));
-            p = p
-                .begin_path()
-                .move_to(a.0, a.1)
-                .line_to(b.0, b.1)
-                .stroke_color(hex(palette::INK))
-                .line_width(0.2 * S)
-                .stroke()
-                .begin_path()
-                .move_to(a.0, a.1)
-                .line_to(b.0, b.1)
-                .stroke_color(hex(palette::player(*owner)))
-                .line_width(0.13 * S)
-                .stroke();
+            p = art::road(p, lerp(a, b, 0.17), lerp(a, b, 0.83), palette::player(*owner), 0.2 * S);
         }
     }
     for o in s.opts {
@@ -463,8 +453,14 @@ pub fn draw(s: &Scene) -> Painter {
                 .begin_path()
                 .move_to(a.0, a.1)
                 .line_to(b.0, b.1)
-                .stroke_color(hexa(0xffffff, 0.85))
-                .line_width(0.12 * S)
+                .stroke_color(hexa(palette::GOLD, 0.55))
+                .line_width(0.2 * S)
+                .stroke()
+                .begin_path()
+                .move_to(a.0, a.1)
+                .line_to(b.0, b.1)
+                .stroke_color(hexa(0xffffff, 0.95))
+                .line_width(0.09 * S)
                 .stroke();
         }
     }
@@ -472,18 +468,20 @@ pub fn draw(s: &Scene) -> Painter {
     // Buildings.
     for (i, b) in g.buildings.iter().enumerate() {
         if let Some(b) = b {
-            p = building(p, vertex_pos(g, VertexId(i as u16)), b.kind, palette::player(b.owner), px1);
+            let at = vertex_pos(g, VertexId(i as u16));
+            p = art::building(p, at, b.kind, palette::player(b.owner), 0.155 * S, 2.0 * px1);
         }
     }
     for o in s.opts {
         if let Spot::Vertex(v) = o.spot {
             let color = if o.hostile { palette::DANGER } else { palette::GOLD };
-            let r = if g.building(v).is_some() { 0.36 * S } else { 0.16 * S };
+            let built = g.building(v).is_some();
+            let r = if built { 0.44 * S } else { 0.17 * S };
             p = circle(p, vertex_pos(g, v), r)
-                .fill_color(hexa(0xffffff, if g.building(v).is_some() { 0.0 } else { 0.75 }))
+                .fill_color(hexa(0xffffff, if built { 0.0 } else { 0.85 }))
                 .fill()
                 .stroke_color(hex(color))
-                .line_width(3.0 * px1)
+                .line_width(3.5 * px1)
                 .stroke();
         }
     }
@@ -500,36 +498,35 @@ pub fn draw(s: &Scene) -> Painter {
             .unwrap_or(to)
     };
     for r in &g.robbers {
-        p = robber(p, slide_pos(&Piece::Robber(r.id), piece_pos(g, r.tile)));
+        p = art::robber(p, slide_pos(&Piece::Robber(r.id), piece_pos(g, r.tile)), 0.22 * S, 1.6 * px1);
     }
     let my_turn = g.is_active(s.seat) && g.dice.is_some();
     for u in &g.units {
         let at = slide_pos(&Piece::Unit(u.id), piece_pos(g, u.tile));
-        let selected = s.mode == Mode::Unit(u.id);
-        p = unit(p, at, u.kind, palette::player(u.owner), px1);
+        p = art::unit(p, at, u.kind, palette::player(u.owner), 0.25 * S, 2.0 * px1);
         if my_turn && u.owner == s.seat && u.ready {
-            p = circle(p, (at.0 + 0.2 * S, at.1 - 0.2 * S), 0.07 * S)
+            p = circle(p, (at.0 + 0.24 * S, at.1 - 0.24 * S), 0.08 * S)
                 .fill_color(hex(palette::GOLD))
                 .fill()
                 .stroke_color(hex(palette::INK))
                 .line_width(1.5 * px1)
                 .stroke();
         }
-        if selected {
-            p = circle(p, at, 0.34 * S).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
+        if s.mode == Mode::Unit(u.id) {
+            p = circle(p, at, 0.38 * S).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
         }
     }
     if let Mode::Robber(r) = s.mode
         && let Some(r) = g.robber(r)
     {
-        p = circle(p, piece_pos(g, r.tile), 0.34 * S).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
+        p = circle(p, piece_pos(g, r.tile), 0.38 * S).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
     }
 
     // What the player is looking at.
     if let Some(i) = s.inspect {
         p = match i {
             Inspect::Tile(t) => poly(p, &hex_points(tile_pos(g, t), S * 0.95)),
-            Inspect::Vertex(v) => circle(p, vertex_pos(g, v), 0.34 * S),
+            Inspect::Vertex(v) => circle(p, vertex_pos(g, v), 0.4 * S),
             Inspect::Edge(e) => circle(p, edge_mid(g, e), 0.26 * S),
         }
         .stroke_color(hex(0xffffff))
@@ -537,87 +534,243 @@ pub fn draw(s: &Scene) -> Painter {
         .stroke();
     }
 
-    // Effects.
+    // Effects, at screen size whatever the zoom.
     for a in s.anims.iter().filter(|a| a.running(s.now)) {
         let t = a.t(s.now);
         p = match &a.kind {
-            AnimKind::Float { at, color, label } => {
-                let y = at.1 - ease_out(t) * 0.7 * S;
-                let alpha = if t < 0.7 { 1.0 } else { 1.0 - (t - 0.7) / 0.3 };
-                let p = p.global_alpha(alpha);
-                let p = p
-                    .begin_path()
-                    .round_rect(
-                        bounds(point(px(at.0 - 0.3 * S), px(y - 0.17 * S)), size(px(0.6 * S), px(0.34 * S))),
-                        px(0.17 * S),
-                    )
-                    .fill_color(hex(*color))
-                    .fill()
-                    .stroke_color(hex(palette::INK))
-                    .line_width(1.5 * px1)
-                    .stroke();
-                text_at(p, label, (at.0, y), 0.22 * S, 0xffffff, 800, px1).global_alpha(1.0)
+            AnimKind::Gain { tile, resource, amount, color, mine, slot, of } => {
+                let c = tile_pos(g, *tile);
+                let k = if *mine { 1.15 } else { 0.85 };
+                let x = c.0 + (*slot as f32 - (*of as f32 - 1.0) / 2.0) * 96.0 * k * px1;
+                let y = c.1 - 0.1 * S - ease_out(t) * 70.0 * px1;
+                let pop = ease_out_back(phase(t, 0.0, 0.16)).max(0.05);
+                let p = p.global_alpha(1.0 - phase(t, 0.75, 1.0));
+                gain_badge(p, (x, y), *resource, *amount, *color, *mine, px1 * k * pop, px1).global_alpha(1.0)
             }
-            AnimKind::Pop { at, color } => circle(p, *at, (0.15 + 0.45 * ease_out(t)) * S)
-                .stroke_color(hexa(*color, 1.0 - t))
-                .line_width(4.0 * px1)
-                .stroke(),
+            AnimKind::Points { at, amount } => {
+                let y = at.1 - ease_out(t) * 56.0 * px1;
+                let pop = ease_out_back(phase(t, 0.0, 0.2)).max(0.05);
+                let p = p.global_alpha(1.0 - phase(t, 0.75, 1.0));
+                points_badge(p, (at.0, y), *amount, px1 * pop, px1).global_alpha(1.0)
+            }
+            AnimKind::Float { at, color, label } => {
+                let y = at.1 - ease_out(t) * 44.0 * px1;
+                let p = p.global_alpha(1.0 - phase(t, 0.7, 1.0));
+                let w = (label.chars().count() as f32 * 9.0 + 24.0) * px1;
+                let p = art::rrect(p, (at.0, y), w, 28.0 * px1, 14.0 * px1).fill_color(hex(*color)).fill();
+                text_at(p, label, (at.0, y), 15.0 * px1, palette::ink_on(*color), 800, px1).global_alpha(1.0)
+            }
+            AnimKind::Pop { at, color } => {
+                let e = ease_out(t);
+                let mut p = circle(p, *at, (0.15 + 0.65 * e) * S)
+                    .stroke_color(hexa(*color, 1.0 - t))
+                    .line_width(5.0 * px1 * (1.0 - t) + px1)
+                    .stroke();
+                for k in 0..10 {
+                    let ang = k as f32 * TAU / 10.0 + 0.3;
+                    let r = (0.25 + 0.7 * e) * S;
+                    let spark = (at.0 + r * ang.cos(), at.1 + r * ang.sin());
+                    p = art::star(p, spark, (1.0 - t) * 6.0 * px1)
+                        .fill_color(hexa(if k % 2 == 0 { palette::GOLD } else { 0xffffff }, 1.0 - t))
+                        .fill();
+                }
+                p
+            }
             AnimKind::Burst { at } => {
-                let mut p = p.stroke_color(hexa(palette::DANGER, 1.0 - t)).line_width(3.0 * px1);
-                for k in 0..8 {
-                    let ang = k as f32 * TAU / 8.0;
-                    let (r0, r1) = ((0.1 + 0.3 * t) * S, (0.25 + 0.45 * ease_out(t)) * S);
+                let mut p = p.stroke_color(hexa(palette::DANGER, 1.0 - t)).line_width(4.0 * px1);
+                for k in 0..10 {
+                    let ang = k as f32 * TAU / 10.0;
+                    let (r0, r1) = ((0.1 + 0.35 * t) * S, (0.3 + 0.55 * ease_out(t)) * S);
                     p = p
                         .begin_path()
                         .move_to(at.0 + r0 * ang.cos(), at.1 + r0 * ang.sin())
                         .line_to(at.0 + r1 * ang.cos(), at.1 + r1 * ang.sin())
                         .stroke();
                 }
-                circle(p, *at, 0.2 * S * (1.0 - t)).fill_color(hexa(palette::GOLD, 1.0 - t)).fill()
+                circle(p, *at, 0.28 * S * (1.0 - t)).fill_color(hexa(palette::GOLD, 1.0 - t)).fill()
             }
-            AnimKind::Slide { .. } => p,
+            AnimKind::Jelly { .. } | AnimKind::Slide { .. } => p,
         };
     }
     p.restore()
 }
 
-impl Anim {
-    /// Started or about to: a slide holds its piece at the start until it runs.
-    fn now_or_pending(&self, now: f64) -> bool {
-        now < self.end()
+/// Foam marks on the open sea around the island.
+fn waves(mut p: Painter, px1: f32) -> Painter {
+    p = p.stroke_color(hexa(0xffffff, 0.13)).line_width(2.0 * px1);
+    for i in 0..44 {
+        let ang = hash01(i) * TAU;
+        let d = (5.3 + hash01(i + 100) * 4.0) * S;
+        let (x, y) = (d * ang.cos() * 1.1, d * ang.sin());
+        let r = (0.16 + hash01(i + 200) * 0.12) * S;
+        p = p.begin_path().arc(x, y, r, PI * 1.15, PI * 1.85).stroke();
+        p = p.begin_path().arc(x + r * 1.3, y + r * 0.1, r * 0.8, PI * 1.2, PI * 1.8).stroke();
     }
+    p
 }
 
-/// Text of `size` world units, laid out at the screen's own scale (`px1`
-/// world units per point) so glyphs are hinted and spaced as on screen.
-fn text_at(p: Painter, label: &str, (x, y): (f32, f32), size: f32, color: u32, weight: u32, px1: f32) -> Painter {
-    p.save()
-        .translate(x, y)
-        .scale(px1, px1)
-        .font(&format!("{weight} {:.1}px Helvetica, Arial, sans-serif", size / px1))
-        .text_align(CanvasTextAlign::Center)
-        .text_baseline(CanvasTextBaseline::Middle)
-        .fill_color(hex(color))
-        .fill_text(label, 0.0, 0.0)
-        .restore()
+/// Places on a tile for scenery, clear of the token and the piece spot.
+const SPOTS: [(f32, f32); 8] =
+    [(-0.5, -0.42), (0.5, -0.42), (-0.2, -0.62), (0.22, -0.6), (-0.64, 0.1), (0.64, 0.1), (-0.44, 0.5), (0.44, 0.5)];
+
+/// One tile: terrain, its scenery and its number token.
+fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32) -> Painter {
+    let tile = g.board.tile(t);
+    let c = tile_pos(g, t);
+    let base = palette::resource(tile.resource);
+    let outline = hex_points(c, S * 0.96);
+    p = poly(p, &outline)
+        .fill_style(art::vgrad(c.1 - S, c.1 + S, palette::lighten(base, 0.2), palette::shade(base, 0.8)))
+        .fill();
+    p = poly(p.save(), &outline).clip();
+    p = scenery(p, tile.resource, c, t.0 as u32, base, px1).restore();
+    p = poly(p, &hex_points(c, S * 0.9)).stroke_color(hexa(0xffffff, 0.2)).line_width(2.0 * px1).stroke();
+    p = poly(p, &outline).stroke_color(hex(palette::shade(base, 0.6))).line_width(1.5 * px1).stroke();
+    let robbed = g.robber_at(t).is_some();
+    p = token(p, (c.0, c.1 - 0.08 * S), tile.number, robbed, px1);
+    if robbed {
+        p = poly(p, &outline).fill_color(hexa(0x000000, 0.25)).fill();
+    }
+    p
+}
+
+/// A tile whose number came up: it swells, wobbles and glows (or, blocked
+/// by a robber, shakes and flushes red), `k` 0..1 through it.
+fn wobbling_tile(p: Painter, g: &Game, t: TileId, k: f32, blocked: bool, px1: f32) -> Painter {
+    let c = tile_pos(g, t);
+    let fade = 1.0 - k;
+    let (dx, sx, sy) = if blocked {
+        ((k * TAU * 4.0).sin() * fade * 0.1 * S, 1.0, 1.0)
+    } else {
+        let swell = 0.14 * (PI * phase(k, 0.0, 0.3)).sin();
+        let wobble = 0.13 * fade * fade * (k * TAU * 3.0).sin();
+        (0.0, 1.0 + swell + wobble, 1.0 + swell - wobble)
+    };
+    let mut p = p.save().translate(c.0 + dx, c.1).scale(sx, sy).translate(-c.0, -c.1);
+    p = art::shadow(p, 0.45 * fade, 14.0, 4.0);
+    p = poly(p, &hex_points(c, S * 0.96)).fill_color(hex(SAND)).fill();
+    p = art::no_shadow(p);
+    p = tile_art(p, g, t, px1);
+    let glow = if blocked { palette::DANGER } else { palette::GOLD };
+    p = poly(p, &hex_points(c, S * 0.96))
+        .fill_color(hexa(if blocked { palette::DANGER } else { 0xffffff }, 0.35 * fade))
+        .fill()
+        .stroke_color(hexa(glow, fade))
+        .line_width(6.0 * px1)
+        .stroke();
+    p = p.restore();
+    // A shockwave rolling off the tile.
+    let wave = phase(k, 0.0, 0.6);
+    if wave < 1.0 {
+        p = poly(p, &hex_points(c, S * (1.0 + 0.7 * ease_out(wave))))
+            .stroke_color(hexa(glow, 0.8 * (1.0 - wave)))
+            .line_width(5.0 * px1)
+            .stroke();
+    }
+    p
+}
+
+/// Trees, peaks, fields or ore hills, placed the same way every frame.
+fn scenery(mut p: Painter, r: Resource, c: (f32, f32), seed: u32, base: u32, px1: f32) -> Painter {
+    let spots = SPOTS
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| hash01(seed * 8 + i as u32) > 0.18)
+        .map(|(i, &(x, y))| ((c.0 + x * S, c.1 + y * S), 0.85 + hash01(seed * 8 + i as u32 + 50) * 0.35));
+    match r {
+        Resource::Wood => {
+            for ((x, y), k) in spots {
+                let u = 0.15 * S * k;
+                p = p.fill_color(hex(0x6b4a2f)).fill_rect(x - 0.12 * u, y + 0.55 * u, 0.24 * u, 0.4 * u);
+                p = poly(p, &[(x, y - 1.1 * u), (x + 0.75 * u, y + 0.6 * u), (x - 0.75 * u, y + 0.6 * u)])
+                    .fill_color(hex(palette::shade(base, 0.62)))
+                    .fill();
+                p = poly(p, &[(x, y - 1.1 * u), (x + 0.75 * u, y + 0.6 * u), (x, y + 0.6 * u)])
+                    .fill_color(hex(palette::shade(base, 0.48)))
+                    .fill();
+                p = poly(p, &[(x, y - 1.1 * u), (x - 0.3 * u, y - 0.2 * u), (x, y - 0.35 * u)])
+                    .fill_color(hexa(0xffffff, 0.18))
+                    .fill();
+            }
+            p
+        }
+        Resource::Stone => {
+            for ((x, y), k) in spots {
+                let u = 0.17 * S * k;
+                let peak = [(x - 1.0 * u, y + 0.6 * u), (x, y - 0.9 * u), (x + 1.0 * u, y + 0.6 * u)];
+                p = poly(p, &peak).fill_color(hex(palette::shade(base, 0.82))).fill();
+                p = poly(p, &[(x, y - 0.9 * u), (x + 1.0 * u, y + 0.6 * u), (x + 0.15 * u, y + 0.6 * u)])
+                    .fill_color(hex(palette::shade(base, 0.62)))
+                    .fill();
+                p = poly(
+                    p,
+                    &[(x, y - 0.9 * u), (x - 0.38 * u, y - 0.33 * u), (x, y - 0.45 * u), (x + 0.38 * u, y - 0.33 * u)],
+                )
+                .fill_color(hex(0xf4f2ec))
+                .fill();
+            }
+            p
+        }
+        Resource::Food => {
+            p = p.line_width(0.075 * S);
+            for i in -9..=9 {
+                let x = c.0 + i as f32 * 0.15 * S;
+                let tone = if i % 2 == 0 { palette::lighten(base, 0.16) } else { palette::shade(base, 0.9) };
+                p = p
+                    .stroke_color(hex(tone))
+                    .begin_path()
+                    .move_to(x - 0.6 * S, c.1 + 1.0 * S)
+                    .line_to(x + 0.6 * S, c.1 - 1.0 * S)
+                    .stroke();
+            }
+            p = p.stroke_color(hex(palette::shade(base, 0.6))).line_width(1.6 * px1);
+            for ((x, y), k) in spots.take(5) {
+                let u = 0.1 * S * k;
+                for dx in [-0.5, 0.0, 0.5] {
+                    p = p.begin_path().move_to(x + dx * 0.4 * u, y + u).line_to(x + dx * u, y - u).stroke();
+                    p = art::ellipse(p, (x + dx * u, y - u), 0.16 * u, 0.32 * u, dx * 0.8)
+                        .fill_color(hex(palette::shade(base, 0.7)))
+                        .fill();
+                }
+            }
+            p
+        }
+        Resource::Iron => {
+            for ((x, y), k) in spots {
+                let u = 0.16 * S * k;
+                p = p
+                    .begin_path()
+                    .move_to(x - 1.0 * u, y + 0.5 * u)
+                    .quadratic_curve_to(point(px(x), px(y - 1.2 * u)), point(px(x + 1.0 * u), px(y + 0.5 * u)))
+                    .close_path()
+                    .fill_color(hex(palette::shade(base, 0.78)))
+                    .fill();
+                p = circle(p, (x - 0.25 * u, y + 0.05 * u), 0.2 * u).fill_color(hex(0x3a2f2b)).fill();
+                p = circle(p, (x + 0.3 * u, y + 0.2 * u), 0.15 * u).fill_color(hex(0x3a2f2b)).fill();
+                p = circle(p, (x - 0.3 * u, y - 0.02 * u), 0.06 * u).fill_color(hex(0xd8dde2)).fill();
+            }
+            p
+        }
+    }
 }
 
 /// The production number on its token, with pips for its odds.
 fn token(mut p: Painter, (x, y): (f32, f32), number: u8, robbed: bool, px1: f32) -> Painter {
     let r = 0.3 * S;
-    p = circle(p, (x, y + 0.02 * S), r)
-        .fill_color(hex(palette::TOKEN))
-        .fill()
-        .stroke_color(hex(0x8a7a5a))
-        .line_width(0.03 * S)
-        .stroke();
+    let face = CanvasGradient::radial(point(px(x - 0.3 * r), px(y - 0.4 * r)), px(0.0), point(px(x), px(y)), px(r))
+        .add_color_stop(percentage(0.0), hex(0xfffcf2))
+        .add_color_stop(percentage(1.0), hex(0xe8dbb8));
+    p = art::shadow(p, 0.35, 5.0, 2.0);
+    p = circle(p, (x, y + 0.02 * S), r).fill_style(face).fill();
+    p = art::no_shadow(p);
+    p = circle(p, (x, y + 0.02 * S), r).stroke_color(hex(0x8a7a5a)).line_width(1.5 * px1).stroke();
     let hot = number == 6 || number == 8;
     let color = if hot { palette::HOT } else { palette::INK };
-    p = text_at(p, &number.to_string(), (x, y - 0.03 * S), 0.3 * S, color, 800, px1);
+    p = text_at(p, &number.to_string(), (x, y - 0.03 * S), if hot { 0.34 * S } else { 0.3 * S }, color, 800, px1);
     let pips = 6 - (7 - number as i32).abs();
     for i in 0..pips {
-        let px = x + (i as f32 - (pips - 1) as f32 / 2.0) * 0.065 * S;
-        p = circle(p, (px, y + 0.18 * S), 0.022 * S).fill_color(hex(color)).fill();
+        let px_ = x + (i as f32 - (pips - 1) as f32 / 2.0) * 0.065 * S;
+        p = circle(p, (px_, y + 0.18 * S), 0.022 * S).fill_color(hex(color)).fill();
     }
     if robbed {
         p = p
@@ -631,212 +784,43 @@ fn token(mut p: Painter, (x, y): (f32, f32), number: u8, robbed: bool, px1: f32)
     p
 }
 
-/// A small emblem of the tile's resource.
-fn glyph(p: Painter, resource: Resource, (x, y): (f32, f32), base: u32) -> Painter {
-    let ink = hex(palette::shade(base, 0.55));
-    let u = 0.13 * S;
-    match resource {
-        Resource::Wood => {
-            let mut p = p.fill_color(ink);
-            for dx in [-1.1, 0.0, 1.1] {
-                let cx = x + dx * u;
-                let lift = if dx == 0.0 { 0.35 * u } else { 0.0 };
-                p = poly(
-                    p,
-                    &[
-                        (cx, y - 1.1 * u - lift),
-                        (cx + 0.75 * u, y + 0.5 * u - lift),
-                        (cx - 0.75 * u, y + 0.5 * u - lift),
-                    ],
-                )
-                .fill()
-                .fill_rect(cx - 0.12 * u, y + 0.5 * u - lift, 0.24 * u, 0.45 * u);
-            }
-            p
-        }
-        Resource::Stone => {
-            let p = p.fill_color(ink);
-            let p = circle(p, (x - 0.8 * u, y + 0.3 * u), 0.6 * u).fill();
-            let p = circle(p, (x + 0.75 * u, y + 0.35 * u), 0.55 * u).fill();
-            circle(p, (x, y - 0.35 * u), 0.7 * u).fill()
-        }
-        Resource::Food => {
-            let mut p = p.stroke_color(ink).fill_color(ink).line_width(0.18 * u);
-            for dx in [-0.8, 0.0, 0.8] {
-                let cx = x + dx * u;
-                p = p.begin_path().move_to(cx, y + 0.9 * u).line_to(cx, y - 0.5 * u).stroke();
-                for k in 0..3 {
-                    let ky = y - 0.9 * u + k as f32 * 0.42 * u;
-                    p = p
-                        .begin_path()
-                        .ellipse(
-                            point(px(cx), px(ky)),
-                            size(px(0.2 * u), px(0.32 * u)),
-                            radians(0.0),
-                            radians(0.0),
-                            radians(TAU),
-                            false,
-                        )
-                        .fill();
-                }
-            }
-            p
-        }
-        Resource::Iron => {
-            let p = p.fill_color(ink);
-            let p = poly(
-                p,
-                &[
-                    (x - 1.2 * u, y + 0.7 * u),
-                    (x + 1.2 * u, y + 0.7 * u),
-                    (x + 0.8 * u, y - 0.1 * u),
-                    (x - 0.8 * u, y - 0.1 * u),
-                ],
-            )
-            .fill();
-            poly(
-                p,
-                &[
-                    (x - 0.7 * u, y - 0.25 * u),
-                    (x + 0.7 * u, y - 0.25 * u),
-                    (x + 0.4 * u, y - 0.9 * u),
-                    (x - 0.4 * u, y - 0.9 * u),
-                ],
-            )
-            .fill()
-        }
+/// A collected-resources badge: the resource's icon and `+amount`, drawn in
+/// badge points of `unit` world units each.
+#[allow(clippy::too_many_arguments)]
+fn gain_badge(
+    p: Painter,
+    (x, y): (f32, f32),
+    r: Resource,
+    amount: u32,
+    color: u32,
+    mine: bool,
+    unit: f32,
+    px1: f32,
+) -> Painter {
+    let mut p = p.save().translate(x, y).scale(unit, unit);
+    if mine {
+        p = art::rrect(p, (0.0, 0.0), 104.0, 56.0, 28.0).fill_color(hexa(palette::GOLD, 0.55)).fill();
     }
+    p = art::shadow(p, 0.4, 10.0, 4.0);
+    p = art::rrect(p, (0.0, 0.0), 94.0, 46.0, 23.0).fill_color(hex(0xfffaf0)).fill();
+    p = art::no_shadow(p);
+    p = art::rrect(p, (0.0, 0.0), 94.0, 46.0, 23.0).stroke_color(hex(palette::INK)).line_width(1.5).stroke();
+    p = art::rrect(p, (0.0, 0.0), 89.0, 41.0, 20.5).stroke_color(hex(color)).line_width(3.5).stroke();
+    p = art::resource_icon(p, r, (-23.0, 0.0), 32.0, 1.2);
+    p = text_at(p, &format!("+{amount}"), (19.0, 1.0), 28.0, palette::INK, 900, px1 / unit);
+    p.restore()
 }
 
-/// Outpost: a tent. Town: a house. City: a castle.
-fn building(p: Painter, (x, y): (f32, f32), kind: BuildingKind, color: u32, px1: f32) -> Painter {
-    let u = 0.11 * S;
-    let shape: Vec<(f32, f32)> = match kind {
-        BuildingKind::Outpost => vec![(x, y - 1.3 * u), (x + 1.25 * u, y + 0.9 * u), (x - 1.25 * u, y + 0.9 * u)],
-        BuildingKind::Town => vec![
-            (x - 1.2 * u, y + 1.1 * u),
-            (x + 1.2 * u, y + 1.1 * u),
-            (x + 1.2 * u, y - 0.3 * u),
-            (x, y - 1.5 * u),
-            (x - 1.2 * u, y - 0.3 * u),
-        ],
-        BuildingKind::City => [
-            (-2.0, 1.3),
-            (-2.0, -2.4),
-            (-1.55, -2.4),
-            (-1.55, -2.0),
-            (-1.2, -2.0),
-            (-1.2, -2.4),
-            (-0.75, -2.4),
-            (-0.75, -0.7),
-            (0.75, -0.7),
-            (0.75, -2.4),
-            (1.2, -2.4),
-            (1.2, -2.0),
-            (1.55, -2.0),
-            (1.55, -2.4),
-            (2.0, -2.4),
-            (2.0, 1.3),
-        ]
-        .iter()
-        .map(|&(dx, dy)| (x + dx * u, y + dy * u))
-        .collect(),
-    };
-    let mut p =
-        poly(p, &shape).fill_color(hex(color)).fill().stroke_color(hex(palette::INK)).line_width(2.2 * px1).stroke();
-    match kind {
-        BuildingKind::Outpost => {
-            p = p.begin_path().move_to(x, y - 1.3 * u).line_to(x, y + 0.9 * u).stroke();
-        }
-        BuildingKind::Town => {
-            p = p.fill_color(hex(palette::INK)).fill_rect(x - 0.3 * u, y + 0.3 * u, 0.6 * u, 0.8 * u);
-        }
-        BuildingKind::City => {
-            // The gate.
-            p = p.fill_color(hex(palette::INK)).fill_rect(x - 0.4 * u, y + 0.3 * u, 0.8 * u, 1.0 * u);
-        }
-    }
-    p
-}
-
-/// Knight: a shield bearing a sword. Ram: a wagon bearing a ram's log.
-fn unit(p: Painter, at: (f32, f32), kind: UnitKind, color: u32, px1: f32) -> Painter {
-    let r = 0.22 * S;
-    let (x, y) = at;
-    let mut p = match kind {
-        UnitKind::Knight => poly(
-            p,
-            &[
-                (x - 0.85 * r, y - 0.9 * r),
-                (x + 0.85 * r, y - 0.9 * r),
-                (x + 0.85 * r, y + 0.05 * r),
-                (x + 0.6 * r, y + 0.55 * r),
-                (x, y + 1.0 * r),
-                (x - 0.6 * r, y + 0.55 * r),
-                (x - 0.85 * r, y + 0.05 * r),
-            ],
-        ),
-        UnitKind::Ram => p
-            .begin_path()
-            .round_rect(bounds(point(px(x - r), px(y - r * 0.85)), size(px(2.0 * r), px(1.7 * r))), px(0.25 * r)),
-    }
-    .fill_color(hex(color))
-    .fill()
-    .stroke_color(hex(palette::INK))
-    .line_width(2.2 * px1)
-    .stroke();
-    let ink = if color == palette::PLAYERS[2] { palette::INK } else { 0xffffff };
-    p = p.stroke_color(hex(ink)).fill_color(hex(ink)).line_width(0.16 * r);
-    match kind {
-        UnitKind::Knight => p
-            .begin_path()
-            .move_to(x, y - 0.6 * r)
-            .line_to(x, y + 0.55 * r)
-            .stroke()
-            .begin_path()
-            .move_to(x - 0.32 * r, y - 0.2 * r)
-            .line_to(x + 0.32 * r, y - 0.2 * r)
-            .stroke(),
-        UnitKind::Ram => {
-            // A log with a capped head on wheels.
-            let p = p
-                .begin_path()
-                .move_to(at.0 - 0.65 * r, at.1 - 0.15 * r)
-                .line_to(at.0 + 0.45 * r, at.1 - 0.15 * r)
-                .stroke();
-            let p = poly(
-                p,
-                &[
-                    (at.0 + 0.45 * r, at.1 - 0.4 * r),
-                    (at.0 + 0.75 * r, at.1 - 0.15 * r),
-                    (at.0 + 0.45 * r, at.1 + 0.1 * r),
-                ],
-            )
-            .fill();
-            let p = circle(p, (at.0 - 0.35 * r, at.1 + 0.4 * r), 0.16 * r).fill();
-            circle(p, (at.0 + 0.3 * r, at.1 + 0.4 * r), 0.16 * r).fill()
-        }
-    }
-}
-
-/// A hooded pawn.
-fn robber(p: Painter, (x, y): (f32, f32)) -> Painter {
-    let u = 0.2 * S;
-    let p = poly(
-        p,
-        &[
-            (x - 0.75 * u, y + 1.0 * u),
-            (x + 0.75 * u, y + 1.0 * u),
-            (x + 0.35 * u, y - 0.2 * u),
-            (x - 0.35 * u, y - 0.2 * u),
-        ],
-    )
-    .fill_color(hex(0x2b2b2e))
-    .fill()
-    .stroke_color(hex(0xd9d4c5))
-    .line_width(0.08 * u)
-    .stroke();
-    circle(p, (x, y - 0.55 * u), 0.48 * u).fill_color(hex(0x2b2b2e)).fill().stroke_color(hex(0xd9d4c5)).stroke()
+/// `+amount ★` in gold: victory points.
+fn points_badge(p: Painter, (x, y): (f32, f32), amount: u32, unit: f32, px1: f32) -> Painter {
+    let mut p = p.save().translate(x, y).scale(unit, unit);
+    p = art::shadow(p, 0.4, 10.0, 4.0);
+    p = art::rrect(p, (0.0, 0.0), 84.0, 40.0, 20.0).fill_style(art::vgrad(-20.0, 20.0, 0xffe08a, 0xe0a72e)).fill();
+    p = art::no_shadow(p);
+    p = art::rrect(p, (0.0, 0.0), 84.0, 40.0, 20.0).stroke_color(hex(0x8a5a10)).line_width(2.0).stroke();
+    p = art::star(p, (-20.0, 0.0), 13.0).fill_color(hex(0xffffff)).fill().stroke_color(hex(0x8a5a10)).stroke();
+    p = text_at(p, &format!("+{amount}"), (14.0, 1.0), 22.0, 0x5a3a08, 900, px1 / unit);
+    p.restore()
 }
 
 // ----- The view -----

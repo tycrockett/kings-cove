@@ -1,7 +1,9 @@
 //! King's Cove client: create or join a match by room code, wait in the
 //! lobby, then play on the board. Every rule is checked by the server.
 
+mod art;
 mod board;
+mod fx;
 mod hud;
 mod palette;
 mod state;

@@ -1,5 +1,6 @@
-//! Everything over the board: players and dice at the top, the inventory,
-//! hand, action tray and turn button at the bottom, trades, history.
+//! Everything over the board: players and dice at the top, the dock with
+//! the inventory, the build tray and the turn button at the bottom, trades,
+//! history and the winner.
 
 use kings_cove_engine::{
     Action, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, UnitKind, balance,
@@ -7,7 +8,8 @@ use kings_cove_engine::{
 use nsh_core::prelude::*;
 
 use crate::{
-    board,
+    art::{self, Glyph},
+    board, fx,
     palette::{self, hex, hexa},
     state::{AppState, Inspect, Mode, now_ms},
 };
@@ -22,7 +24,7 @@ pub fn bold(s: impl Into<String>, size: f32, color: u32) -> Text {
     label(s, size, color).font_weight(FontWeight::BOLD)
 }
 
-/// A pill button: `primary` fills it, `enabled` dims it.
+/// A pill button: `fill` colors it, `enabled` dims it.
 pub fn pill(text_: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: impl Fn() + 'static) -> View {
     let v = view()
         .px(px(14.0))
@@ -33,25 +35,74 @@ pub fn pill(text_: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: imp
         .bg(hex(fill))
         .opacity(if enabled { 1.0 } else { 0.4 })
         .child(bold(text_, 14.0, fg));
-    if enabled { v.active(|s| s.opacity(0.7)).on_press(on) } else { v }
+    if enabled { v.active(|s| s.opacity(0.7).scale(0.97)).on_press(on) } else { v }
 }
 
 fn panel() -> View {
     view()
-        .bg(hexa(palette::PAPER, 0.96))
+        .bg(hexa(palette::PAPER, 0.97))
         .rounded(px(14.0))
         .border_1()
         .border_color(hexa(palette::INK, 0.15))
         .shadow_md()
 }
 
-fn cost_text(c: &Resources) -> String {
-    Resource::ALL
+/// A resource's badge, `s` points across.
+pub fn resource_icon(r: Resource, s: f32) -> impl IntoElement {
+    canvas(move || art::resource_icon(Painter::new(), r, (s / 2.0, s / 2.0), s - 1.5, 1.0)).size(px(s))
+}
+
+fn glyph_icon(g: Glyph, color: u32, w: f32, h: f32) -> impl IntoElement {
+    canvas(move || art::glyph(Painter::new(), g, color, w, h)).w(px(w)).h(px(h))
+}
+
+fn star_icon(s: f32) -> impl IntoElement {
+    canvas(move || {
+        art::star(Painter::new(), (s / 2.0, s / 2.0 + 0.5), s / 2.0)
+            .fill_color(hex(palette::GOLD))
+            .fill()
+            .stroke_color(hex(0x8a5a10))
+            .line_width(1.0)
+            .stroke()
+    })
+    .size(px(s))
+}
+
+/// Two stacked cards: a hand of resources.
+fn cards_icon(s: f32) -> impl IntoElement {
+    canvas(move || {
+        let card = |p: Painter, x: f32, color: u32| {
+            art::rrect(p, (x, s / 2.0), s * 0.55, s * 0.8, 2.0)
+                .fill_color(hex(color))
+                .fill()
+                .stroke_color(hex(palette::INK))
+                .line_width(1.0)
+                .stroke()
+        };
+        card(card(Painter::new(), s * 0.38, 0xd9cfb8), s * 0.62, 0xfffaf0)
+    })
+    .size(px(s))
+}
+
+fn die_face(value: u8, s: f32) -> impl IntoElement {
+    canvas(move || art::die(Painter::new(), (s / 2.0, s / 2.0), s - 2.0, value, 0.0, 1.2)).size(px(s))
+}
+
+/// Resources as icons with counts; counts the player lacks (`have`) in red.
+fn cost_row(cost: &Resources, have: Option<&Resources>, icon: f32, font: f32) -> View {
+    let cells: Vec<View> = Resource::ALL
         .iter()
-        .filter(|&&r| c.get(r) > 0)
-        .map(|&r| format!("{}{}", c.get(r), palette::resource_letter(r)))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|&&r| cost.get(r) > 0)
+        .map(|&r| {
+            let short = have.is_some_and(|h| h.get(r) < cost.get(r));
+            view().flex_row().items_center().gap(px(1.0)).child(resource_icon(r, icon)).child(bold(
+                cost.get(r).to_string(),
+                font,
+                if short { palette::DANGER } else { palette::INK },
+            ))
+        })
+        .collect();
+    view().flex_row().items_center().gap(px(4.0)).child(cells)
 }
 
 fn resources_text(r: &Resources) -> String {
@@ -132,54 +183,39 @@ fn article(kind: BuildingKind) -> &'static str {
 
 // ----- Top -----
 
-fn die_face(value: u8, size: f32) -> impl IntoElement {
-    let pips: &[(f32, f32)] = match value {
-        1 => &[(0.5, 0.5)],
-        2 => &[(0.28, 0.28), (0.72, 0.72)],
-        3 => &[(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)],
-        4 => &[(0.28, 0.28), (0.72, 0.28), (0.28, 0.72), (0.72, 0.72)],
-        5 => &[(0.25, 0.25), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75), (0.75, 0.75)],
-        _ => &[(0.28, 0.22), (0.72, 0.22), (0.28, 0.5), (0.72, 0.5), (0.28, 0.78), (0.72, 0.78)],
-    };
-    let pips = pips.to_vec();
-    canvas(move || {
-        let mut p = Painter::new()
-            .begin_path()
-            .round_rect(bounds(point(px(1.0), px(1.0)), self::size(px(size - 2.0), px(size - 2.0))), px(size * 0.2))
-            .fill_color(hex(0xfbf8f0))
-            .fill()
-            .stroke_color(hex(palette::INK))
-            .line_width(1.5)
-            .stroke()
-            .fill_color(hex(palette::INK));
-        for &(x, y) in &pips {
-            p = p.begin_path().arc(x * size, y * size, size * 0.09, 0.0, std::f32::consts::TAU).fill();
-        }
-        p
-    })
-    .size(px(size))
-}
-
+/// The corner the rolled dice fly into; empty while they are in the air.
 fn dice(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let dice = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().and_then(|g| g.dice)));
-        let tumbling = app.dice_until.get() > app.clock.get().max(now_ms() - 1.0);
-        let (a, b) = if tumbling {
-            let t = (app.clock.get() / 70.0) as u64;
-            ((t * 7 % 6) as u8 + 1, (t * 13 % 6) as u8 + 1)
-        } else {
-            dice?
-        };
+    let shown = computed(move || {
+        if app.dice_hidden.get() {
+            return None;
+        }
+        app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().and_then(|g| g.dice)))
+    });
+    view().flex_row().justify_end().w(px(fx::SLOT_WIDTH)).h(px(fx::SLOT_DIE)).child(dynamic(move || {
+        let (a, b) = shown.get()?;
+        let sum = a + b;
+        let fill = if sum == 7 { palette::DANGER } else { palette::GOLD };
         Some(
             view()
                 .flex_row()
-                .gap(px(4.0))
                 .items_center()
-                .child(die_face(a, 26.0))
-                .child(die_face(b, 26.0))
-                .child(if tumbling { None } else { Some(bold(format!("{}", a + b), 15.0, 0xffffff).ml(px(2.0))) }),
+                .gap(px(4.0))
+                .child(die_face(a, fx::SLOT_DIE))
+                .child(die_face(b, fx::SLOT_DIE))
+                .child(
+                    view()
+                        .size(px(24.0))
+                        .rounded(px(12.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(hex(fill))
+                        .border_2()
+                        .border_color(hex(0xffffff))
+                        .bind_motion(&motion().entering(MotionPreset::PopIn))
+                        .child(bold(sum.to_string(), 12.0, palette::ink_on(fill))),
+                ),
         )
-    })
+    }))
 }
 
 fn players_bar(app: AppState) -> impl IntoElement {
@@ -192,43 +228,59 @@ fn players_bar(app: AppState) -> impl IntoElement {
             .map(|p| {
                 let active = g.current == p.id && !matches!(g.phase, Phase::Finished { .. });
                 let me = p.id == mv.seat;
+                let color = palette::player(p.id);
                 let cards = p.cards.knights + p.cards.rams;
-                view()
+                let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                let stats = view()
                     .flex_row()
                     .items_center()
-                    .gap(px(5.0))
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(12.0))
-                    .bg(hexa(palette::PAPER, if active { 0.98 } else { 0.78 }))
+                    .gap(px(3.0))
+                    .child(star_icon(12.0))
+                    .child(bold(g.points(p.id).to_string(), 11.0, palette::INK))
+                    .child(view().w(px(3.0)))
+                    .child(cards_icon(12.0))
+                    .child(bold(p.resources.total().to_string(), 11.0, palette::MUTED))
+                    .child((cards > 0).then(|| {
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .child(view().w(px(3.0)))
+                            .child(glyph_icon(Glyph::Unit(UnitKind::Knight), color, 12.0, 12.0))
+                            .child(bold(cards.to_string(), 11.0, palette::MUTED))
+                    }));
+                let chip = view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .pl(px(4.0))
+                    .pr(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(18.0))
+                    .bg(hexa(palette::PAPER, if active { 1.0 } else { 0.8 }))
                     .border_2()
                     .border_color(hex(if active { palette::GOLD } else { palette::PAPER_DIM }))
                     .child(
                         view()
-                            .size(px(12.0))
-                            .rounded(px(6.0))
-                            .bg(hex(palette::player(p.id)))
-                            .border_1()
-                            .border_color(hex(palette::INK)),
+                            .size(px(28.0))
+                            .rounded(px(14.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(hex(color))
+                            .border_2()
+                            .border_color(hex(if active { palette::GOLD } else { 0xffffff }))
+                            .child(bold(initial, 13.0, palette::ink_on(color))),
                     )
                     .child(
                         view()
+                            .gap(px(1.0))
                             .child(
-                                bold(if me { format!("{} (you)", p.name) } else { p.name.clone() }, 11.0, palette::INK)
+                                bold(if me { format!("{} (you)", p.name) } else { p.name.clone() }, 11.5, palette::INK)
                                     .number_of_lines(1)
-                                    .max_w(px(74.0)),
+                                    .max_w(px(78.0)),
                             )
-                            .child(label(
-                                format!(
-                                    "{} VP · {} res{}",
-                                    g.points(p.id),
-                                    p.resources.total(),
-                                    if cards > 0 { format!(" · {cards} cards") } else { String::new() }
-                                ),
-                                10.0,
-                                palette::MUTED,
-                            )),
-                    )
+                            .child(stats),
+                    );
+                if active { chip.shadow_lg() } else { chip }
             })
             .collect();
         Some(view().flex_row().flex_wrap().gap(px(5.0)).flex_1().child(chips))
@@ -241,13 +293,13 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
         Phase::Finished { winner } => format!("{} wins!", name(names, winner)),
         Phase::Setup { step, placing } if g.current == seat => match placing {
             SetupPlacing::Building => {
-                format!("Place your starting {}", g.setup_building_kind(step).name())
+                format!("Tap a glowing spot for your starting {}", g.setup_building_kind(step).name())
             }
-            SetupPlacing::Road { .. } => "Place a road beside it".to_owned(),
+            SetupPlacing::Road { .. } => "Tap a glowing edge for a road beside it".to_owned(),
         },
         Phase::Setup { .. } => format!("{who} is placing…"),
         Phase::Playing if g.current != seat => format!("{who}'s turn"),
-        Phase::Playing if g.dice.is_none() => "Your turn: roll the dice".to_owned(),
+        Phase::Playing if g.dice.is_none() => "Your turn! Roll the dice".to_owned(),
         Phase::Playing => match app.mode.get() {
             Mode::Road => "Tap a glowing edge to build a road".to_owned(),
             Mode::Outpost => "Tap a spot on your roads for an outpost".to_owned(),
@@ -260,7 +312,7 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
             },
             Mode::Robber(_) => "Tap any free tile to move the robber".to_owned(),
             Mode::Idle if g.robber_relocation => "You rolled 7: tap a robber to move it".to_owned(),
-            Mode::Idle => "Your turn: build, trade, or command units".to_owned(),
+            Mode::Idle => "Build, trade, or command your units".to_owned(),
         },
     }
 }
@@ -319,15 +371,15 @@ fn top(app: AppState) -> impl IntoElement {
                     .child(dynamic(move || {
                         let round = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.round)))?;
                         let online = app.connected.get();
-                        Some(label(
+                        Some(bold(
                             if !online {
                                 "reconnecting…".to_owned()
                             } else if round == 0 {
-                                "setup".to_owned()
+                                "SETUP".to_owned()
                             } else {
-                                format!("round {round}")
+                                format!("ROUND {round}")
                             },
-                            11.0,
+                            10.0,
                             if online { 0xe7dfcb } else { palette::GOLD },
                         ))
                     }))
@@ -346,20 +398,30 @@ fn top(app: AppState) -> impl IntoElement {
         .child(dynamic(move || {
             let view = app.view.get()?;
             let g = view.game.as_ref()?;
-            let (main, color) = match app.inspect.get() {
-                Some(i) => (inspect_text(g, &view.players, i), palette::INK),
-                None => (status_text(app, g, view.seat, &view.players), palette::INK),
+            let inspecting = app.inspect.get();
+            let my_turn = g.is_active(view.seat) && inspecting.is_none();
+            let main = match inspecting {
+                Some(i) => inspect_text(g, &view.players, i),
+                None => status_text(app, g, view.seat, &view.players),
             };
-            let last = g.events.iter().rev().find_map(|e| describe(&view.players, &e.event));
+            // The dice are still in the air: keep their result for the landing.
+            let last = if app.dice_hidden.get() {
+                Some("Rolling…".to_owned())
+            } else {
+                g.events.iter().rev().find_map(|e| describe(&view.players, &e.event))
+            };
             Some(
                 panel()
                     .self_start()
                     .px(px(12.0))
                     .py(px(7.0))
                     .gap(px(2.0))
+                    .bg(hexa(if my_turn { 0xfff0c2 } else { palette::PAPER }, 0.97))
+                    .border_color(hex(if my_turn { palette::GOLD } else { palette::PAPER_DIM }))
+                    .border_2()
                     .active(|s| s.opacity(0.8))
                     .on_press(move || app.history_open.update(|o| *o = !*o))
-                    .child(bold(main, 13.0, color))
+                    .child(bold(main, 13.5, palette::INK))
                     .child(last.map(|l| label(l, 11.0, palette::MUTED).number_of_lines(1))),
             )
         }))
@@ -391,29 +453,37 @@ fn top(app: AppState) -> impl IntoElement {
 
 // ----- Bottom -----
 
-fn inventory(app: AppState, g: &Game, seat: PlayerId) -> View {
+/// The player's resources and unit cards; resources just collected bounce
+/// as their badges rise from the board.
+fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>) -> View {
     let me = &g.players[seat.index()];
     let can_deploy = g.is_active(seat) && g.dice.is_some();
-    let resources = Resource::ALL.map(|r| {
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(5.0))
-            .px(px(8.0))
-            .py(px(6.0))
-            .rounded(px(10.0))
-            .bg(hexa(palette::PAPER, 0.95))
-            .child(
-                view()
-                    .size(px(16.0))
-                    .rounded(px(4.0))
-                    .bg(hex(palette::resource(r)))
-                    .border_1()
-                    .border_color(hex(palette::shade(palette::resource(r), 0.6))),
-            )
-            .child(bold(me.resources.get(r).to_string(), 15.0, palette::INK))
-            .child(label(r.name(), 9.0, palette::MUTED))
-    });
+    let delay = (app.gains_at.get() - now_ms()).max(0.0) as f32;
+    let resources: Vec<View> = Resource::ALL
+        .iter()
+        .map(|&r| {
+            let n = me.resources.get(r);
+            let chip = view()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .pl(px(4.0))
+                .pr(px(8.0))
+                .py(px(4.0))
+                .rounded(px(12.0))
+                .bg(hex(0xfffdf6))
+                .border_1()
+                .border_color(hexa(palette::INK, 0.12))
+                .opacity(if n > 0 { 1.0 } else { 0.6 })
+                .child(resource_icon(r, 26.0))
+                .child(bold(n.to_string(), 18.0, palette::INK).min_w(px(11.0)));
+            if before.is_some_and(|b| n > b.get(r)) {
+                chip.bind_motion(&motion().entering(MotionPreset::Tada.spec().timing(|t| t.delay(delay))))
+            } else {
+                chip
+            }
+        })
+        .collect();
     let card = |kind: UnitKind, count: u32| {
         let mode = Mode::Deploy(kind);
         let selected = app.mode.get_untracked() == mode;
@@ -421,19 +491,16 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId) -> View {
         let v = view()
             .flex_row()
             .items_center()
-            .gap(px(4.0))
-            .px(px(8.0))
-            .py(px(6.0))
-            .rounded(px(10.0))
-            .bg(hex(if selected { palette::GOLD } else { 0x5a4a3a }))
+            .gap(px(3.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .rounded(px(12.0))
+            .bg(hex(if selected { palette::GOLD } else { 0x4a3c30 }))
             .opacity(if count > 0 { 1.0 } else { 0.45 })
-            .child(bold(
-                format!("{} ×{count}", if kind == UnitKind::Knight { "Knight" } else { "Ram" }),
-                12.0,
-                if selected { palette::INK } else { 0xffffff },
-            ));
+            .child(glyph_icon(Glyph::Unit(kind), palette::player(seat), 22.0, 26.0))
+            .child(bold(format!("×{count}"), 14.0, if selected { palette::INK } else { 0xffffff }));
         if enabled {
-            v.active(|s| s.opacity(0.7)).on_press(move || {
+            v.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || {
                 app.inspect.set(None);
                 app.mode.set(if app.mode.get_untracked() == mode { Mode::Idle } else { mode });
             })
@@ -443,41 +510,82 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId) -> View {
     };
     view()
         .flex_row()
-        .flex_wrap()
+        .items_center()
         .gap(px(5.0))
-        .child(resources.to_vec())
+        .child(view().flex_row().flex_1().gap(px(4.0)).child(resources))
         .child(card(UnitKind::Knight, me.cards.knights))
         .child(card(UnitKind::Ram, me.cards.rams))
 }
 
 struct TrayItem {
     title: &'static str,
+    glyph: Glyph,
     cost: Resources,
     mode: Option<Mode>,
     action: Option<Action>,
 }
 
+/// Every build, upgrade and card with its price; usable ones light up on
+/// the player's turn, the rest stay visible so prices can be planned for.
 fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
-    let my_move = g.is_active(seat) && g.dice.is_some();
+    let my_move = g.is_active(seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing);
+    let have = g.players[seat.index()].resources;
     let items = [
-        TrayItem { title: "Road", cost: balance::ROAD_COST, mode: Some(Mode::Road), action: None },
-        TrayItem { title: "Outpost", cost: balance::OUTPOST_COST, mode: Some(Mode::Outpost), action: None },
-        TrayItem { title: "Town ↑", cost: balance::TOWN_UPGRADE_COST, mode: Some(Mode::UpgradeTown), action: None },
-        TrayItem { title: "City ↑", cost: balance::CITY_UPGRADE_COST, mode: Some(Mode::UpgradeCity), action: None },
+        TrayItem { title: "Road", glyph: Glyph::Road, cost: balance::ROAD_COST, mode: Some(Mode::Road), action: None },
         TrayItem {
-            title: "Knight card",
+            title: "Outpost",
+            glyph: Glyph::Building(BuildingKind::Outpost),
+            cost: balance::OUTPOST_COST,
+            mode: Some(Mode::Outpost),
+            action: None,
+        },
+        TrayItem {
+            title: "Town",
+            glyph: Glyph::Building(BuildingKind::Town),
+            cost: balance::TOWN_UPGRADE_COST,
+            mode: Some(Mode::UpgradeTown),
+            action: None,
+        },
+        TrayItem {
+            title: "City",
+            glyph: Glyph::Building(BuildingKind::City),
+            cost: balance::CITY_UPGRADE_COST,
+            mode: Some(Mode::UpgradeCity),
+            action: None,
+        },
+        TrayItem {
+            title: "Knight",
+            glyph: Glyph::Unit(UnitKind::Knight),
             cost: balance::KNIGHT_CARD_COST,
             mode: None,
             action: Some(Action::BuyCard(UnitKind::Knight)),
         },
         TrayItem {
-            title: "Ram card",
+            title: "Ram",
+            glyph: Glyph::Unit(UnitKind::Ram),
             cost: balance::RAM_CARD_COST,
             mode: None,
             action: Some(Action::BuyCard(UnitKind::Ram)),
         },
     ];
+    let color = palette::player(seat);
     let current = app.mode.get_untracked();
+    let tile = |glyph: Glyph, title: &str, selected: bool, opacity: f32| {
+        view()
+            .items_center()
+            .gap(px(2.0))
+            .px(px(6.0))
+            .pt(px(5.0))
+            .pb(px(6.0))
+            .rounded(px(14.0))
+            .min_w(px(68.0))
+            .bg(hex(if selected { palette::GOLD } else { 0xfffdf6 }))
+            .border_2()
+            .border_color(hex(if selected { 0xb8860b } else { palette::PAPER_DIM }))
+            .opacity(opacity)
+            .child(glyph_icon(glyph, color, 40.0, 26.0))
+            .child(bold(title.to_owned(), 11.5, palette::INK))
+    };
     let buttons: Vec<View> = items
         .into_iter()
         .map(|item| {
@@ -488,20 +596,19 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                     _ => false,
                 };
             let selected = item.mode.is_some_and(|m| m == current);
-            let v = view()
-                .items_center()
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(10.0))
-                .min_w(px(62.0))
-                .bg(hex(if selected { palette::GOLD } else { palette::PAPER }))
-                .opacity(if enabled || selected { 1.0 } else { 0.45 })
-                .child(bold(item.title, 12.0, palette::INK))
-                .child(label(cost_text(&item.cost), 10.0, palette::MUTED));
+            let opacity = if enabled || selected {
+                1.0
+            } else if my_move {
+                0.62
+            } else {
+                0.5
+            };
+            let v =
+                tile(item.glyph, item.title, selected, opacity).child(cost_row(&item.cost, Some(&have), 14.0, 11.5));
             if !(enabled || selected) {
                 return v;
             }
-            v.active(|s| s.opacity(0.7)).on_press(move || {
+            v.active(|s| s.opacity(0.75).scale(0.95)).on_press(move || {
                 app.inspect.set(None);
                 match (item.mode, item.action.clone()) {
                     (Some(mode), _) => app.mode.set(if app.mode.get_untracked() == mode { Mode::Idle } else { mode }),
@@ -511,60 +618,94 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
             })
         })
         .collect();
+    let trading = app.trade_open.get_untracked();
     let trade_enabled = my_move && g.trade.is_none();
-    let trade = view()
-        .items_center()
-        .justify_center()
-        .px(px(12.0))
-        .py(px(6.0))
-        .rounded(px(10.0))
-        .bg(hex(if app.trade_open.get_untracked() { palette::GOLD } else { 0x2f6db5 }))
-        .opacity(if trade_enabled { 1.0 } else { 0.45 })
-        .child(bold("Trade", 12.0, if app.trade_open.get_untracked() { palette::INK } else { 0xffffff }))
-        .child(label("offer", 10.0, if app.trade_open.get_untracked() { palette::INK } else { 0xdfe8f5 }));
+    let trade = tile(Glyph::Trade, "Trade", trading, if trade_enabled || trading { 1.0 } else { 0.5 }).child(label(
+        "offer",
+        11.0,
+        palette::MUTED,
+    ));
     let trade = if trade_enabled {
-        trade.active(|s| s.opacity(0.7)).on_press(move || app.trade_open.update(|o| *o = !*o))
+        trade.active(|s| s.opacity(0.75).scale(0.95)).on_press(move || app.trade_open.update(|o| *o = !*o))
     } else {
         trade
     };
     view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(trade)))
 }
 
-fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> View {
+/// The one big button: roll, end the turn, or whose turn it is.
+fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<View> {
     let busy = app.busy.get();
-    match g.phase {
+    let current = name(names, g.current);
+    Some(match g.phase {
         Phase::Playing if g.current == seat && g.dice.is_none() => {
-            big_button("Roll dice", palette::GOLD, palette::INK, !busy, move || app.send(Action::Roll))
+            let breathe =
+                MotionSpec::new(KeyframeTiming::new(750.0).infinite().direction(PlaybackDirection::Alternate))
+                    .values(MotionChannel::Scale, [1.0, 1.05]);
+            let roll = big_button(palette::GOLD, !busy, move || app.send(Action::Roll))
+                .bg_linear(deg(180.0))
+                .gradient_from(hex(0xffd978))
+                .gradient_to(hex(0xe3a630))
+                .border_2()
+                .border_color(hex(0xffffff))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(die_face(5, 24.0))
+                        .child(bold("Roll the dice", 19.0, palette::INK))
+                        .child(die_face(3, 24.0)),
+                );
+            if busy { roll } else { roll.bind_motion(&motion().entering(breathe)) }
         }
-        Phase::Playing if g.current == seat => big_button("End turn", palette::GO, 0xffffff, !busy, move || {
+        Phase::Playing if g.current == seat => big_button(palette::GO, !busy, move || {
             app.mode.set(Mode::Idle);
             app.trade_open.set(false);
             app.send(Action::EndTurn)
-        }),
-        Phase::Playing => {
-            big_button(format!("Waiting for {}", name(names, g.current)), 0x55606a, 0xffffff, false, || {})
-        }
-        _ => view(),
-    }
+        })
+        .child(bold("End turn", 18.0, 0xffffff)),
+        Phase::Setup { .. } if g.current == seat => big_button(0xfff0c2, false, || {})
+            .border_2()
+            .border_color(hex(palette::GOLD))
+            .child(bold("Your move: tap the board", 16.0, palette::INK)),
+        Phase::Playing | Phase::Setup { .. } => big_button(0x3d4750, false, || {}).child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    view()
+                        .size(px(14.0))
+                        .rounded(px(7.0))
+                        .bg(hex(palette::player(g.current)))
+                        .border_1()
+                        .border_color(hex(0xffffff)),
+                )
+                .child(bold(format!("{current} is playing…"), 16.0, 0xffffff)),
+        ),
+        Phase::Finished { .. } => return None,
+    })
 }
 
-fn big_button(title: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: impl Fn() + 'static) -> View {
-    let v = view()
-        .h(px(50.0))
-        .rounded(px(25.0))
-        .items_center()
-        .justify_center()
-        .bg(hex(fill))
-        .shadow_md()
-        .opacity(if enabled { 1.0 } else { 0.6 })
-        .child(bold(title, 17.0, fg));
-    if enabled { v.active(|s| s.opacity(0.75).scale(0.98)).on_press(on) } else { v }
+fn big_button(fill: u32, enabled: bool, on: impl Fn() + 'static) -> View {
+    let v = view().h(px(52.0)).rounded(px(26.0)).items_center().justify_center().bg(hex(fill)).shadow_md();
+    if enabled { v.active(|s| s.opacity(0.8).scale(0.97)).on_press(on) } else { v }
 }
 
 /// The open offer: answer it, or watch it as its maker.
 fn trade_offer(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<View> {
     let offer = g.trade.as_ref()?;
     let from = name(names, offer.from);
+    let swap = |give: &Resources, want: &Resources| {
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .child(cost_row(give, None, 20.0, 14.0))
+            .child(glyph_icon(Glyph::Trade, 0, 26.0, 20.0))
+            .child(cost_row(want, None, 20.0, 14.0))
+    };
     if offer.from == seat {
         return Some(
             panel()
@@ -576,7 +717,9 @@ fn trade_offer(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Opt
                 .child(
                     view()
                         .flex_1()
-                        .child(bold(format!("Offering {} for {}", offer.give, offer.want), 13.0, palette::INK))
+                        .gap(px(4.0))
+                        .child(bold("Your offer", 12.0, palette::MUTED))
+                        .child(swap(&offer.give, &offer.want))
                         .child(label(
                             if offer.declined.is_empty() {
                                 "Waiting for answers…".to_owned()
@@ -605,7 +748,18 @@ fn trade_offer(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Opt
             .gap(px(8.0))
             .border_2()
             .border_color(hex(palette::GOLD))
-            .child(bold(format!("{from} offers {} for your {}", offer.give, offer.want), 14.0, palette::INK))
+            .bind_motion(&motion().entering(MotionPreset::BounceIn))
+            .child(bold(format!("{from} offers a trade"), 14.0, palette::INK))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(label("You get", 12.0, palette::MUTED))
+                    .child(cost_row(&offer.give, None, 22.0, 15.0))
+                    .child(label("for", 12.0, palette::MUTED))
+                    .child(cost_row(&offer.want, Some(&g.players[seat.index()].resources), 22.0, 15.0)),
+            )
             .child(
                 view()
                     .flex_row()
@@ -629,23 +783,18 @@ fn trade_composer(app: AppState) -> impl IntoElement {
                 .map(|&r| {
                     let n = current.get(r);
                     let max = limit.map_or(9, |l| l.get(r));
-                    view()
-                        .flex_1()
-                        .items_center()
-                        .gap(px(2.0))
-                        .child(view().size(px(14.0)).rounded(px(3.0)).bg(hex(palette::resource(r))))
-                        .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(3.0))
-                                .child(step_button("−", n > 0, move || side.update(|s| *s.get_mut(r) -= 1)))
-                                .child(bold(n.to_string(), 14.0, palette::INK).min_w(px(14.0)).text_center())
-                                .child(step_button("+", n < max, move || side.update(|s| *s.get_mut(r) += 1))),
-                        )
+                    view().flex_1().items_center().gap(px(3.0)).child(resource_icon(r, 22.0)).child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(3.0))
+                            .child(step_button("−", n > 0, move || side.update(|s| *s.get_mut(r) -= 1)))
+                            .child(bold(n.to_string(), 15.0, palette::INK).min_w(px(14.0)).text_center())
+                            .child(step_button("+", n < max, move || side.update(|s| *s.get_mut(r) += 1))),
+                    )
                 })
                 .collect();
-            view().gap(px(3.0)).child(label(title, 11.0, palette::MUTED)).child(view().flex_row().child(cells))
+            view().gap(px(4.0)).child(label(title, 11.0, palette::MUTED)).child(view().flex_row().child(cells))
         })
     };
     dynamic(move || {
@@ -679,6 +828,7 @@ fn trade_composer(app: AppState) -> impl IntoElement {
                 .px(px(12.0))
                 .py(px(10.0))
                 .gap(px(8.0))
+                .bind_motion(&motion().entering(MotionPreset::FadeInUp))
                 .child(stepper_row("You give", give, Some(mine)))
                 .child(stepper_row("You get", want, None))
                 .child(view().flex_row().flex_wrap().gap(px(5.0)).child(targets))
@@ -704,24 +854,24 @@ fn trade_composer(app: AppState) -> impl IntoElement {
 
 fn step_button(t: &'static str, enabled: bool, on: impl Fn() + 'static) -> View {
     let v = view()
-        .size(px(24.0))
-        .rounded(px(12.0))
+        .size(px(26.0))
+        .rounded(px(13.0))
         .items_center()
         .justify_center()
         .bg(hex(palette::PAPER_DIM))
         .opacity(if enabled { 1.0 } else { 0.35 })
-        .child(bold(t, 14.0, palette::INK));
+        .child(bold(t, 15.0, palette::INK));
     if enabled { v.active(|s| s.opacity(0.6)).on_press(on) } else { v }
 }
 
 fn bottom(app: AppState) -> impl IntoElement {
+    // The resources last shown, to tell which just grew.
+    let shown = stored(None::<Resources>);
     view()
         .absolute()
         .left(px(0.0))
         .right(px(0.0))
         .bottom(px(0.0))
-        .px(px(8.0))
-        .pb_safe_area_plus(px(10.0))
         .gap(px(6.0))
         .pointer_events(PointerEvents::BoxNone)
         .child(dynamic(move || {
@@ -732,27 +882,41 @@ fn bottom(app: AppState) -> impl IntoElement {
                     .py(px(8.0))
                     .rounded(px(16.0))
                     .bg(hexa(0x3a1f1c, 0.92))
+                    .bind_motion(&motion().entering(MotionPreset::FadeInUp))
                     .child(bold(t, 13.0, 0xffffff))
             })
         }))
-        .child(trade_composer(app))
+        .child(view().px(px(8.0)).gap(px(6.0)).pointer_events(PointerEvents::BoxNone).child(trade_composer(app)).child(
+            dynamic(move || {
+                let view_ = app.view.get()?;
+                let g = view_.game.as_ref()?;
+                trade_offer(app, g, view_.seat, &view_.players)
+            }),
+        ))
         .child(dynamic(move || {
             let view_ = app.view.get()?;
             let g = view_.game.as_ref()?;
             let _ = app.mode.get();
             let _ = app.trade_open.get();
             let seat = view_.seat;
-            let setup = matches!(g.phase, Phase::Setup { .. });
+            let mine = g.players[seat.index()].resources;
+            let before = shown.replace(Some(mine));
             Some(
                 view()
-                    .gap(px(6.0))
-                    .child(trade_offer(app, g, seat, &view_.players))
-                    .child(inventory(app, g, seat))
-                    .child(if setup || !g.is_active(seat) || g.dice.is_none() {
-                        None
-                    } else {
-                        Some(tray(app, g, seat))
-                    })
+                    .bg_linear(deg(180.0))
+                    .gradient_from(hex(0xfbf6ea))
+                    .gradient_to(hex(0xe9dfc6))
+                    .rounded_tl(px(22.0))
+                    .rounded_tr(px(22.0))
+                    .border_t(px(2.0))
+                    .border_color(hex(if g.is_active(seat) { palette::GOLD } else { 0xcbbf9f }))
+                    .shadow_lg()
+                    .px(px(8.0))
+                    .pt(px(8.0))
+                    .pb_safe_area_plus(px(8.0))
+                    .gap(px(7.0))
+                    .child(inventory(app, g, seat, before))
+                    .child(tray(app, g, seat))
                     .child(primary(app, g, seat, &view_.players)),
             )
         }))
@@ -764,42 +928,72 @@ fn winner(app: AppState) -> impl IntoElement {
         let g = view_.game.as_ref()?;
         let w = g.winner()?;
         let me = w == view_.seat;
+        let color = palette::player(w);
         Some(
-            view().absolute().inset_0().items_center().justify_center().bg(hexa(0x000000, 0.45)).child(
+            view().absolute().inset_0().items_center().justify_center().bg(hexa(0x000000, 0.5)).child(
                 panel()
                     .items_center()
-                    .gap(px(10.0))
-                    .px(px(28.0))
-                    .py(px(24.0))
-                    .child(
-                        view()
-                            .size(px(26.0))
-                            .rounded(px(13.0))
-                            .bg(hex(palette::player(w)))
-                            .border_2()
-                            .border_color(hex(palette::INK)),
-                    )
+                    .gap(px(12.0))
+                    .px(px(30.0))
+                    .py(px(26.0))
+                    .border_2()
+                    .border_color(hex(palette::GOLD))
+                    .bind_motion(&motion().entering(MotionPreset::BounceIn))
+                    .child(glyph_icon(Glyph::Building(BuildingKind::City), color, 80.0, 60.0))
                     .child(bold(
-                        if me { "You win!".to_owned() } else { format!("{} wins", name(&view_.players, w)) },
-                        26.0,
+                        if me { "You win!".to_owned() } else { format!("{} wins!", name(&view_.players, w)) },
+                        30.0,
                         palette::INK,
                     ))
-                    .child(label(
-                        g.players
-                            .iter()
-                            .map(|p| format!("{} {}", p.name, g.points(p.id)))
-                            .collect::<Vec<_>>()
-                            .join(" · "),
-                        13.0,
-                        palette::MUTED,
-                    ))
+                    .child(
+                        view().flex_row().flex_wrap().justify_center().gap(px(10.0)).child(
+                            g.players
+                                .iter()
+                                .map(|p| {
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(4.0))
+                                        .child(
+                                            view()
+                                                .size(px(12.0))
+                                                .rounded(px(6.0))
+                                                .bg(hex(palette::player(p.id)))
+                                                .border_1()
+                                                .border_color(hex(palette::INK)),
+                                        )
+                                        .child(bold(p.name.clone(), 13.0, palette::INK))
+                                        .child(star_icon(13.0))
+                                        .child(bold(g.points(p.id).to_string(), 13.0, palette::INK))
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                    )
                     .child(pill("Leave match", palette::INK, 0xffffff, true, move || app.leave())),
             ),
         )
     })
 }
 
-/// The game screen: the board under its HUD.
+/// A gold frame that glows around the screen while it is the player's turn.
+fn turn_glow(app: AppState) -> impl IntoElement {
+    let mine = computed(move || {
+        app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.is_active(v.seat)))).unwrap_or(false)
+    });
+    dynamic(move || {
+        mine.get().then(|| {
+            view()
+                .absolute()
+                .inset_0()
+                .border(px(5.0))
+                .border_color(hexa(palette::GOLD, 0.9))
+                .pointer_events(PointerEvents::None)
+                .bind_motion(&motion().entering(MotionPreset::Glow))
+        })
+    })
+}
+
+/// The game screen: the board, the turn frame, the HUD, the celebrations.
 pub fn game_screen(app: AppState) -> impl IntoElement {
     // Leave a selection that no longer applies (the unit died, the 7 passed).
     effect(move || {
@@ -820,7 +1014,9 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .flex_1()
         .bg(hex(palette::TABLE))
         .child(board::board_view(app))
+        .child(turn_glow(app))
         .child(top(app))
         .child(bottom(app))
         .child(winner(app))
+        .child(fx::fx_layer(app))
 }
