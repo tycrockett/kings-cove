@@ -32,6 +32,9 @@ jobs:
         # the crate's Linux platform dependency, which nsh compiles as well.
         run: sudo apt-get update && sudo apt-get install -y clang llvm pkg-config libgtk-4-dev
       - name: Install nsh
+        # The release the app's nsh crates are built for: a newer nsh refuses them.
+        env:
+          NSH_VERSION: v0.6.1
         run: |
           curl -fsSL https://nsh.dev/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
