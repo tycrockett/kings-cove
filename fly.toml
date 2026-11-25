@@ -1,0 +1,35 @@
+# The King's Cove server on Fly.io: `fly deploy` from the repository root.
+app = "kings-cove"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  KC_ADDR = "0.0.0.0:8080"
+  KC_DATA = "/data/kings-cove-data.json"
+
+# Matches are saved here, so they survive restarts and deploys.
+[mounts]
+  source = "kings_cove_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # One machine owns every match: it wakes on the first request and sleeps
+  # when no one is playing (matches reload from the volume).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

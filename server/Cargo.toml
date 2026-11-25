@@ -1,0 +1,12 @@
+[package]
+name = "kings-cove-server"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tiny_http = "0.12"
+kings-cove-engine.workspace = true
+kings-cove-protocol.workspace = true
