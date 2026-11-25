@@ -51,15 +51,6 @@ impl BuildingKind {
         }
     }
 
-    /// The level below; `None` means a downgrade destroys it.
-    pub fn downgrade(self) -> Option<BuildingKind> {
-        match self {
-            BuildingKind::Outpost => None,
-            BuildingKind::Town => Some(BuildingKind::Outpost),
-            BuildingKind::City => Some(BuildingKind::Town),
-        }
-    }
-
     /// Towns and cities: count toward robber capacity and deploy units.
     pub fn is_settlement(self) -> bool {
         self != BuildingKind::Outpost
@@ -82,27 +73,156 @@ pub struct Building {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnitKind {
-    /// Fights robbers, knights and rams.
+    /// Fights robbers and enemy knights.
     Knight,
-    /// Fights buildings.
-    Ram,
 }
 
 impl UnitKind {
-    pub const ALL: [UnitKind; 2] = [UnitKind::Knight, UnitKind::Ram];
+    pub const ALL: [UnitKind; 1] = [UnitKind::Knight];
 
     pub fn card_cost(self) -> Resources {
         match self {
             UnitKind::Knight => balance::KNIGHT_CARD_COST,
-            UnitKind::Ram => balance::RAM_CARD_COST,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             UnitKind::Knight => "knight",
-            UnitKind::Ram => "ram",
         }
+    }
+}
+
+/// A spell a player with a city casts on their turn. All share the caster's
+/// mana; each has its own price.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Spell {
+    /// A wood or food tile produces nothing for its next rolls.
+    Frost,
+    /// A wood or food tile produces double for its next rolls.
+    Bounty,
+    /// A stone or iron tile produces nothing for its next rolls.
+    Rockslide,
+    /// A stone or iron tile produces double for its next rolls.
+    Motherlode,
+    /// No robber may enter or stay on a tile for some rounds.
+    Ward,
+    /// Moves a robber to any free tile.
+    Lure,
+    /// Two tiles trade numbers for their next rolls.
+    Swap,
+    /// The caster's knights are ready to act again this turn.
+    Rally,
+    /// The caster's next roll pays one of each resource their buildings touch.
+    Windfall,
+}
+
+/// How long a spell on a tile lasts.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Lasting {
+    /// Its charges are used one per roll of the tile's number.
+    Rolls,
+    /// Its charges are used one per round's end.
+    Rounds,
+}
+
+impl Spell {
+    pub const ALL: [Spell; 9] = [
+        Spell::Frost,
+        Spell::Bounty,
+        Spell::Rockslide,
+        Spell::Motherlode,
+        Spell::Ward,
+        Spell::Lure,
+        Spell::Swap,
+        Spell::Rally,
+        Spell::Windfall,
+    ];
+
+    pub fn cost(self) -> Resources {
+        match self {
+            Spell::Frost => balance::FROST_COST,
+            Spell::Bounty => balance::BOUNTY_COST,
+            Spell::Rockslide => balance::ROCKSLIDE_COST,
+            Spell::Motherlode => balance::MOTHERLODE_COST,
+            Spell::Ward => balance::WARD_COST,
+            Spell::Lure => balance::LURE_COST,
+            Spell::Swap => balance::SWAP_COST,
+            Spell::Rally => balance::RALLY_COST,
+            Spell::Windfall => balance::WINDFALL_COST,
+        }
+    }
+
+    /// How many tiles it is cast on: for Lure the robber's, then where it
+    /// goes; for Swap the two that trade numbers.
+    pub fn targets(self) -> usize {
+        match self {
+            Spell::Frost | Spell::Bounty | Spell::Rockslide | Spell::Motherlode | Spell::Ward => 1,
+            Spell::Lure | Spell::Swap => 2,
+            Spell::Rally | Spell::Windfall => 0,
+        }
+    }
+
+    /// The tiles it may be cast on, by resource, for those that care.
+    pub fn affects(self, resource: Resource) -> bool {
+        match self {
+            Spell::Frost | Spell::Bounty => matches!(resource, Resource::Wood | Resource::Food),
+            Spell::Rockslide | Spell::Motherlode => matches!(resource, Resource::Stone | Resource::Iron),
+            _ => true,
+        }
+    }
+
+    /// Stops its tile producing.
+    pub fn stops(self) -> bool {
+        matches!(self, Spell::Frost | Spell::Rockslide)
+    }
+
+    /// Doubles its tile's production.
+    pub fn doubles(self) -> bool {
+        matches!(self, Spell::Bounty | Spell::Motherlode)
+    }
+
+    /// How it lingers on its tile, for those that do.
+    pub fn lasting(self) -> Option<(Lasting, u32)> {
+        match self {
+            Spell::Frost | Spell::Bounty | Spell::Rockslide | Spell::Motherlode | Spell::Swap => {
+                Some((Lasting::Rolls, balance::SPELL_CHARGES))
+            }
+            Spell::Ward => Some((Lasting::Rounds, balance::WARD_ROUNDS)),
+            Spell::Lure | Spell::Rally | Spell::Windfall => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Spell::Frost => "frost",
+            Spell::Bounty => "bounty",
+            Spell::Rockslide => "rockslide",
+            Spell::Motherlode => "motherlode",
+            Spell::Ward => "ward",
+            Spell::Lure => "lure",
+            Spell::Swap => "swap",
+            Spell::Rally => "rally",
+            Spell::Windfall => "windfall",
+        }
+    }
+}
+
+/// A spell lingering on a tile (and, for Swap, its `partner`) for its
+/// remaining `charges`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Enchantment {
+    pub tile: TileId,
+    pub spell: Spell,
+    pub caster: PlayerId,
+    pub charges: u32,
+    #[serde(default)]
+    pub partner: Option<TileId>,
+}
+
+impl Enchantment {
+    pub fn touches(&self, tile: TileId) -> bool {
+        self.tile == tile || self.partner == Some(tile)
     }
 }
 
@@ -129,21 +249,18 @@ pub struct Robber {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cards {
     pub knights: u32,
-    pub rams: u32,
 }
 
 impl Cards {
     pub fn get(&self, kind: UnitKind) -> u32 {
         match kind {
             UnitKind::Knight => self.knights,
-            UnitKind::Ram => self.rams,
         }
     }
 
     fn get_mut(&mut self, kind: UnitKind) -> &mut u32 {
         match kind {
             UnitKind::Knight => &mut self.knights,
-            UnitKind::Ram => &mut self.rams,
         }
     }
 }
@@ -154,6 +271,12 @@ pub struct Player {
     pub name: String,
     pub resources: Resources,
     pub cards: Cards,
+    /// The round from which the player may cast a spell again.
+    #[serde(default)]
+    pub mana_ready_round: u32,
+    /// Windfall pays out on the player's next roll.
+    #[serde(default)]
+    pub windfall: bool,
 }
 
 /// The active player's open offer: they give `give` for `want`.
@@ -193,7 +316,6 @@ pub enum Phase {
 pub enum Target {
     Unit(UnitId),
     Robber(RobberId),
-    Building(VertexId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +358,17 @@ pub enum Action {
     CancelTrade,
     AcceptTrade,
     DeclineTrade,
+    /// `balance::BANK_TRADE_RATE` of one resource for one of another, with
+    /// no other player involved.
+    TradeWithBank {
+        give: Resource,
+        get: Resource,
+    },
+    /// `tiles` as the spell's `targets()` asks.
+    CastSpell {
+        spell: Spell,
+        tiles: Vec<TileId>,
+    },
     EndTurn,
 }
 
@@ -269,6 +402,12 @@ pub enum RuleError {
     NotTradeRecipient,
     TraderCannotPay,
     NoSuchPlayer,
+    SpellsLocked,
+    ManaEmpty,
+    SpellTarget,
+    NoKnights,
+    WindfallPending,
+    Warded,
 }
 
 impl fmt::Display for RuleError {
@@ -302,6 +441,12 @@ impl fmt::Display for RuleError {
             RuleError::NotTradeRecipient => "That trade is not offered to you",
             RuleError::TraderCannotPay => "The offering player no longer has those resources",
             RuleError::NoSuchPlayer => "No such player",
+            RuleError::SpellsLocked => "Build a city to unlock spells",
+            RuleError::ManaEmpty => "Your mana is still recharging",
+            RuleError::SpellTarget => "That spell cannot be cast there",
+            RuleError::NoKnights => "You have no knights on the board",
+            RuleError::WindfallPending => "Windfall already waits for your next roll",
+            RuleError::Warded => "A ward keeps robbers off that tile",
         })
     }
 }
@@ -327,6 +472,25 @@ pub enum Event {
     },
     ProductionBlocked {
         tile: TileId,
+    },
+    SpellCast {
+        player: PlayerId,
+        spell: Spell,
+        tiles: Vec<TileId>,
+    },
+    /// A tile's number came up under frost or a rockslide: it produced nothing.
+    ProductionStopped {
+        tile: TileId,
+        spell: Spell,
+    },
+    /// A lingering spell used its last roll or round.
+    SpellFaded {
+        tile: TileId,
+        spell: Spell,
+    },
+    WindfallPaid {
+        player: PlayerId,
+        gained: Resources,
     },
     BuiltRoad {
         player: PlayerId,
@@ -371,17 +535,6 @@ pub enum Event {
         defender: PlayerId,
         tiles: (TileId, TileId),
     },
-    RamDestroyed {
-        attacker: PlayerId,
-        defender: PlayerId,
-        tile: TileId,
-    },
-    BuildingRammed {
-        attacker: PlayerId,
-        defender: PlayerId,
-        vertex: VertexId,
-        was: BuildingKind,
-    },
     RobberRelocated {
         player: PlayerId,
         robber: RobberId,
@@ -421,6 +574,11 @@ pub enum Event {
         give: Resources,
         want: Resources,
     },
+    BankTraded {
+        player: PlayerId,
+        give: Resource,
+        get: Resource,
+    },
     RoundEnded {
         round: u32,
     },
@@ -454,6 +612,13 @@ pub struct Game {
     pub dice: Option<(u8, u8)>,
     /// The active player rolled a 7 and may still relocate a robber.
     pub robber_relocation: bool,
+    /// No robber appears at the end of a round before this one: a knight
+    /// cleared one and the island gets a breather.
+    #[serde(default)]
+    pub robbers_quiet_until: u32,
+    /// Spells on tiles, at most one per tile.
+    #[serde(default)]
+    pub enchantments: Vec<Enchantment>,
     pub trade: Option<TradeOffer>,
     pub next_piece_id: u32,
     /// The latest events, oldest first.
@@ -464,7 +629,14 @@ pub struct Game {
 impl Game {
     /// A new game for `names` (2–4 players, in turn order) on a generated board.
     pub fn new(names: &[String], rng: &mut Rng) -> Game {
-        Game::with_board(names, Board::generate(rng))
+        let mut game = Game::with_board(names, Board::generate(rng));
+        // The island always has a robber, from the first turn on.
+        let tiles: Vec<TileId> = game.board.tile_ids().collect();
+        if let Some(tile) = rng.pick(&tiles) {
+            let id = RobberId(game.next_id());
+            game.robbers.push(Robber { id, tile, frozen_through_round: 0 });
+        }
+        game
     }
 
     pub fn with_board(names: &[String], board: Board) -> Game {
@@ -477,6 +649,8 @@ impl Game {
                 name: name.clone(),
                 resources: balance::STARTING_RESOURCES,
                 cards: Cards::default(),
+                mana_ready_round: 0,
+                windfall: false,
             })
             .collect();
         Game {
@@ -491,6 +665,8 @@ impl Game {
             round: 0,
             dice: None,
             robber_relocation: false,
+            robbers_quiet_until: 0,
+            enchantments: Vec::new(),
             trade: None,
             next_piece_id: 1,
             events: Vec::new(),
@@ -538,6 +714,25 @@ impl Game {
 
     pub fn robber_at(&self, tile: TileId) -> Option<&Robber> {
         self.robbers.iter().find(|r| r.tile == tile)
+    }
+
+    /// The spell on `tile`, including a swap with it as the partner.
+    pub fn enchantment_at(&self, tile: TileId) -> Option<&Enchantment> {
+        self.enchantments.iter().find(|e| e.touches(tile))
+    }
+
+    pub fn warded(&self, tile: TileId) -> bool {
+        self.enchantments.iter().any(|e| e.spell == Spell::Ward && e.tile == tile)
+    }
+
+    /// A robber may move onto it: free and not warded.
+    pub fn robber_may_enter(&self, tile: TileId) -> bool {
+        tile.index() < self.board.tiles.len() && !self.occupied(tile) && !self.warded(tile)
+    }
+
+    /// Spells unlock with the player's first city.
+    pub fn has_city(&self, player: PlayerId) -> bool {
+        self.buildings.iter().flatten().any(|b| b.owner == player && b.kind == BuildingKind::City)
     }
 
     /// A unit or a robber stands on it.
@@ -695,15 +890,15 @@ impl Game {
 
     pub fn can_attack(&self, player: PlayerId, id: UnitId, target: Target) -> Result<(), RuleError> {
         let unit = self.ready_unit(player, id)?;
-        match (unit.kind, target) {
-            (UnitKind::Knight, Target::Robber(r)) => {
+        match target {
+            Target::Robber(r) => {
                 let robber = self.robber(r).ok_or(RuleError::NoSuchRobber)?;
                 if !self.board.are_adjacent(unit.tile, robber.tile) {
                     return Err(RuleError::NotAdjacent);
                 }
                 Ok(())
             }
-            (UnitKind::Knight, Target::Unit(u)) => {
+            Target::Unit(u) => {
                 let other = self.unit(u).ok_or(RuleError::NoSuchUnit)?;
                 if other.owner == player {
                     return Err(RuleError::InvalidTarget);
@@ -713,17 +908,6 @@ impl Game {
                 }
                 Ok(())
             }
-            (UnitKind::Ram, Target::Building(v)) => {
-                let building = self.building(v).ok_or(RuleError::InvalidTarget)?;
-                if building.owner == player {
-                    return Err(RuleError::InvalidTarget);
-                }
-                if !self.board.tile(unit.tile).vertices.contains(&v) {
-                    return Err(RuleError::NotAdjacent);
-                }
-                Ok(())
-            }
-            _ => Err(RuleError::InvalidTarget),
         }
     }
 
@@ -732,18 +916,14 @@ impl Game {
         let Some(unit) = self.unit(id) else {
             return Vec::new();
         };
-        let candidates: Vec<Target> = match unit.kind {
-            UnitKind::Knight => {
-                let near = &self.board.tile(unit.tile).neighbors;
-                self.robbers
-                    .iter()
-                    .filter(|r| near.contains(&r.tile))
-                    .map(|r| Target::Robber(r.id))
-                    .chain(self.units.iter().filter(|u| near.contains(&u.tile)).map(|u| Target::Unit(u.id)))
-                    .collect()
-            }
-            UnitKind::Ram => self.board.tile(unit.tile).vertices.iter().map(|&v| Target::Building(v)).collect(),
-        };
+        let near = &self.board.tile(unit.tile).neighbors;
+        let candidates: Vec<Target> = self
+            .robbers
+            .iter()
+            .filter(|r| near.contains(&r.tile))
+            .map(|r| Target::Robber(r.id))
+            .chain(self.units.iter().filter(|u| near.contains(&u.tile)).map(|u| Target::Unit(u.id)))
+            .collect();
         candidates.into_iter().filter(|&t| self.can_attack(player, id, t).is_ok()).collect()
     }
 
@@ -758,6 +938,9 @@ impl Game {
         }
         if self.occupied(to) {
             return Err(RuleError::TileOccupied);
+        }
+        if self.warded(to) {
+            return Err(RuleError::Warded);
         }
         Ok(())
     }
@@ -776,6 +959,9 @@ impl Game {
         }
         if self.occupied(to) {
             return Err(RuleError::TileOccupied);
+        }
+        if self.warded(to) {
+            return Err(RuleError::Warded);
         }
         Ok(())
     }
@@ -820,6 +1006,122 @@ impl Game {
         if self.players[player.index()].resources.covers(cost) { Ok(()) } else { Err(RuleError::CannotAfford) }
     }
 
+    /// Casting `spell` on `tiles` (as many as it targets): needs a city,
+    /// full mana, the spell's price and fitting targets. A lingering spell
+    /// replaces any already on its tiles.
+    pub fn can_cast(&self, player: PlayerId, spell: Spell, tiles: &[TileId]) -> Result<(), RuleError> {
+        self.require_main_action(player)?;
+        if !self.has_city(player) {
+            return Err(RuleError::SpellsLocked);
+        }
+        if self.round < self.players[player.index()].mana_ready_round {
+            return Err(RuleError::ManaEmpty);
+        }
+        if tiles.len() != spell.targets() || tiles.iter().any(|t| t.index() >= self.board.tiles.len()) {
+            return Err(RuleError::InvalidTarget);
+        }
+        if !tiles.iter().all(|&t| spell.affects(self.board.tile(t).resource)) {
+            return Err(RuleError::SpellTarget);
+        }
+        match spell {
+            Spell::Lure => {
+                self.robber_at(tiles[0]).ok_or(RuleError::NoSuchRobber)?;
+                if self.occupied(tiles[1]) {
+                    return Err(RuleError::TileOccupied);
+                }
+                if self.warded(tiles[1]) {
+                    return Err(RuleError::Warded);
+                }
+            }
+            Spell::Swap => {
+                if self.board.tile(tiles[0]).number == self.board.tile(tiles[1]).number {
+                    return Err(RuleError::SpellTarget);
+                }
+            }
+            Spell::Rally if !self.units.iter().any(|u| u.owner == player) => return Err(RuleError::NoKnights),
+            Spell::Windfall if self.players[player.index()].windfall => return Err(RuleError::WindfallPending),
+            _ => {}
+        }
+        self.require_funds(player, &spell.cost())
+    }
+
+    fn cast(&mut self, player: PlayerId, spell: Spell, tiles: &[TileId], rng: &mut Rng) -> Result<(), RuleError> {
+        self.can_cast(player, spell, tiles)?;
+        self.pay(player, &spell.cost());
+        self.players[player.index()].mana_ready_round = self.round + balance::MANA_RECHARGE_ROUNDS;
+        self.log(Event::SpellCast { player, spell, tiles: tiles.to_vec() });
+        if let Some((_, charges)) = spell.lasting() {
+            for &t in tiles {
+                while let Some(i) = self.enchantments.iter().position(|e| e.touches(t)) {
+                    self.lift(i);
+                }
+            }
+            let partner = (spell == Spell::Swap).then(|| tiles[1]);
+            if let Some(b) = partner {
+                let a = tiles[0];
+                let (na, nb) = (self.board.tile(a).number, self.board.tile(b).number);
+                self.board.tiles[a.index()].number = nb;
+                self.board.tiles[b.index()].number = na;
+            }
+            self.enchantments.push(Enchantment { tile: tiles[0], spell, caster: player, charges, partner });
+        }
+        match spell {
+            Spell::Ward => {
+                // A robber standing there is pushed out.
+                let t = tiles[0];
+                if let Some(i) = self.robbers.iter().position(|r| r.tile == t) {
+                    let near: Vec<TileId> =
+                        self.board.tile(t).neighbors.iter().copied().filter(|&n| self.robber_may_enter(n)).collect();
+                    let anywhere: Vec<TileId> = self.board.tile_ids().filter(|&n| self.robber_may_enter(n)).collect();
+                    if let Some(to) = rng.pick(&near).or_else(|| rng.pick(&anywhere)) {
+                        self.robbers[i].tile = to;
+                        let robber = self.robbers[i].id;
+                        self.log(Event::RobberWandered { robber, from: t, to });
+                    }
+                }
+            }
+            Spell::Lure => {
+                let (from, to) = (tiles[0], tiles[1]);
+                let round = self.round;
+                let r = self.robbers.iter_mut().find(|r| r.tile == from).expect("checked");
+                r.tile = to;
+                r.frozen_through_round = round;
+                let robber = r.id;
+                self.log(Event::RobberRelocated { player, robber, from, to });
+            }
+            Spell::Rally => {
+                for u in self.units.iter_mut().filter(|u| u.owner == player) {
+                    u.ready = true;
+                }
+            }
+            Spell::Windfall => self.players[player.index()].windfall = true,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Ends the spell at `index`: a swap gives the tiles their numbers back.
+    fn lift(&mut self, index: usize) {
+        let e = self.enchantments.remove(index);
+        if let Some(b) = e.partner {
+            let (na, nb) = (self.board.tile(e.tile).number, self.board.tile(b).number);
+            self.board.tiles[e.tile.index()].number = nb;
+            self.board.tiles[b.index()].number = na;
+        }
+        self.log(Event::SpellFaded { tile: e.tile, spell: e.spell });
+    }
+
+    /// Trading `balance::BANK_TRADE_RATE` of `give` for one `get` with the bank.
+    pub fn can_trade_with_bank(&self, player: PlayerId, give: Resource, get: Resource) -> Result<(), RuleError> {
+        self.require_main_action(player)?;
+        if give == get {
+            return Err(RuleError::InvalidTrade);
+        }
+        let mut cost = Resources::ZERO;
+        *cost.get_mut(give) = balance::BANK_TRADE_RATE;
+        self.require_funds(player, &cost)
+    }
+
     // ----- Actions -----
 
     /// Validates `action` from `player` and executes it, or leaves the game
@@ -842,6 +1144,7 @@ impl Game {
             Action::BuildOutpost(v) => self.build_outpost(player, v),
             Action::UpgradeTown(v) => self.upgrade(player, v, BuildingKind::Town),
             Action::UpgradeCity(v) => self.upgrade(player, v, BuildingKind::City),
+            Action::CastSpell { spell, tiles } => self.cast(player, spell, &tiles, rng),
             Action::BuyCard(kind) => {
                 self.can_buy_card(player, kind)?;
                 self.pay(player, &kind.card_cost());
@@ -901,6 +1204,14 @@ impl Game {
                 self.require_funds(player, &give)?;
                 self.trade = Some(TradeOffer { from: player, to, give, want, declined: Vec::new() });
                 self.log(Event::TradeProposed { from: player, to, give, want });
+                Ok(())
+            }
+            Action::TradeWithBank { give, get } => {
+                self.can_trade_with_bank(player, give, get)?;
+                let r = &mut self.players[player.index()].resources;
+                *r.get_mut(give) -= balance::BANK_TRADE_RATE;
+                *r.get_mut(get) += 1;
+                self.log(Event::BankTraded { player, give, get });
                 Ok(())
             }
             Action::CancelTrade => {
@@ -1026,34 +1337,77 @@ impl Game {
         if total == balance::ROBBER_ROLL {
             // Move a robber, or place one when the board has none.
             self.robber_relocation = true;
+            self.pay_windfall(player);
             return Ok(());
         }
         self.produce(total);
+        self.pay_windfall(player);
         Ok(())
     }
 
-    /// Every outpost on a tile showing `number` collects one of its resource,
-    /// unless a robber stands on the tile.
+    /// A pending windfall: one of each resource the player's buildings touch.
+    fn pay_windfall(&mut self, player: PlayerId) {
+        if !std::mem::take(&mut self.players[player.index()].windfall) {
+            return;
+        }
+        let mut gained = Resources::ZERO;
+        for (v, b) in self.buildings.iter().enumerate() {
+            if b.is_some_and(|b| b.owner == player) {
+                for &t in &self.board.vertices[v].tiles {
+                    *gained.get_mut(self.board.tile(t).resource) = 1;
+                }
+            }
+        }
+        let r = &mut self.players[player.index()].resources;
+        for res in Resource::ALL {
+            *r.get_mut(res) += gained.get(res);
+        }
+        self.log(Event::WindfallPaid { player, gained });
+    }
+
+    /// Every building on a tile showing `number` collects its resource,
+    /// unless a robber stands there. Frost and rockslide stop it; bounty and
+    /// motherlode double it. Each roll of the number uses one of the
+    /// tile's spell charges.
     pub fn produce(&mut self, number: u8) {
         let tiles: Vec<TileId> = self.board.tiles.iter().filter(|t| t.number == number).map(|t| t.id).collect();
         for tile in tiles {
+            let spell = self.enchantment_at(tile).map(|e| e.spell);
             if self.robber_at(tile).is_some() {
                 self.log(Event::ProductionBlocked { tile });
-                continue;
-            }
-            let resource = self.board.tile(tile).resource;
-            let mut gains = vec![0u32; self.players.len()];
-            for &v in &self.board.tile(tile).vertices {
-                if let Some(b) = self.building(v) {
-                    gains[b.owner.index()] += b.kind.yield_per_tile();
+            } else if let Some(spell) = spell.filter(|s| s.stops()) {
+                self.log(Event::ProductionStopped { tile, spell });
+            } else {
+                let factor = if spell.is_some_and(Spell::doubles) { 2 } else { 1 };
+                let resource = self.board.tile(tile).resource;
+                let mut gains = vec![0u32; self.players.len()];
+                for &v in &self.board.tile(tile).vertices {
+                    if let Some(b) = self.building(v) {
+                        gains[b.owner.index()] += b.kind.yield_per_tile() * factor;
+                    }
+                }
+                for (i, amount) in gains.into_iter().enumerate() {
+                    if amount > 0 {
+                        *self.players[i].resources.get_mut(resource) += amount;
+                        self.log(Event::Produced { player: PlayerId(i as u8), tile, resource, amount });
+                    }
                 }
             }
-            for (i, amount) in gains.into_iter().enumerate() {
-                if amount > 0 {
-                    *self.players[i].resources.get_mut(resource) += amount;
-                    self.log(Event::Produced { player: PlayerId(i as u8), tile, resource, amount });
-                }
-            }
+            self.spend_charge(tile, Lasting::Rolls);
+        }
+    }
+
+    /// A spell on `tile` lasting by `lasting` used a charge; on its last it
+    /// fades.
+    fn spend_charge(&mut self, tile: TileId, lasting: Lasting) {
+        let found = self
+            .enchantments
+            .iter()
+            .position(|e| e.touches(tile) && e.spell.lasting().is_some_and(|(l, _)| l == lasting));
+        let Some(i) = found else { return };
+        self.enchantments[i].charges -= 1;
+        if self.enchantments[i].charges == 0 {
+            self.lift(i);
         }
     }
 
@@ -1080,53 +1434,24 @@ impl Game {
         let attacker = self.unit(id).expect("checked").clone();
         match target {
             Target::Robber(r) => {
+                // The knight falls with the robber it brings down.
                 let tile = self.robber(r).expect("checked").tile;
                 self.robbers.retain(|x| x.id != r);
-                self.exhaust(id);
+                self.units.retain(|x| x.id != id);
+                self.robbers_quiet_until = self.round + balance::ROBBER_RESPAWN_ROUNDS;
                 self.log(Event::KnightKilledRobber { player, unit: id, robber: r, tile });
             }
             Target::Unit(u) => {
                 let defender = self.unit(u).expect("checked").clone();
-                match defender.kind {
-                    UnitKind::Knight => {
-                        self.units.retain(|x| x.id != u && x.id != id);
-                        self.log(Event::KnightsClashed {
-                            attacker: player,
-                            defender: defender.owner,
-                            tiles: (attacker.tile, defender.tile),
-                        });
-                    }
-                    UnitKind::Ram => {
-                        self.units.retain(|x| x.id != u);
-                        self.exhaust(id);
-                        self.log(Event::RamDestroyed {
-                            attacker: player,
-                            defender: defender.owner,
-                            tile: defender.tile,
-                        });
-                    }
-                }
-            }
-            Target::Building(v) => {
-                let building = self.building(v).expect("checked");
-                self.buildings[v.index()] =
-                    building.kind.downgrade().map(|kind| Building { owner: building.owner, kind });
-                self.exhaust(id);
-                self.log(Event::BuildingRammed {
+                self.units.retain(|x| x.id != u && x.id != id);
+                self.log(Event::KnightsClashed {
                     attacker: player,
-                    defender: building.owner,
-                    vertex: v,
-                    was: building.kind,
+                    defender: defender.owner,
+                    tiles: (attacker.tile, defender.tile),
                 });
             }
         }
         Ok(())
-    }
-
-    fn exhaust(&mut self, id: UnitId) {
-        if let Some(u) = self.units.iter_mut().find(|u| u.id == id) {
-            u.ready = false;
-        }
     }
 
     fn end_turn(&mut self, rng: &mut Rng) {
@@ -1158,23 +1483,31 @@ impl Game {
             }
             let from = self.robbers[i].tile;
             let free: Vec<TileId> =
-                self.board.tile(from).neighbors.iter().copied().filter(|&t| !self.occupied(t)).collect();
+                self.board.tile(from).neighbors.iter().copied().filter(|&t| self.robber_may_enter(t)).collect();
             if let Some(to) = rng.pick(&free) {
                 self.robbers[i].tile = to;
                 let robber = self.robbers[i].id;
                 self.log(Event::RobberWandered { robber, from, to });
             }
         }
-        if (self.robbers.len() as u32) < self.robber_capacity() {
-            let (num, den) = balance::ROBBER_SPAWN_CHANCE;
-            if rng.chance(num, den) {
-                let free: Vec<TileId> = self.board.tile_ids().filter(|&t| !self.occupied(t)).collect();
-                if let Some(tile) = rng.pick(&free) {
-                    let id = RobberId(self.next_id());
-                    self.robbers.push(Robber { id, tile, frozen_through_round: 0 });
-                    self.log(Event::RobberSpawned { robber: id, tile });
-                }
+        // The island keeps its minimum of robbers, and may gain more while
+        // below capacity; none appear during the breather after a kill.
+        let count = self.robbers.len() as u32;
+        let (num, den) = balance::ROBBER_SPAWN_CHANCE;
+        let spawn = round >= self.robbers_quiet_until
+            && (count < balance::MIN_ROBBERS || (count < self.robber_capacity() && rng.chance(num, den)));
+        if spawn {
+            let free: Vec<TileId> = self.board.tile_ids().filter(|&t| self.robber_may_enter(t)).collect();
+            if let Some(tile) = rng.pick(&free) {
+                let id = RobberId(self.next_id());
+                self.robbers.push(Robber { id, tile, frozen_through_round: 0 });
+                self.log(Event::RobberSpawned { robber: id, tile });
             }
+        }
+        // Wards last a number of rounds.
+        let wards: Vec<TileId> = self.enchantments.iter().filter(|e| e.spell == Spell::Ward).map(|e| e.tile).collect();
+        for t in wards {
+            self.spend_charge(t, Lasting::Rounds);
         }
         self.log(Event::RoundEnded { round });
     }

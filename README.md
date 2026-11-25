@@ -72,15 +72,22 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 - **Setup**: in snake order each player places a starting town with a road, then an outpost with a road, and starts
   with a small stock of resources.
 - **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a robber stands there.
-  Then trade, build, buy unit cards, deploy, and move or attack with units, and end the turn.
-- **Units**: a Knight or Ram card deploys onto a free tile next to the owner's town or city (not an outpost). Units move
-  one tile or attack once per turn, not both, and rest the turn they arrive. Knights destroy robbers and rams and trade
-  themselves for enemy knights; rams knock an adjacent enemy building down a level (city → town → outpost → gone).
-  One unit or robber per tile.
-- **Robbers** block production on their tile. At the end of each round they wander to a free neighbouring tile; then,
-  if there are fewer robbers than `floor(towns and cities / 4)`, one appears on a free tile with a 25% chance.
-  Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place a new one when the island has
-  none; it then stays put through the next complete round.
+  Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight cards, cast a spell,
+  deploy, and move or attack with knights, and end the turn.
+- **Knights**: a Knight card deploys onto a free tile next to the owner's town or city (not an outpost). Knights move
+  one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a robber or an enemy
+  knight falls with it. One knight or robber per tile.
+- **Spells** unlock with a player's first city and are cast from the spellbook on their turn; any spell empties the
+  caster's mana for 4 rounds. *Frost* and *Rockslide* stop a wood/food or stone/iron tile producing for the next 2 rolls
+  of its number; *Bounty* and *Motherlode* double it. *Ward* keeps robbers off a tile for 2 rounds (pushing one off).
+  *Lure* moves any robber to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Rally* readies all the
+  caster's knights again. *Windfall* pays 1 of each resource the caster's buildings touch on their next roll. Tile spells
+  affect everyone on the tile, and a new one on a tile replaces the old.
+- **Robbers** block production on their tile. The island always has at least one, from the start. At the end of each
+  round they wander to a free neighbouring tile; then, while there are fewer than `floor(towns and cities / 4)`, another
+  appears on a free tile with a 25% chance. After a knight removes a robber none appear for two full rounds; then one
+  appears if the island has none. Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place
+  a new one when the island has none; it then stays put through the next complete round.
 - **Victory**: the first player to reach 10 victory points wins.
 
 Costs (all in `engine/src/balance.rs`):
@@ -92,7 +99,15 @@ Costs (all in `engine/src/balance.rs`):
 | Town upgrade | 1 stone, 2 food |
 | City upgrade | 3 stone, 2 food, 2 iron |
 | Knight card | 1 food, 1 iron |
-| Ram card | 2 wood, 2 iron |
+| Frost spell | 1 stone, 2 iron |
+| Bounty spell | 1 wood, 2 food |
+| Rockslide spell | 2 wood, 1 food |
+| Motherlode spell | 1 stone, 1 food, 1 iron |
+| Ward spell | 1 stone, 1 iron |
+| Lure spell | 1 food, 1 iron |
+| Swap spell | 1 of each |
+| Rally spell | 2 food |
+| Windfall spell | 1 wood, 1 stone, 1 food |
 
 ## Playing on a phone
 

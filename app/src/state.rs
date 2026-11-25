@@ -4,18 +4,20 @@
 
 use std::time::Duration;
 
-use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, TileId, UnitId, UnitKind};
+use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind};
 use kings_cove_protocol::{ActionRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, Session, SessionRequest};
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    board::{self, Anim, AnimKind},
+    board::{self, Anim, AnimKind, Mood},
     fx::{self, Fx, FxKind},
     palette,
     rules::Item,
 };
 
+/// How far behind the game queued effects may fall before they are dropped.
+const MAX_BACKLOG_MS: f64 = 4000.0;
 const SERVER_KEY: &str = "server";
 const SESSION_KEY: &str = "session";
 const NAME_KEY: &str = "name";
@@ -35,6 +37,8 @@ pub enum Mode {
     UpgradeTown,
     UpgradeCity,
     Deploy(UnitKind),
+    /// Aiming a spell: for two-tile spells, the first tile once picked.
+    Cast(Spell, Option<kings_cove_engine::TileId>),
     Unit(UnitId),
     Robber(RobberId),
 }
@@ -86,6 +90,7 @@ pub struct AppState {
     /// The build tray item whose card is open.
     pub item_card: Signal<Option<Item>>,
     pub rules_open: Signal<bool>,
+    pub spellbook_open: Signal<bool>,
     /// An attack the player tapped, waiting for them to confirm its outcome.
     pub confirm_attack: Signal<Option<Action>>,
     /// Bumped to fit the board to the screen again.
@@ -127,6 +132,7 @@ impl AppState {
             menu: signal(Menu::Closed),
             item_card: signal(None),
             rules_open: signal(false),
+            spellbook_open: signal(false),
             confirm_attack: signal(None),
             fit_request: signal(0),
             last_seq: stored(None),
@@ -341,7 +347,12 @@ impl AppState {
                 self.mode.set(Mode::Idle);
             }
         }
+        let enchanted = view.game.as_ref().is_some_and(|g| !g.enchantments.is_empty());
         self.view.set(Some(view));
+        // Spells on the board shimmer for as long as they last.
+        if enchanted {
+            self.run_clock();
+        }
     }
 
     /// Schedules what `events` show, one beat after another: a turn's
@@ -377,8 +388,15 @@ impl AppState {
         };
 
         let (mut anims, mut effects) = (Vec::new(), Vec::new());
-        // Effects play one after another, after those already queued.
+        // Effects play one after another, after those already queued; when
+        // the queue falls far behind the game, what is stale is dropped.
         let mut cursor = now.max(self.fx_cursor.get());
+        if cursor - now > MAX_BACKLOG_MS {
+            self.anims.update(|a| a.retain(|x| x.start <= now));
+            self.fx.update(|f| f.retain(|x| x.start <= now));
+            self.dice_until.replace(now);
+            cursor = now;
+        }
         // When this batch's tiles light up, and how many badges each has had.
         let mut harvest = cursor;
         let mut badges: Vec<(TileId, u32)> = Vec::new();
@@ -408,8 +426,14 @@ impl AppState {
                     self.dice_until.replace(cursor + fx::DICE_LANDED_MS);
                     harvest = cursor + fx::DICE_LANDED_MS - 100.0;
                     for t in after.board.tiles.iter().filter(|t| t.number == sum) {
-                        let blocked = after.robber_at(t.id).is_some();
-                        let kind = AnimKind::Jelly { tile: t.id, blocked };
+                        let spell = before.and_then(|b| b.enchantment_at(t.id)).map(|e| e.spell);
+                        let mood = match (after.robber_at(t.id).is_some(), spell) {
+                            (true, _) => Mood::Blocked,
+                            (false, Some(s)) if s.stops() => Mood::Stopped(s),
+                            (false, Some(s)) if s.doubles() => Mood::Doubled(s),
+                            _ => Mood::Normal,
+                        };
+                        let kind = AnimKind::Jelly { tile: t.id, mood };
                         anims.push(Anim { start: harvest, dur: board::JELLY_MS, kind });
                     }
                     badges.clear();
@@ -446,6 +470,42 @@ impl AppState {
                     effects.push(b);
                 }
                 Event::Won { .. } => effects.push(Fx { start: cursor, dur: fx::CONFETTI_MS, kind: FxKind::Confetti }),
+                // What a roll's tiles did, shown with their wobble.
+                Event::ProductionBlocked { tile }
+                | Event::ProductionStopped { tile, .. }
+                | Event::SpellFaded { tile, .. } => {
+                    let (label, delay) = match *event {
+                        Event::ProductionBlocked { .. } => ("Blocked", 250.0),
+                        Event::ProductionStopped { spell: Spell::Frost, .. } => ("Frozen!", 250.0),
+                        Event::ProductionStopped { .. } => ("Buried!", 250.0),
+                        Event::SpellFaded { spell, .. } => (
+                            match spell {
+                                Spell::Frost => "The frost melts",
+                                Spell::Bounty => "Bounty spent",
+                                Spell::Rockslide => "The rubble clears",
+                                Spell::Motherlode => "The seam runs dry",
+                                Spell::Ward => "The ward fades",
+                                _ => "The numbers swap back",
+                            },
+                            1100.0,
+                        ),
+                        _ => continue,
+                    };
+                    let color = match *event {
+                        Event::ProductionStopped { spell, .. } | Event::SpellFaded { spell, .. } => {
+                            crate::art::spell_colors(spell).1
+                        }
+                        _ => 0x2b2b2e,
+                    };
+                    let kind = AnimKind::Float { at: board::tile_pos(after, tile), color, label: label.to_owned() };
+                    anims.push(Anim { start: harvest + delay, dur: 1300.0, kind });
+                }
+                Event::WindfallPaid { player, gained } => {
+                    let label = format!("{} windfall: +{}", if player == seat { "Your" } else { "A" }, gained.total());
+                    let color = crate::art::spell_colors(Spell::Windfall).1;
+                    let kind = AnimKind::Float { at: (0.0, 0.0), color, label };
+                    anims.push(Anim { start: harvest + 400.0, dur: 1800.0, kind });
+                }
                 _ => anims.extend(board::anims_for(after, event, cursor)),
             }
         }
@@ -473,18 +533,28 @@ impl AppState {
         let task = self.root.run(|| {
             set_interval(Duration::from_millis(16), move || {
                 let now = now_ms();
-                this.clock.set(now);
                 let dice_until = this.dice_until.get();
                 if dice_until <= now && this.dice_hidden.get_untracked() {
                     this.dice_hidden.set(false);
                 }
-                let animating = this.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
+                let busy = this.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
                     || this.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
                     || dice_until > now;
-                if !animating {
-                    this.anims.set(Vec::new());
-                    this.fx.set(Vec::new());
-                    if let Some(t) = this.ticker.replace(None) {
+                let ambient = this.view.with_untracked(|v| {
+                    v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(|g| !g.enchantments.is_empty())
+                });
+                // Spells alone shimmer at about 30 frames a second.
+                if busy || now - this.clock.get_untracked() >= 30.0 {
+                    this.clock.set(now);
+                }
+                if !busy {
+                    if this.anims.with_untracked(|a| !a.is_empty()) {
+                        this.anims.set(Vec::new());
+                    }
+                    if this.fx.with_untracked(|f| !f.is_empty()) {
+                        this.fx.set(Vec::new());
+                    }
+                    if !ambient && let Some(t) = this.ticker.replace(None) {
                         t.cancel();
                     }
                 }

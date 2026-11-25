@@ -1,6 +1,6 @@
 use kings_cove_engine::{
     Action, Board, Building, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, Rng, Robber, RobberId,
-    RuleError, SetupPlacing, Target, TileId, Unit, UnitId, UnitKind, VertexId, balance,
+    RuleError, SetupPlacing, Spell, Target, TileId, Unit, UnitId, UnitKind, VertexId, balance,
 };
 
 const P0: PlayerId = PlayerId(0);
@@ -298,6 +298,20 @@ fn trades_move_resources_between_players() {
     assert!(g.trade.is_none());
 }
 
+#[test]
+fn the_bank_trades_four_of_a_kind_for_one() {
+    let mut g = playing(2);
+    let mut r = rng();
+    g.players[0].resources.wood = 5;
+    let trade = |give, get| Action::TradeWithBank { give, get };
+    assert_eq!(g.apply(P0, trade(Resource::Stone, Resource::Iron), &mut r), Err(RuleError::CannotAfford));
+    assert_eq!(g.apply(P0, trade(Resource::Wood, Resource::Wood), &mut r), Err(RuleError::InvalidTrade));
+    assert_eq!(g.apply(P1, trade(Resource::Wood, Resource::Iron), &mut r), Err(RuleError::NotYourTurn));
+    g.apply(P0, trade(Resource::Wood, Resource::Iron), &mut r).unwrap();
+    assert_eq!((g.players[0].resources.wood, g.players[0].resources.iron), (1, 1));
+    assert_eq!(g.apply(P0, trade(Resource::Wood, Resource::Iron), &mut r), Err(RuleError::CannotAfford));
+}
+
 // ----- Units -----
 
 #[test]
@@ -363,82 +377,207 @@ fn units_move_one_adjacent_unoccupied_tile_and_then_rest() {
 // ----- Combat -----
 
 #[test]
-fn knights_kill_robbers_and_rams_and_trade_with_knights() {
+fn knights_fall_with_the_robber_or_knight_they_attack() {
     let mut g = playing(2);
     let mut r = rng();
     let t = centre(&g);
     let ns = g.board.tile(t).neighbors.clone();
     let k = unit(&mut g, 1, P0, UnitKind::Knight, t);
     let rob = robber(&mut g, 2, ns[0]);
-    let ram = unit(&mut g, 3, P1, UnitKind::Ram, ns[1]);
     let enemy = unit(&mut g, 4, P1, UnitKind::Knight, ns[2]);
     let mine = unit(&mut g, 5, P0, UnitKind::Knight, ns[3]);
     let targets = g.attack_targets(P0, k);
     assert!(targets.contains(&Target::Robber(rob)));
-    assert!(targets.contains(&Target::Unit(ram)));
     assert!(targets.contains(&Target::Unit(enemy)));
     assert!(!targets.contains(&Target::Unit(mine)), "no friendly fire");
-    let v = g.board.tile(t).vertices[0];
-    put(&mut g, v, P1, BuildingKind::Town);
-    assert_eq!(
-        g.apply(P0, Action::Attack { unit: k, target: Target::Building(v) }, &mut r),
-        Err(RuleError::InvalidTarget),
-        "knights cannot attack buildings"
-    );
 
     g.apply(P0, Action::Attack { unit: k, target: Target::Robber(rob) }, &mut r).unwrap();
-    assert!(g.robbers.is_empty());
-    assert!(g.unit(k).is_some() && !g.unit(k).unwrap().ready);
+    assert!(g.robbers.is_empty() && g.unit(k).is_none(), "the knight falls with the robber");
 
-    g.units.iter_mut().for_each(|u| u.ready = true);
-    g.apply(P0, Action::Attack { unit: k, target: Target::Unit(ram) }, &mut r).unwrap();
-    assert!(g.unit(ram).is_none() && g.unit(k).is_some());
+    // Another knight meets the enemy knight: both fall.
+    let k2 = unit(&mut g, 6, P0, UnitKind::Knight, t);
+    g.apply(P0, Action::Attack { unit: k2, target: Target::Unit(enemy) }, &mut r).unwrap();
+    assert!(g.unit(enemy).is_none() && g.unit(k2).is_none(), "knights destroy each other");
+}
 
-    g.units.iter_mut().for_each(|u| u.ready = true);
-    g.apply(P0, Action::Attack { unit: k, target: Target::Unit(enemy) }, &mut r).unwrap();
-    assert!(g.unit(enemy).is_none() && g.unit(k).is_none(), "knights destroy each other");
+// ----- Spells -----
+
+/// A playing game where P0 owns a city, can pay for any spell, and the
+/// centre tile is wood numbered 6 with a P1 town and a P0 outpost on it.
+fn spellbook() -> (Game, TileId) {
+    let mut g = playing(2);
+    let t = centre(&g);
+    g.board.tiles[t.index()].resource = Resource::Wood;
+    g.board.tiles[t.index()].number = 6;
+    for tile in &mut g.board.tiles {
+        if tile.id != t && tile.number == 6 {
+            tile.number = 5;
+        }
+    }
+    let far = g.board.vertices.iter().find(|v| !g.board.tile(t).vertices.contains(&v.id)).unwrap().id;
+    put(&mut g, far, P0, BuildingKind::City);
+    let [a, b, ..] = g.board.tile(t).vertices[..] else { unreachable!() };
+    put(&mut g, a, P1, BuildingKind::Town);
+    put(&mut g, b, P0, BuildingKind::Outpost);
+    g.players[0].resources = rich();
+    (g, t)
+}
+
+fn cast(spell: Spell, tiles: &[TileId]) -> Action {
+    Action::CastSpell { spell, tiles: tiles.to_vec() }
 }
 
 #[test]
-fn rams_downgrade_buildings_one_level_and_fight_nothing_else() {
-    let mut g = playing(2);
+fn spells_need_a_city_full_mana_fitting_targets_and_their_price() {
+    let (mut g, t) = spellbook();
     let mut r = rng();
-    let t = centre(&g);
-    let ns = g.board.tile(t).neighbors.clone();
-    let ram = unit(&mut g, 1, P0, UnitKind::Ram, t);
-    let v = g.board.tile(t).vertices[1];
-    put(&mut g, v, P1, BuildingKind::City);
-    let rob = robber(&mut g, 2, ns[0]);
-    let knight = unit(&mut g, 3, P1, UnitKind::Knight, ns[1]);
-    assert_eq!(
-        g.apply(P0, Action::Attack { unit: ram, target: Target::Robber(rob) }, &mut r),
-        Err(RuleError::InvalidTarget)
-    );
-    assert_eq!(
-        g.apply(P0, Action::Attack { unit: ram, target: Target::Unit(knight) }, &mut r),
-        Err(RuleError::InvalidTarget)
-    );
-    let far = g.board.vertices.iter().find(|x| !g.board.tile(t).vertices.contains(&x.id)).unwrap().id;
-    put(&mut g, far, P1, BuildingKind::Town);
-    assert_eq!(
-        g.apply(P0, Action::Attack { unit: ram, target: Target::Building(far) }, &mut r),
-        Err(RuleError::NotAdjacent)
-    );
-    let own = g.board.tile(t).vertices[3];
-    put(&mut g, own, P0, BuildingKind::Town);
-    assert_eq!(
-        g.apply(P0, Action::Attack { unit: ram, target: Target::Building(own) }, &mut r),
-        Err(RuleError::InvalidTarget)
-    );
+    assert_eq!(g.apply(P1, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::NotYourTurn));
+    let stone = g.board.tiles.iter().find(|x| x.id != t).unwrap().id;
+    g.board.tiles[stone.index()].resource = Resource::Stone;
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[stone]), &mut r), Err(RuleError::SpellTarget));
+    assert_eq!(g.apply(P0, cast(Spell::Rockslide, &[t]), &mut r), Err(RuleError::SpellTarget), "wood is not stone");
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[]), &mut r), Err(RuleError::InvalidTarget));
+    let before = g.players[0].resources;
+    g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
+    assert_eq!(before.total() - g.players[0].resources.total(), balance::FROST_COST.total());
+    assert_eq!(g.apply(P0, cast(Spell::Rockslide, &[stone]), &mut r), Err(RuleError::ManaEmpty), "one mana for all");
+    // Mana is back after its recharge rounds; a new spell replaces the old one.
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    g.apply(P0, cast(Spell::Bounty, &[t]), &mut r).unwrap();
+    assert_eq!(g.enchantments.len(), 1);
+    assert_eq!(g.enchantment_at(t).unwrap().spell, Spell::Bounty);
 
-    for expected in [Some(BuildingKind::Town), Some(BuildingKind::Outpost), None] {
-        g.apply(P0, Action::Attack { unit: ram, target: Target::Building(v) }, &mut r).unwrap();
-        assert_eq!(g.building(v).map(|b| b.kind), expected);
-        assert_eq!(
-            g.apply(P0, Action::Attack { unit: ram, target: Target::Building(v) }, &mut r).unwrap_err(),
-            RuleError::UnitExhausted
-        );
-        g.units.iter_mut().for_each(|u| u.ready = true);
+    // Without a city, spells stay locked; without the price, unaffordable.
+    let mut g = playing(2);
+    g.players[0].resources = rich();
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[centre(&g)]), &mut r), Err(RuleError::SpellsLocked));
+    let (mut g, t) = spellbook();
+    g.players[0].resources = Resources::ZERO;
+    assert_eq!(g.apply(P0, cast(Spell::Bounty, &[t]), &mut r), Err(RuleError::CannotAfford));
+}
+
+#[test]
+fn stopping_spells_stop_and_doubling_spells_double_the_next_two_rolls() {
+    let (mut g, t) = spellbook();
+    let mut r = rng();
+    let wood = |g: &Game, p: usize| g.players[p].resources.wood;
+    g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
+    let (w0, w1) = (wood(&g, 0), wood(&g, 1));
+    g.produce(5); // another number does not count
+    g.produce(6);
+    g.produce(6);
+    assert_eq!((wood(&g, 0), wood(&g, 1)), (w0, w1), "two frozen rolls");
+    assert!(g.enchantment_at(t).is_none(), "faded after two rolls");
+    g.produce(6);
+    assert_eq!((wood(&g, 0), wood(&g, 1)), (w0 + 1, w1 + 1), "thawed");
+
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    g.apply(P0, cast(Spell::Bounty, &[t]), &mut r).unwrap();
+    let (w0, w1) = (wood(&g, 0), wood(&g, 1));
+    g.produce(6);
+    g.produce(6);
+    assert_eq!((wood(&g, 0), wood(&g, 1)), (w0 + 4, w1 + 4), "double for everyone on the tile, twice");
+    g.produce(6);
+    assert_eq!((wood(&g, 0), wood(&g, 1)), (w0 + 5, w1 + 5));
+
+    // Rockslide and motherlode do the same for stone and iron.
+    g.board.tiles[t.index()].resource = Resource::Iron;
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    g.apply(P0, cast(Spell::Rockslide, &[t]), &mut r).unwrap();
+    let iron = g.players[1].resources.iron;
+    g.produce(6);
+    assert_eq!(g.players[1].resources.iron, iron);
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    g.apply(P0, cast(Spell::Motherlode, &[t]), &mut r).unwrap();
+    g.produce(6);
+    assert_eq!(g.players[1].resources.iron, iron + 2);
+}
+
+#[test]
+fn a_ward_pushes_robbers_off_and_keeps_them_off_for_two_rounds() {
+    let (mut g, t) = spellbook();
+    let mut r = rng();
+    let rb = robber(&mut g, 90, t);
+    g.apply(P0, cast(Spell::Ward, &[t]), &mut r).unwrap();
+    let pushed = g.robber(rb).unwrap().tile;
+    assert!(pushed != t && g.board.are_adjacent(pushed, t), "pushed to a neighbour");
+    g.robber_relocation = true;
+    assert_eq!(g.apply(P0, Action::RelocateRobber { robber: rb, to: t }, &mut r), Err(RuleError::Warded));
+    // No wander or spawn lands on it while it lasts.
+    for s in 0..30 {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        assert!(copy.robber_at(t).is_none());
+    }
+    g.end_round(&mut Rng::new(1));
+    assert!(g.warded(t), "one round left");
+    g.round += 1;
+    g.end_round(&mut Rng::new(1));
+    assert!(!g.warded(t), "gone after two rounds");
+}
+
+#[test]
+fn swap_trades_two_numbers_for_two_rolls_and_lure_moves_a_robber() {
+    let (mut g, t) = spellbook();
+    let mut r = rng();
+    let other = g.board.tiles.iter().find(|x| x.number != 6).unwrap().id;
+    let n = g.board.tile(other).number;
+    assert_eq!(g.apply(P0, cast(Spell::Swap, &[t, t]), &mut r), Err(RuleError::SpellTarget));
+    g.apply(P0, cast(Spell::Swap, &[t, other]), &mut r).unwrap();
+    assert_eq!((g.board.tile(t).number, g.board.tile(other).number), (n, 6));
+    let produced_on = |g: &Game, since: u64| {
+        g.events.iter().any(|e| e.seq > since && matches!(e.event, Event::Produced { tile, .. } if tile == t))
+    };
+    let seq = g.event_seq;
+    g.produce(6); // now the other tile's number: the wood tile stays idle
+    assert!(!produced_on(&g, seq));
+    let seq = g.event_seq;
+    g.produce(n);
+    assert!(produced_on(&g, seq), "the wood tile answers to its new number");
+    assert_eq!((g.board.tile(t).number, g.board.tile(other).number), (6, n), "numbers back after two rolls");
+
+    // Lure: any robber to any free tile, then it stays put like a 7's.
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    let rb = robber(&mut g, 91, TileId(0));
+    g.apply(P0, cast(Spell::Lure, &[TileId(0), t]), &mut r).unwrap();
+    assert_eq!(g.robber(rb).unwrap().tile, t);
+    g.end_round(&mut Rng::new(3));
+    assert_eq!(g.robber(rb).unwrap().tile, t);
+}
+
+#[test]
+fn rally_readies_knights_and_windfall_pays_on_the_next_roll() {
+    let (mut g, t) = spellbook();
+    let mut r = rng();
+    assert_eq!(g.apply(P0, cast(Spell::Rally, &[]), &mut r), Err(RuleError::NoKnights));
+    let k = unit(&mut g, 50, P0, UnitKind::Knight, t);
+    g.units[0].ready = false;
+    g.apply(P0, cast(Spell::Rally, &[]), &mut r).unwrap();
+    assert!(g.unit(k).unwrap().ready);
+
+    g.round += balance::MANA_RECHARGE_ROUNDS;
+    g.apply(P0, cast(Spell::Windfall, &[]), &mut r).unwrap();
+    assert!(g.players[0].windfall);
+    // P0's buildings touch the wood centre and the tiles round the far city.
+    let touched: std::collections::BTreeSet<Resource> = g
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_some_and(|b| b.owner == P0))
+        .flat_map(|(v, _)| g.board.vertices[v].tiles.iter().map(|&x| g.board.tile(x).resource))
+        .collect();
+    let before = g.players[0].resources;
+    g.dice = None;
+    g.apply(P0, Action::Roll, &mut r).unwrap();
+    assert!(!g.players[0].windfall, "paid once");
+    let paid = g.events.iter().rev().find_map(|e| match &e.event {
+        Event::WindfallPaid { gained, .. } => Some(*gained),
+        _ => None,
+    });
+    let gained = paid.expect("paid on the roll");
+    for res in Resource::ALL {
+        assert_eq!(gained.get(res), u32::from(touched.contains(&res)));
+        assert!(g.players[0].resources.get(res) >= before.get(res) + gained.get(res));
     }
 }
 
@@ -464,31 +603,32 @@ fn robber_capacity_counts_towns_and_cities_only() {
 }
 
 #[test]
-fn robbers_spawn_about_a_quarter_of_rounds_below_capacity_only() {
+fn extra_robbers_appear_about_a_quarter_of_rounds_below_capacity_only() {
     let mut base = playing(2);
-    for i in 0..4u16 {
+    for i in 0..8u16 {
         put(&mut base, VertexId(i * 5), P0, BuildingKind::Town);
     }
-    assert_eq!(base.robber_capacity(), 1);
+    robber(&mut base, 100, TileId(0));
+    assert_eq!(base.robber_capacity(), 2);
     let mut spawned = 0;
     for seed in 0..400 {
         let mut g = base.clone();
         g.end_round(&mut Rng::new(seed));
-        assert!(g.robbers.len() <= 1);
-        if let Some(rb) = g.robbers.first() {
+        assert!(g.robbers.len() <= 2);
+        if g.robbers.len() == 2 {
             spawned += 1;
-            assert!(g.unit_at(rb.tile).is_none());
-            // At capacity: never a second one.
+            assert!(g.robbers.iter().all(|rb| g.unit_at(rb.tile).is_none()));
+            // At capacity: never a third one.
             let mut again = g.clone();
             for s in 0..20 {
                 again.end_round(&mut Rng::new(s));
             }
-            assert_eq!(again.robbers.len(), 1);
+            assert_eq!(again.robbers.len(), 2);
         }
     }
     assert!((70..=130).contains(&spawned), "25% of 400 rounds, got {spawned}");
 
-    // No spawn at capacity 0; existing robbers stay when capacity drops.
+    // Existing robbers stay when capacity drops below them.
     let mut g = playing(2);
     robber(&mut g, 1, TileId(0));
     robber(&mut g, 2, TileId(18));
@@ -496,6 +636,38 @@ fn robbers_spawn_about_a_quarter_of_rounds_below_capacity_only() {
         g.end_round(&mut Rng::new(s));
     }
     assert_eq!(g.robbers.len(), 2);
+}
+
+#[test]
+fn the_island_always_has_a_robber() {
+    let g = Game::new(&names(2), &mut Rng::new(5));
+    assert_eq!(g.robbers.len(), 1, "one stands from the start");
+
+    // With none on the board and no towns at all, one appears at the round's end.
+    let mut g = playing(2);
+    assert_eq!(g.robber_capacity(), 0);
+    g.end_round(&mut Rng::new(1));
+    assert_eq!(g.robbers.len(), 1);
+}
+
+#[test]
+fn a_slain_robber_returns_after_two_quiet_rounds() {
+    let mut g = playing(2);
+    let t = centre(&g);
+    let k = unit(&mut g, 1, P0, UnitKind::Knight, t);
+    let next = g.board.tile(t).neighbors[0];
+    let rb = robber(&mut g, 2, next);
+    g.apply(P0, Action::Attack { unit: k, target: Target::Robber(rb) }, &mut rng()).unwrap();
+    assert!(g.robbers.is_empty());
+    // The rest of round 1 and all of round 2 stay clear...
+    g.end_round(&mut Rng::new(1));
+    g.round += 1;
+    g.end_round(&mut Rng::new(1));
+    assert!(g.robbers.is_empty());
+    // ...and one appears when round 3 ends.
+    g.round += 1;
+    g.end_round(&mut Rng::new(1));
+    assert_eq!(g.robbers.len(), 1);
 }
 
 #[test]

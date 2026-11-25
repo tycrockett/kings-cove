@@ -127,7 +127,7 @@ fn rules_card(app: AppState) -> impl IntoElement {
         .child(bold("How to play", 14.0, palette::INK))
         .child(label(
             format!(
-                "Build and upgrade settlements, command knights and rams, and be first to {} victory points.",
+                "Build and upgrade settlements, command knights, cast spells from your cities, and be first to {} victory points.",
                 balance::VICTORY_POINTS_TO_WIN
             ),
             12.0,

@@ -30,11 +30,49 @@ pub const HOT_NUMBERS: [u8; 2] = [6, 8];
 /// (or place one when the board has none).
 pub const ROBBER_ROLL: u8 = 7;
 
-/// `robber_capacity = total_settlements / SETTLEMENTS_PER_ROBBER`.
+/// The island always has at least this many robbers: one stands from the
+/// start, and a removed one comes back (see `ROBBER_RESPAWN_ROUNDS`).
+pub const MIN_ROBBERS: u32 = 1;
+/// Above the minimum, up to `total_settlements / SETTLEMENTS_PER_ROBBER`.
 pub const SETTLEMENTS_PER_ROBBER: u32 = 4;
-/// Chance (numerator / denominator) a robber spawns at the end of a round
-/// while below capacity.
+/// Chance (numerator / denominator) an extra robber appears at the end of a
+/// round while below capacity.
 pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 4);
+/// After a knight removes a robber, no robber appears for this many full
+/// rounds; one appears at the end of the last of them if the island is
+/// below its minimum.
+pub const ROBBER_RESPAWN_ROUNDS: u32 = 2;
+
+/// Spells, unlocked by a city, all sharing the caster's mana. Each is priced
+/// in what fits it: the spells that stop or double wood and food are paid
+/// in stone and iron or sown with food and wood, and the stone and iron
+/// ones the other way round.
+pub const FROST_COST: Resources = res(0, 1, 0, 2);
+pub const BOUNTY_COST: Resources = res(1, 0, 2, 0);
+/// Timber and grain to dig the slide.
+pub const ROCKSLIDE_COST: Resources = res(2, 0, 1, 0);
+/// Stone, iron and food to open the seam.
+pub const MOTHERLODE_COST: Resources = res(0, 1, 1, 1);
+/// A stone and iron wall.
+pub const WARD_COST: Resources = res(0, 1, 0, 1);
+/// Bait and a hook.
+pub const LURE_COST: Resources = res(0, 0, 1, 1);
+/// One of each, traded around.
+pub const SWAP_COST: Resources = res(1, 1, 1, 1);
+/// A feast for the troops.
+pub const RALLY_COST: Resources = res(0, 0, 2, 0);
+/// A cartload of goods.
+pub const WINDFALL_COST: Resources = res(1, 1, 1, 0);
+/// Rolls of its tile's number a lingering spell lasts (frost, bounty,
+/// rockslide, motherlode, swap).
+pub const SPELL_CHARGES: u32 = 2;
+/// Rounds a ward lasts.
+pub const WARD_ROUNDS: u32 = 2;
+/// Rounds the caster's mana takes to refill after any spell.
+pub const MANA_RECHARGE_ROUNDS: u32 = 4;
+
+/// How many of one resource the bank takes for one of another.
+pub const BANK_TRADE_RATE: u32 = 4;
 
 /// How many events the game keeps for the history and animations.
 pub const EVENT_HISTORY: usize = 80;
@@ -58,4 +96,3 @@ pub const TOWN_UPGRADE_COST: Resources = res(0, 1, 2, 0);
 /// Town → city.
 pub const CITY_UPGRADE_COST: Resources = res(0, 3, 2, 2);
 pub const KNIGHT_CARD_COST: Resources = res(0, 0, 1, 1);
-pub const RAM_CARD_COST: Resources = res(2, 0, 0, 2);

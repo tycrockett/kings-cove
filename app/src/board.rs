@@ -4,8 +4,8 @@
 use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{
-    Action, BuildingKind, EdgeId, Event, Game, Phase, PlayerId, Resource, RobberId, SetupPlacing, Target, TileId,
-    UnitId, VertexId,
+    Action, BuildingKind, EdgeId, Enchantment, Event, Game, Phase, PlayerId, Resource, RobberId, SetupPlacing, Spell,
+    Target, TileId, UnitId, VertexId,
 };
 use nsh_core::{
     TouchPhase,
@@ -115,11 +115,20 @@ pub enum Spot {
     Tile(TileId),
 }
 
-/// A highlighted place and the action a tap on it sends.
+/// What tapping a highlighted place does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Then {
+    /// Sends the action to the server.
+    Send(Action),
+    /// Picks this place and goes on choosing (a two-tile spell's first tile).
+    Pick(Mode),
+}
+
+/// A highlighted place and what a tap on it does.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opt {
     pub spot: Spot,
-    pub action: Action,
+    pub then: Then,
     /// An attack.
     pub hostile: bool,
 }
@@ -127,7 +136,7 @@ pub struct Opt {
 /// Legal targets for the seat in the current mode. These only guide the
 /// player; the server validates every action again.
 pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
-    let opt = |spot, action| Opt { spot, action, hostile: false };
+    let opt = |spot, action| Opt { spot, then: Then::Send(action), hostile: false };
     if let Phase::Setup { placing, .. } = g.phase {
         return match placing {
             SetupPlacing::Building => {
@@ -176,6 +185,25 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
             .filter(|&t| g.can_deploy(seat, kind, t).is_ok())
             .map(|t| opt(Spot::Tile(t), Action::Deploy { kind, tile: t }))
             .collect(),
+        Mode::Cast(spell, first) => {
+            let tiles = || g.board.tile_ids();
+            let cast = |picked: Vec<TileId>| Action::CastSpell { spell, tiles: picked };
+            match (spell.targets(), first) {
+                (1, _) => tiles()
+                    .filter(|&t| g.can_cast(seat, spell, &[t]).is_ok())
+                    .map(|t| opt(Spot::Tile(t), cast(vec![t])))
+                    .collect(),
+                (2, None) => tiles()
+                    .filter(|&a| tiles().any(|b| g.can_cast(seat, spell, &[a, b]).is_ok()))
+                    .map(|a| Opt { spot: Spot::Tile(a), then: Then::Pick(Mode::Cast(spell, Some(a))), hostile: false })
+                    .collect(),
+                (2, Some(a)) => tiles()
+                    .filter(|&b| g.can_cast(seat, spell, &[a, b]).is_ok())
+                    .map(|b| opt(Spot::Tile(b), cast(vec![a, b])))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
         Mode::Unit(unit) => {
             let moves =
                 g.move_targets(seat, unit).into_iter().map(|t| opt(Spot::Tile(t), Action::MoveUnit { unit, to: t }));
@@ -183,9 +211,8 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
                 let spot = match target {
                     Target::Robber(r) => Spot::Tile(g.robber(r)?.tile),
                     Target::Unit(u) => Spot::Tile(g.unit(u)?.tile),
-                    Target::Building(v) => Spot::Vertex(v),
                 };
-                Some(Opt { spot, action: Action::Attack { unit, target }, hostile: true })
+                Some(Opt { spot, then: Then::Send(Action::Attack { unit, target }), hostile: true })
             });
             moves.chain(attacks).collect()
         }
@@ -224,11 +251,11 @@ pub fn resolve_tap(g: &Game, seat: PlayerId, mode: Mode, p: (f32, f32)) -> Tap {
         .filter(|(d, _)| *d <= 1.0)
         .min_by(|a, b| a.0.total_cmp(&b.0));
     if let Some((_, o)) = best {
-        if o.hostile {
-            return Tap::Confirm(o.action.clone());
-        }
-        let next = if mode == Mode::Road { Mode::Road } else { Mode::Idle };
-        return Tap::Act(o.action.clone(), next);
+        return match &o.then {
+            Then::Pick(next) => Tap::Select(*next),
+            Then::Send(action) if o.hostile => Tap::Confirm(action.clone()),
+            Then::Send(action) => Tap::Act(action.clone(), if mode == Mode::Road { Mode::Road } else { Mode::Idle }),
+        };
     }
     let my_move = g.is_active(seat) && g.dice.is_some();
     let tile = g.board.tile_ids().find(|&t| dist(tile_pos(g, t), p) <= 0.86 * S);
@@ -267,11 +294,25 @@ pub enum Piece {
     Robber(RobberId),
 }
 
+/// How a tile whose number came up takes it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Mood {
+    /// Produces: swells and wobbles.
+    Normal,
+    /// A robber stands on it: shakes no, in red.
+    Blocked,
+    /// A spell stops it: shivers in the spell's colour.
+    Stopped(Spell),
+    /// A spell doubles it: swells big in the spell's colour.
+    Doubled(Spell),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnimKind {
-    /// A tile whose number came up wobbling like jelly; a `blocked` one
-    /// (a robber stands on it) shakes no instead.
-    Jelly { tile: TileId, blocked: bool },
+    /// A tile whose number came up, wobbling as its mood says.
+    Jelly { tile: TileId, mood: Mood },
+    /// A spell landing on a tile.
+    Cast { tile: TileId, spell: Spell },
     /// Collected resources: a badge with the amount rising from the tile,
     /// `slot` of `of` badges side by side.
     Gain { tile: TileId, resource: Resource, amount: u32, color: u32, mine: bool, slot: u32, of: u32 },
@@ -352,7 +393,7 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
         Event::RobberWandered { robber, from, .. } | Event::RobberRelocated { robber, from, .. } => {
             vec![a(520.0, AnimKind::Slide { piece: Piece::Robber(robber), from: piece_pos(g, from) })]
         }
-        Event::KnightKilledRobber { tile, .. } | Event::RamDestroyed { tile, .. } => {
+        Event::KnightKilledRobber { tile, .. } => {
             vec![a(650.0, AnimKind::Burst { at: piece_pos(g, tile) })]
         }
         Event::KnightsClashed { tiles: (x, y), .. } => {
@@ -363,7 +404,20 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
                 a(650.0, AnimKind::Burst { at: piece_pos(g, y) }),
             ]
         }
-        Event::BuildingRammed { vertex, .. } => vec![a(700.0, AnimKind::Burst { at: vertex_pos(g, vertex) })],
+        Event::SpellCast { player, spell, ref tiles } => {
+            let (_, deep, _) = art::spell_colors(spell);
+            let label = format!("{}!", crate::rules::spell_title(spell));
+            // Lure lands where the robber goes; Rally on the caster's knights.
+            let struck: Vec<TileId> = match spell {
+                Spell::Lure => tiles.get(1).copied().into_iter().collect(),
+                Spell::Rally => g.units.iter().filter(|u| u.owner == player).map(|u| u.tile).collect(),
+                _ => tiles.clone(),
+            };
+            let at = struck.first().map_or((0.0, 0.0), |&t| tile_pos(g, t));
+            let mut v: Vec<Anim> = struck.into_iter().map(|tile| a(1200.0, AnimKind::Cast { tile, spell })).collect();
+            v.push(Anim { start: start + 350.0, dur: 1400.0, kind: AnimKind::Float { at, color: deep, label } });
+            v
+        }
         _ => Vec::new(),
     }
 }
@@ -423,7 +477,7 @@ pub fn draw(s: &Scene) -> Painter {
     // Tiles; those whose number just came up wobble on top of the rest.
     let jelly = |t: TileId| {
         s.anims.iter().filter(|a| a.running(s.now)).find_map(|a| match a.kind {
-            AnimKind::Jelly { tile, blocked } if tile == t => Some((a.t(s.now), blocked)),
+            AnimKind::Jelly { tile, mood } if tile == t => Some((a.t(s.now), mood)),
             _ => None,
         })
     };
@@ -431,9 +485,19 @@ pub fn draw(s: &Scene) -> Painter {
         p = tile_art(p, g, t, px1);
     }
     for t in g.board.tile_ids() {
-        if let Some((k, blocked)) = jelly(t) {
-            p = wobbling_tile(p, g, t, k, blocked, px1);
+        if let Some((k, mood)) = jelly(t) {
+            p = wobbling_tile(p, g, t, k, mood, px1);
         }
+    }
+
+    // Spells: their look on the tile (both tiles of a swap) and a seal
+    // counting what is left.
+    let spelled = || g.enchantments.iter().flat_map(|e| std::iter::once(e.tile).chain(e.partner).map(move |t| (e, t)));
+    for (e, t) in spelled() {
+        p = enchanted_tile(p, g, e, t, s.now, px1);
+    }
+    for (e, t) in spelled() {
+        p = spell_seal(p, g, e, t, px1);
     }
 
     // Tile highlights.
@@ -515,7 +579,7 @@ pub fn draw(s: &Scene) -> Painter {
     let my_turn = g.is_active(s.seat) && g.dice.is_some();
     for u in &g.units {
         let at = slide_pos(&Piece::Unit(u.id), piece_pos(g, u.tile));
-        p = art::unit(p, at, u.kind, palette::player(u.owner), 0.25 * S, 2.0 * px1);
+        p = art::knight(p, at, palette::player(u.owner), 0.25 * S, 2.0 * px1);
         if my_turn && u.owner == s.seat && u.ready {
             p = circle(p, (at.0 + 0.24 * S, at.1 - 0.24 * S), 0.08 * S)
                 .fill_color(hex(palette::GOLD))
@@ -535,9 +599,15 @@ pub fn draw(s: &Scene) -> Painter {
     }
     // A robber waiting to be placed: a faint one on every tile it may go.
     for o in s.opts {
-        if let (Spot::Tile(t), Action::PlaceRobber { .. }) = (o.spot, &o.action) {
+        if let (Spot::Tile(t), Then::Send(Action::PlaceRobber { .. })) = (o.spot, &o.then) {
             p = art::robber(p.global_alpha(0.45), piece_pos(g, t), 0.22 * S, 1.6 * px1).global_alpha(1.0);
         }
+    }
+    // A two-tile spell's first pick.
+    if let Mode::Cast(spell, Some(t)) = s.mode {
+        let (_, _, glow) = art::spell_colors(spell);
+        p = poly(p, &hex_points(tile_pos(g, t), S * 0.9)).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
+        p = poly(p, &hex_points(tile_pos(g, t), S * 0.9)).stroke_color(hex(0xffffff)).line_width(2.0 * px1).stroke();
     }
 
     // What the player is looking at.
@@ -607,6 +677,34 @@ pub fn draw(s: &Scene) -> Painter {
                 }
                 circle(p, *at, 0.28 * S * (1.0 - t)).fill_color(hexa(palette::GOLD, 1.0 - t)).fill()
             }
+            AnimKind::Cast { tile, spell } => {
+                let c = tile_pos(g, *tile);
+                let e = ease_out(t);
+                let (_, _, glow) = art::spell_colors(*spell);
+                let mut p = poly(p, &hex_points(c, S * 0.96)).fill_color(hexa(0xffffff, 0.6 * (1.0 - t))).fill();
+                p = poly(p, &hex_points(c, S * (0.9 + 0.9 * e)))
+                    .stroke_color(hexa(glow, 1.0 - t))
+                    .line_width(6.0 * px1 * (1.0 - t) + px1)
+                    .stroke();
+                for k in 0..12 {
+                    let ang = k as f32 * TAU / 12.0 + 0.2;
+                    let r = (0.3 + 1.1 * e) * S;
+                    let at = (c.0 + r * ang.cos(), c.1 + r * ang.sin());
+                    p = match spell {
+                        Spell::Frost => art::snowflake(p, at, 0.13 * S * (1.0 - t) + px1, 0xffffff, 1.6 * px1),
+                        Spell::Rockslide => {
+                            circle(p, at, 0.07 * S * (1.0 - t) + px1).fill_color(hexa(0x6b4a2f, 1.0 - t * 0.6)).fill()
+                        }
+                        _ => art::sparkle(p, at, 0.14 * S * (1.0 - t) + px1)
+                            .fill_color(hexa(if k % 2 == 0 { glow } else { 0xffffff }, 1.0 - t * 0.6))
+                            .fill(),
+                    };
+                }
+                // The spell's seal pops in at the centre, then fades into the tile.
+                let pop = ease_out_back(phase(t, 0.0, 0.35)).max(0.01);
+                let p = p.global_alpha(1.0 - phase(t, 0.7, 1.0));
+                art::spell_emblem(p, *spell, c, 0.42 * S * pop, 2.0 * px1).global_alpha(1.0)
+            }
             AnimKind::Jelly { .. } | AnimKind::Slide { .. } => p,
         };
     }
@@ -652,26 +750,34 @@ fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32) -> Painter {
     p
 }
 
-/// A tile whose number came up: it swells, wobbles and glows (or, blocked
-/// by a robber, shakes and flushes red), `k` 0..1 through it.
-fn wobbling_tile(p: Painter, g: &Game, t: TileId, k: f32, blocked: bool, px1: f32) -> Painter {
+/// A tile whose number came up: it swells, wobbles and glows; blocked by a
+/// robber it shakes in red; under a spell it shivers or swells in the
+/// spell's colour. `k` runs 0..1 through it.
+fn wobbling_tile(p: Painter, g: &Game, t: TileId, k: f32, mood: Mood, px1: f32) -> Painter {
     let c = tile_pos(g, t);
     let fade = 1.0 - k;
-    let (dx, sx, sy) = if blocked {
-        ((k * TAU * 4.0).sin() * fade * 0.1 * S, 1.0, 1.0)
-    } else {
-        let swell = 0.14 * (PI * phase(k, 0.0, 0.3)).sin();
-        let wobble = 0.13 * fade * fade * (k * TAU * 3.0).sin();
-        (0.0, 1.0 + swell + wobble, 1.0 + swell - wobble)
+    let (dx, sx, sy) = match mood {
+        Mood::Blocked => ((k * TAU * 4.0).sin() * fade * 0.1 * S, 1.0, 1.0),
+        Mood::Stopped(_) => ((k * TAU * 9.0).sin() * fade * 0.05 * S, 1.0, 1.0),
+        Mood::Normal | Mood::Doubled(_) => {
+            let size = if mood == Mood::Normal { 0.14 } else { 0.24 };
+            let swell = size * (PI * phase(k, 0.0, 0.3)).sin();
+            let wobble = 0.13 * fade * fade * (k * TAU * 3.0).sin();
+            (0.0, 1.0 + swell + wobble, 1.0 + swell - wobble)
+        }
+    };
+    let (tint, glow) = match mood {
+        Mood::Normal => (0xffffff, palette::GOLD),
+        Mood::Blocked => (palette::DANGER, palette::DANGER),
+        Mood::Stopped(s) | Mood::Doubled(s) => (art::spell_colors(s).2, art::spell_colors(s).2),
     };
     let mut p = p.save().translate(c.0 + dx, c.1).scale(sx, sy).translate(-c.0, -c.1);
     p = art::shadow(p, 0.45 * fade, 14.0, 4.0);
     p = poly(p, &hex_points(c, S * 0.96)).fill_color(hex(SAND)).fill();
     p = art::no_shadow(p);
     p = tile_art(p, g, t, px1);
-    let glow = if blocked { palette::DANGER } else { palette::GOLD };
     p = poly(p, &hex_points(c, S * 0.96))
-        .fill_color(hexa(if blocked { palette::DANGER } else { 0xffffff }, 0.35 * fade))
+        .fill_color(hexa(tint, 0.35 * fade))
         .fill()
         .stroke_color(hexa(glow, fade))
         .line_width(6.0 * px1)
@@ -686,6 +792,202 @@ fn wobbling_tile(p: Painter, g: &Game, t: TileId, k: f32, blocked: bool, px1: f3
             .stroke();
     }
     p
+}
+
+/// A tile under a spell, `tile` being the spell's own or (for a swap) its
+/// partner. Each spell has a look of its own that moves with `now` (ms).
+fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: f64, px1: f32) -> Painter {
+    let c = tile_pos(g, tile);
+    let t = ((now / 1000.0) % 10_000.0) as f32;
+    let seed = tile.0 as u32 * 37;
+    let outline = hex_points(c, S * 0.96);
+    let (fill, deep, glow) = art::spell_colors(e.spell);
+    let pulse = 0.5 + 0.5 * (t * 2.4).sin();
+    p = poly(p.save(), &outline).clip();
+    match e.spell {
+        Spell::Frost => {
+            p = poly(p, &outline).fill_color(hexa(fill, 0.5)).fill();
+            p = p.stroke_color(hexa(0xffffff, 0.8)).line_width(1.6 * px1);
+            for i in 0..14 {
+                let a = i as f32 * TAU / 14.0 + hash01(seed + i) * 0.3;
+                let (r0, r1) = (0.98 * S, (0.6 + 0.18 * hash01(seed + i + 20)) * S);
+                let (from, to) = ((c.0 + a.cos() * r0, c.1 + a.sin() * r0), (c.0 + a.cos() * r1, c.1 + a.sin() * r1));
+                p = p.begin_path().move_to(from.0, from.1).line_to(to.0, to.1).stroke();
+                let mid = lerp(from, to, 0.5);
+                for side in [-0.6, 0.6] {
+                    let b = a + PI + side;
+                    let len = 0.1 * S;
+                    p = p
+                        .begin_path()
+                        .move_to(mid.0, mid.1)
+                        .line_to(mid.0 + b.cos() * len, mid.1 + b.sin() * len)
+                        .stroke();
+                }
+            }
+            for i in 0..9 {
+                let x = c.0 + (hash01(seed + i + 40) - 0.5) * 1.6 * S + (t * 1.3 + i as f32).sin() * 0.06 * S;
+                let fall = (t * 0.22 + hash01(seed + i + 60)) % 1.0;
+                let y = c.1 - S + fall * 2.0 * S;
+                let r = (0.05 + 0.03 * hash01(seed + i + 80)) * S;
+                p = art::snowflake(p, (x, y), r, 0xffffff, 1.3 * px1);
+            }
+        }
+        Spell::Bounty => {
+            p = poly(p, &outline).fill_color(hexa(0xfff0a0, 0.28 + 0.2 * pulse)).fill();
+            p = light_rays(p, c, t, 0xffffff, 0.22 + 0.12 * pulse);
+            p = rising_motes(p, c, t, seed, 0xffe066);
+            p = twinkles(p, c, t, seed, 0xffffff);
+        }
+        Spell::Rockslide => {
+            p = poly(p, &outline).fill_color(hexa(fill, 0.55)).fill();
+            // Cracks across the ground.
+            p = p.stroke_color(hexa(deep, 0.7)).line_width(2.0 * px1);
+            for i in 0..4 {
+                let a = hash01(seed + i) * TAU;
+                let mut at = (c.0 + a.cos() * 0.15 * S, c.1 + a.sin() * 0.15 * S);
+                p = p.begin_path().move_to(at.0, at.1);
+                for j in 0..4 {
+                    let b = a + (hash01(seed + i * 9 + j) - 0.5) * 1.2;
+                    at = (at.0 + b.cos() * 0.22 * S, at.1 + b.sin() * 0.22 * S);
+                    p = p.line_to(at.0, at.1);
+                }
+                p = p.stroke();
+            }
+            // Rocks tumbling down, turning as they fall.
+            for i in 0..8 {
+                let x = c.0 + (hash01(seed + i + 40) - 0.5) * 1.5 * S;
+                let fall = (t * 0.35 + hash01(seed + i + 60)) % 1.0;
+                let y = c.1 - S + fall * 2.0 * S;
+                let r = (0.06 + 0.05 * hash01(seed + i + 80)) * S;
+                let spin = t * (2.0 + 3.0 * hash01(seed + i + 90));
+                let rock: Vec<(f32, f32)> = (0..5)
+                    .map(|k| {
+                        let a = spin + k as f32 * TAU / 5.0;
+                        let rr = r * (0.75 + 0.35 * hash01(seed + i * 5 + k));
+                        (x + a.cos() * rr, y + a.sin() * rr)
+                    })
+                    .collect();
+                p = poly(p, &rock).fill_color(hex(palette::shade(fill, 0.55))).fill();
+            }
+        }
+        Spell::Motherlode => {
+            p = poly(p, &outline).fill_color(hexa(glow, 0.2 + 0.15 * pulse)).fill();
+            p = light_rays(p, c, t, 0xeafff0, 0.16 + 0.1 * pulse);
+            for i in 0..6 {
+                let a = hash01(seed + i + 100) * TAU;
+                let d = (0.3 + 0.45 * hash01(seed + i + 120)) * S;
+                let at = (c.0 + a.cos() * d, c.1 + a.sin() * d);
+                let r = 0.09 * S;
+                let gem = [(at.0, at.1 - r), (at.0 + r * 0.7, at.1), (at.0, at.1 + r * 1.2), (at.0 - r * 0.7, at.1)];
+                p = poly(p, &gem)
+                    .fill_color(hex(deep))
+                    .fill()
+                    .stroke_color(hexa(0xffffff, 0.8))
+                    .line_width(px1)
+                    .stroke();
+            }
+            p = twinkles(p, c, t, seed, 0xffffff);
+        }
+        Spell::Ward => {
+            p = poly(p, &outline).fill_color(hexa(glow, 0.16 + 0.1 * pulse)).fill();
+            // A shimmer sweeping up the dome.
+            let band = c.1 + S - ((t * 0.5) % 1.0) * 2.0 * S;
+            p = p.fill_color(hexa(0xffffff, 0.18)).fill_rect(c.0 - S, band - 0.08 * S, 2.0 * S, 0.16 * S);
+            // A turning ring of runes.
+            p = p.stroke_color(hexa(deep, 0.85)).line_width(2.5 * px1);
+            for i in 0..12 {
+                let a = t * 0.6 + i as f32 * TAU / 12.0;
+                p = p.begin_path().arc(c.0, c.1, 0.68 * S, a, a + 0.32).stroke();
+            }
+            p = poly(p, &hex_points(c, S * (0.8 + 0.04 * pulse)))
+                .stroke_color(hexa(0xffffff, 0.7))
+                .line_width(2.0 * px1)
+                .stroke();
+        }
+        Spell::Swap => {
+            p = poly(p, &outline).fill_color(hexa(glow, 0.2 + 0.1 * pulse)).fill();
+            // Two arrows chasing each other round the number.
+            p = p.stroke_color(hex(deep)).fill_color(hex(deep)).line_width(4.0 * px1);
+            for k in 0..2 {
+                let start = t * 1.2 + k as f32 * PI;
+                let end = start + PI * 0.7;
+                let r = 0.6 * S;
+                p = p.begin_path().arc(c.0, c.1, r, start, end).stroke();
+                let tip = (c.0 + end.cos() * r, c.1 + end.sin() * r);
+                let back = end - 0.3;
+                let (o, i) = (r + 0.12 * S, r - 0.12 * S);
+                p = poly(
+                    p,
+                    &[tip, (c.0 + back.cos() * o, c.1 + back.sin() * o), (c.0 + back.cos() * i, c.1 + back.sin() * i)],
+                )
+                .fill();
+            }
+        }
+        Spell::Lure | Spell::Rally | Spell::Windfall => {}
+    }
+    p = p.restore();
+    // A bright rim in the spell's glow, lined in white.
+    if e.spell != Spell::Frost {
+        p = poly(p, &outline).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
+    }
+    p = poly(p, &hex_points(c, S * 0.92)).stroke_color(hexa(0xffffff, 0.9)).line_width(2.5 * px1).stroke();
+    // The number stays readable above the spell.
+    let number = g.board.tile(tile).number;
+    token(p, (c.0, c.1 - 0.08 * S), number, g.robber_at(tile).is_some(), px1)
+}
+
+/// Slowly turning rays of light from a tile's centre.
+fn light_rays(mut p: Painter, c: (f32, f32), t: f32, color: u32, alpha: f32) -> Painter {
+    p = p.save().translate(c.0, c.1).rotate(t * 0.35);
+    for i in 0..8 {
+        let a = i as f32 * TAU / 8.0;
+        let r = 1.3 * S;
+        p = poly(
+            p,
+            &[(0.0, 0.0), (r * (a - 0.13).cos(), r * (a - 0.13).sin()), (r * (a + 0.13).cos(), r * (a + 0.13).sin())],
+        )
+        .fill_color(hexa(color, alpha))
+        .fill();
+    }
+    p.restore()
+}
+
+/// Motes of light drifting up a tile.
+fn rising_motes(mut p: Painter, c: (f32, f32), t: f32, seed: u32, color: u32) -> Painter {
+    for i in 0..8 {
+        let x = c.0 + (hash01(seed + i + 40) - 0.5) * 1.5 * S;
+        let rise = (t * 0.2 + hash01(seed + i + 60)) % 1.0;
+        let y = c.1 + S - rise * 2.0 * S;
+        p = circle(p, (x, y), 0.04 * S).fill_color(hexa(color, 1.0 - rise)).fill();
+    }
+    p
+}
+
+/// Sparkles winking on and off across a tile.
+fn twinkles(mut p: Painter, c: (f32, f32), t: f32, seed: u32, color: u32) -> Painter {
+    for i in 0..5 {
+        let a = hash01(seed + i + 100) * TAU;
+        let d = (0.25 + 0.45 * hash01(seed + i + 120)) * S;
+        let twinkle = (t * 2.5 + hash01(seed + i + 140) * 6.0).sin().max(0.0);
+        p = art::sparkle(p, (c.0 + a.cos() * d, c.1 + a.sin() * d), 0.11 * S * twinkle)
+            .fill_color(hexa(color, twinkle))
+            .fill();
+    }
+    p
+}
+
+/// The spell's seal on its tile's upper right, with the rolls it has left,
+/// legible at any zoom.
+fn spell_seal(p: Painter, g: &Game, e: &Enchantment, tile: TileId, px1: f32) -> Painter {
+    let c = tile_pos(g, tile);
+    let (_, deep, _) = art::spell_colors(e.spell);
+    let mut p = p.save().translate(c.0 + 0.5 * S, c.1 - 0.5 * S).scale(px1, px1);
+    p = art::shadow(p, 0.45, 6.0, 2.0);
+    p = art::spell_emblem(p, e.spell, (0.0, 0.0), 11.0, 1.5);
+    p = art::no_shadow(p);
+    p = circle(p, (9.0, 8.0), 7.0).fill_color(hex(deep)).fill().stroke_color(hex(0xffffff)).line_width(1.5).stroke();
+    p = text_at(p, &e.charges.to_string(), (9.0, 8.5), 10.0, 0xffffff, 900, 1.0);
+    p.restore()
 }
 
 /// Trees, peaks, fields or ore hills, placed the same way every frame.
@@ -911,7 +1213,12 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             Tap::Inspect(i) => {
                 if !matches!(
                     app.mode.get_untracked(),
-                    Mode::Road | Mode::Outpost | Mode::UpgradeTown | Mode::UpgradeCity | Mode::Deploy(_)
+                    Mode::Road
+                        | Mode::Outpost
+                        | Mode::UpgradeTown
+                        | Mode::UpgradeCity
+                        | Mode::Deploy(_)
+                        | Mode::Cast(..)
                 ) {
                     app.mode.set(Mode::Idle);
                 }
@@ -961,7 +1268,10 @@ pub fn board_view(app: AppState) -> impl IntoElement {
     canvas(move || {
         let (w, h) = size.get();
         let anims = app.anims.get();
-        let now = if anims.is_empty() { now_ms() } else { app.clock.get() };
+        // Spells on the board move continuously; otherwise only animations do.
+        let enchanted =
+            app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(|g| !g.enchantments.is_empty()));
+        let now = if anims.is_empty() && !enchanted { now_ms() } else { app.clock.get() };
         let Some(view) = app.view.get() else {
             return Painter::new();
         };

@@ -1,8 +1,8 @@
-//! What every piece and rule does, in words. Numbers come from the engine's
-//! `balance` and outcomes from its own rules, so the text cannot drift from
-//! the game.
+//! What every piece, spell and rule does, in words. Numbers come from the
+//! engine's `balance` and outcomes from its own rules, so the text cannot
+//! drift from the game.
 
-use kings_cove_engine::{BuildingKind, Game, PlayerId, Resources, Target, UnitId, UnitKind, balance};
+use kings_cove_engine::{BuildingKind, Game, Lasting, PlayerId, Resources, Spell, Target, UnitId, balance};
 
 use crate::art::Glyph;
 
@@ -14,11 +14,10 @@ pub enum Item {
     Town,
     City,
     Knight,
-    Ram,
 }
 
 impl Item {
-    pub const ALL: [Item; 6] = [Item::Road, Item::Outpost, Item::Town, Item::City, Item::Knight, Item::Ram];
+    pub const ALL: [Item; 5] = [Item::Road, Item::Outpost, Item::Town, Item::City, Item::Knight];
 
     pub fn cost(self) -> Resources {
         match self {
@@ -27,7 +26,6 @@ impl Item {
             Item::Town => balance::TOWN_UPGRADE_COST,
             Item::City => balance::CITY_UPGRADE_COST,
             Item::Knight => balance::KNIGHT_CARD_COST,
-            Item::Ram => balance::RAM_CARD_COST,
         }
     }
 
@@ -37,8 +35,7 @@ impl Item {
             Item::Outpost => Glyph::Building(BuildingKind::Outpost),
             Item::Town => Glyph::Building(BuildingKind::Town),
             Item::City => Glyph::Building(BuildingKind::City),
-            Item::Knight => Glyph::Unit(UnitKind::Knight),
-            Item::Ram => Glyph::Unit(UnitKind::Ram),
+            Item::Knight => Glyph::Knight,
         }
     }
 
@@ -49,7 +46,6 @@ impl Item {
             Item::Town => "Town",
             Item::City => "City",
             Item::Knight => "Knight",
-            Item::Ram => "Ram",
         }
     }
 
@@ -61,7 +57,6 @@ impl Item {
             Item::Town => "Upgrade to a town",
             Item::City => "Upgrade to a city",
             Item::Knight => "Buy a knight card",
-            Item::Ram => "Buy a ram card",
         }
     }
 
@@ -73,7 +68,7 @@ impl Item {
             Item::Outpost => "No free corner on your roads",
             Item::Town => "You have no outpost to upgrade",
             Item::City => "You have no town to upgrade",
-            Item::Knight | Item::Ram => "You cannot buy one now",
+            Item::Knight => "You cannot buy one now",
         }
     }
 
@@ -83,15 +78,11 @@ impl Item {
             Item::Outpost => "A new settlement at the end of your roads.",
             Item::Town => "An outpost grown into a town.",
             Item::City => "A town grown into a walled city.",
-            Item::Knight => "A fighter that clears robbers and defends against rams.",
-            Item::Ram => "A siege engine that knocks enemy buildings down.",
+            Item::Knight => "A fighter that clears robbers and duels enemy knights.",
         }
     }
 
     pub fn rules(self) -> Vec<String> {
-        let unit_moves =
-            "Each turn it either moves to a free neighbouring tile or attacks; it rests the turn it arrives.";
-        let deploys = "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or city (not an outpost).";
         match self {
             Item::Road => vec![
                 "Sits on a side of a tile.".to_owned(),
@@ -105,8 +96,7 @@ impl Item {
                     BuildingKind::Outpost.points(),
                     balance::OUTPOST_YIELD
                 ),
-                "Upgrade it to a town to score and to deploy units beside it.".to_owned(),
-                "A ram hitting it razes it.".to_owned(),
+                "Upgrade it to a town to score and to deploy knights beside it.".to_owned(),
             ],
             Item::Town => vec![
                 "Upgrades one of your outposts in place.".to_owned(),
@@ -115,8 +105,7 @@ impl Item {
                     balance::TOWN_POINTS,
                     balance::TOWN_YIELD
                 ),
-                "Knights and rams deploy onto the tiles it touches.".to_owned(),
-                "A ram hitting it knocks it back to an outpost.".to_owned(),
+                "Knights deploy onto the tiles it touches.".to_owned(),
             ],
             Item::City => vec![
                 "Upgrades one of your towns in place.".to_owned(),
@@ -125,23 +114,107 @@ impl Item {
                     balance::CITY_POINTS,
                     balance::CITY_YIELD
                 ),
-                "A ram hitting it knocks it back to a town.".to_owned(),
+                "Your first city unlocks spells.".to_owned(),
             ],
             Item::Knight => vec![
-                deploys.to_owned(),
-                unit_moves.to_owned(),
-                "Attacks a neighbouring robber, enemy knight or enemy ram:".to_owned(),
-                "• Robber: the robber is removed.".to_owned(),
+                "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or city (not an outpost).".to_owned(),
+                "Each turn it either moves to a free neighbouring tile or attacks; it rests the turn it arrives.".to_owned(),
+                "Attacks a neighbouring robber or enemy knight:".to_owned(),
+                "• Robber: the robber and your knight both fall.".to_owned(),
                 "• Knight: both knights fall.".to_owned(),
-                "• Ram: the ram is destroyed and your knight survives.".to_owned(),
-            ],
-            Item::Ram => vec![
-                deploys.to_owned(),
-                unit_moves.to_owned(),
-                "Attacks an enemy building on a corner of its own tile, one level at a time: city → town → outpost → gone. The owner loses the points.".to_owned(),
-                "Cannot fight units or robbers. An enemy knight next to it can destroy it.".to_owned(),
             ],
         }
+    }
+}
+
+pub fn spell_title(spell: Spell) -> &'static str {
+    match spell {
+        Spell::Frost => "Frost",
+        Spell::Bounty => "Bounty",
+        Spell::Rockslide => "Rockslide",
+        Spell::Motherlode => "Motherlode",
+        Spell::Ward => "Ward",
+        Spell::Lure => "Lure",
+        Spell::Swap => "Swap",
+        Spell::Rally => "Rally",
+        Spell::Windfall => "Windfall",
+    }
+}
+
+pub fn spell_summary(spell: Spell) -> &'static str {
+    match spell {
+        Spell::Frost => "Freezes a wood or food tile solid.",
+        Spell::Bounty => "Blesses a wood or food tile with a double harvest.",
+        Spell::Rockslide => "Buries a stone or iron tile under rubble.",
+        Spell::Motherlode => "Opens a rich seam in a stone or iron tile.",
+        Spell::Ward => "Raises a shield no robber can cross.",
+        Spell::Lure => "Draws a robber wherever you want it.",
+        Spell::Swap => "Two tiles trade their numbers.",
+        Spell::Rally => "Your knights stand ready again.",
+        Spell::Windfall => "Your next roll brings a bit of everything.",
+    }
+}
+
+/// What the spell does, then the rules every spell shares.
+pub fn spell_rules(spell: Spell) -> Vec<String> {
+    let rolls = |effect: &str, tiles: &str| {
+        format!(
+            "Cast on a {tiles} tile. {effect} for the next {} times its number is rolled, for everyone with a building on it.",
+            balance::SPELL_CHARGES
+        )
+    };
+    let mut lines = vec![match spell {
+        Spell::Frost => rolls("It produces nothing", "wood or food"),
+        Spell::Bounty => rolls("It produces double", "wood or food"),
+        Spell::Rockslide => rolls("It produces nothing", "stone or iron"),
+        Spell::Motherlode => rolls("It produces double", "stone or iron"),
+        Spell::Ward => format!(
+            "Cast on any tile. For {} rounds no robber may enter or stay there: one standing on it is pushed to a neighbouring tile.",
+            balance::WARD_ROUNDS
+        ),
+        Spell::Lure => {
+            "Pick a robber, then any free tile: the robber moves there and stays put through the next full round."
+                .to_owned()
+        }
+        Spell::Swap => format!(
+            "Pick two tiles with different numbers: they trade numbers until either number has been rolled {} times between them.",
+            balance::SPELL_CHARGES
+        ),
+        Spell::Rally => "Every one of your knights can move or attack again this turn.".to_owned(),
+        Spell::Windfall => {
+            "On your next roll, whatever comes up, you collect 1 of each resource your buildings touch.".to_owned()
+        }
+    }];
+    if spell.lasting().is_some() {
+        lines.push("A spell cast on a tile that already holds one replaces it.".to_owned());
+    }
+    lines.push(format!(
+        "Spells unlock with your first city. Any spell empties your mana for {} rounds.",
+        balance::MANA_RECHARGE_ROUNDS
+    ));
+    lines
+}
+
+/// What a lingering spell's counter counts.
+pub fn charges_word(spell: Spell, n: u32) -> String {
+    let word = match spell.lasting() {
+        Some((Lasting::Rounds, _)) => "round",
+        _ => "roll",
+    };
+    format!("{n} {word}{} left", if n == 1 { "" } else { "s" })
+}
+
+/// What the board asks while a spell is being aimed.
+pub fn spell_hint(spell: Spell, picked_first: bool) -> String {
+    match (spell, picked_first) {
+        (Spell::Frost | Spell::Bounty, _) => format!("Tap a wood or food tile for {}", spell.name()),
+        (Spell::Rockslide | Spell::Motherlode, _) => format!("Tap a stone or iron tile for {}", spell.name()),
+        (Spell::Ward, _) => "Tap a tile to ward".to_owned(),
+        (Spell::Lure, false) => "Tap the robber to lure".to_owned(),
+        (Spell::Lure, true) => "Tap a free tile to lure it to".to_owned(),
+        (Spell::Swap, false) => "Tap the first tile to swap".to_owned(),
+        (Spell::Swap, true) => "Tap a tile with another number to swap with".to_owned(),
+        (Spell::Rally | Spell::Windfall, _) => String::new(),
     }
 }
 
@@ -163,7 +236,11 @@ pub fn rulebook() -> Vec<Section> {
             Some(Glyph::Building(BuildingKind::City)),
             vec![
                 format!("The first player to {} victory points wins.", balance::VICTORY_POINTS_TO_WIN),
-                format!("Towns are worth {} VP and cities {}; outposts score nothing.", balance::TOWN_POINTS, balance::CITY_POINTS),
+                format!(
+                    "Towns are worth {} VP and cities {}; outposts score nothing.",
+                    balance::TOWN_POINTS,
+                    balance::CITY_POINTS
+                ),
             ],
         ),
         page(
@@ -179,7 +256,7 @@ pub fn rulebook() -> Vec<Section> {
             None,
             vec![
                 "Roll the dice. Every building touching a tile with that number collects its resource: yours and everyone else's.".to_owned(),
-                "Then build, buy unit cards, trade, deploy and command your units, in any order.".to_owned(),
+                "Then build, buy knight cards, cast a spell, trade, deploy and command your knights, in any order.".to_owned(),
                 "End your turn when you are done.".to_owned(),
             ],
         ),
@@ -190,42 +267,52 @@ pub fn rulebook() -> Vec<Section> {
         cost: Some(item.cost()),
         lines: std::iter::once(item.summary().to_owned()).chain(item.rules()).collect(),
     }));
+    pages.extend(Spell::ALL.into_iter().map(|spell| Section {
+        title: format!("Spell: {}", spell_title(spell)),
+        glyph: Some(Glyph::Spell(spell)),
+        cost: Some(spell.cost()),
+        lines: std::iter::once(spell_summary(spell).to_owned()).chain(spell_rules(spell)).collect(),
+    }));
     pages.extend([
         page(
             "Combat",
             None,
             vec![
-                "Knight → robber: the robber is removed.".to_owned(),
+                "Knight → robber: the robber and the knight both fall.".to_owned(),
                 "Knight → knight: both knights fall.".to_owned(),
-                "Knight → ram: the ram is destroyed.".to_owned(),
-                "Ram → building: city → town → outpost → gone.".to_owned(),
-                "A unit that attacks is done until your next turn. One unit or robber per tile.".to_owned(),
+                "Every attack costs the attacking knight. One knight or robber per tile.".to_owned(),
             ],
         ),
         page(
             "Robbers",
             Some(Glyph::Robber),
             vec![
-                "A robber blocks production on its tile.".to_owned(),
+                "A robber blocks production on its tile. The island always has at least one: one stands from the start.".to_owned(),
                 format!(
                     "Rolling {} produces nothing. The roller moves a robber to any free tile, or places a new one when the island has none. It then stays put through the next full round.",
                     balance::ROBBER_ROLL
                 ),
                 "At the end of every round each robber wanders to a free neighbouring tile.".to_owned(),
                 format!(
-                    "Then, while there are fewer robbers than one per {} towns and cities on the island, a new one may appear ({}% chance).",
+                    "While there are fewer robbers than one per {} towns and cities on the island, another may appear at the end of a round ({}% chance).",
                     balance::SETTLEMENTS_PER_ROBBER,
                     spawn_num * 100 / spawn_den
                 ),
-                "Knights remove robbers.".to_owned(),
+                format!(
+                    "A knight can bring a robber down, falling with it. After that, no robber appears for {} full rounds; then a new one appears if the island has none.",
+                    balance::ROBBER_RESPAWN_ROUNDS
+                ),
             ],
         ),
         page(
             "Trading",
             Some(Glyph::Trade),
             vec![
-                "On your turn, offer resources to everyone or to one player.".to_owned(),
-                "The first player to accept trades with you; anyone can decline.".to_owned(),
+                format!(
+                    "On your turn, trade {} of one resource for 1 of any other with the bank, as often as you like.",
+                    balance::BANK_TRADE_RATE
+                ),
+                "Or offer resources to everyone or to one player. The first player to accept trades with you; anyone can decline.".to_owned(),
             ],
         ),
     ]);
@@ -235,39 +322,14 @@ pub fn rulebook() -> Vec<Section> {
 /// What an attack will do, before it is made: a title and a sentence.
 pub fn attack_outcome(g: &Game, names: &[String], unit: UnitId, target: Target) -> Option<(String, String)> {
     let name = |p: PlayerId| names.get(p.index()).cloned().unwrap_or_else(|| format!("Player {}", p.0 + 1));
-    let attacker = g.unit(unit)?;
-    let rests = "Your unit is then done until your next turn.";
-    Some(match (attacker.kind, target) {
-        (UnitKind::Knight, Target::Robber(_)) => {
-            ("Knight vs robber".to_owned(), format!("The robber is removed. {rests}"))
+    g.unit(unit)?;
+    Some(match target {
+        Target::Robber(_) => {
+            ("Knight vs robber".to_owned(), "The robber is removed, and your knight falls with it.".to_owned())
         }
-        (UnitKind::Knight, Target::Unit(u)) => {
+        Target::Unit(u) => {
             let defender = g.unit(u)?;
-            match defender.kind {
-                UnitKind::Knight => {
-                    ("Knight vs knight".to_owned(), format!("Both knights fall: yours and {}'s.", name(defender.owner)))
-                }
-                UnitKind::Ram => {
-                    ("Knight vs ram".to_owned(), format!("{}'s ram is destroyed. {rests}", name(defender.owner)))
-                }
-            }
+            ("Knight vs knight".to_owned(), format!("Both knights fall: yours and {}'s.", name(defender.owner)))
         }
-        (UnitKind::Ram, Target::Building(v)) => {
-            let building = g.building(v)?;
-            let owner = name(building.owner);
-            let was = building.kind;
-            let text = match was.downgrade() {
-                Some(now) => format!(
-                    "{owner}'s {} becomes {} {}, losing {} VP. {rests}",
-                    was.name(),
-                    if now == BuildingKind::Outpost { "an" } else { "a" },
-                    now.name(),
-                    was.points() - now.points()
-                ),
-                None => format!("{owner}'s outpost is razed. {rests}"),
-            };
-            (format!("Ram vs {}", was.name()), text)
-        }
-        _ => return None,
     })
 }

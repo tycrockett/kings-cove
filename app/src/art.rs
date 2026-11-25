@@ -5,7 +5,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use kings_cove_engine::{BuildingKind, Resource, UnitKind};
+use kings_cove_engine::{BuildingKind, Resource, Spell};
 use nsh_core::{
     canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline},
     prelude::*,
@@ -306,50 +306,208 @@ pub fn building(p: Painter, (x, y): (f32, f32), kind: BuildingKind, color: u32, 
     }
 }
 
-/// Knight: a shield bearing a sword. Ram: a wagon bearing a ram's log.
-pub fn unit(p: Painter, (x, y): (f32, f32), kind: UnitKind, color: u32, r: f32, line: f32) -> Painter {
-    let mut p = ground_shadow(p, (x, y + 1.05 * r), 0.95 * r);
-    let body = match kind {
-        UnitKind::Knight => poly(
-            p,
-            &[
-                (x - 0.85 * r, y - 0.9 * r),
-                (x + 0.85 * r, y - 0.9 * r),
-                (x + 0.85 * r, y + 0.05 * r),
-                (x + 0.6 * r, y + 0.55 * r),
-                (x, y + 1.0 * r),
-                (x - 0.6 * r, y + 0.55 * r),
-                (x - 0.85 * r, y + 0.05 * r),
-            ],
-        ),
-        UnitKind::Ram => rrect(p, (x, y), 2.0 * r, 1.7 * r, 0.25 * r),
-    };
-    p = body
+/// A knight: a shield bearing a sword.
+pub fn knight(p: Painter, (x, y): (f32, f32), color: u32, r: f32, line: f32) -> Painter {
+    let p = ground_shadow(p, (x, y + 1.05 * r), 0.95 * r);
+    let shield = [
+        (x - 0.85 * r, y - 0.9 * r),
+        (x + 0.85 * r, y - 0.9 * r),
+        (x + 0.85 * r, y + 0.05 * r),
+        (x + 0.6 * r, y + 0.55 * r),
+        (x, y + 1.0 * r),
+        (x - 0.6 * r, y + 0.55 * r),
+        (x - 0.85 * r, y + 0.05 * r),
+    ];
+    let p = poly(p, &shield)
         .fill_style(vgrad(y - r, y + r, palette::lighten(color, 0.25), palette::shade(color, 0.78)))
         .fill()
         .stroke_color(hex(palette::INK))
         .line_width(line)
         .stroke();
-    let ink = palette::ink_on(color);
-    p = p.stroke_color(hex(ink)).fill_color(hex(ink)).line_width(0.16 * r);
-    match kind {
-        UnitKind::Knight => p
-            .begin_path()
-            .move_to(x, y - 0.6 * r)
-            .line_to(x, y + 0.55 * r)
-            .stroke()
-            .begin_path()
-            .move_to(x - 0.32 * r, y - 0.2 * r)
-            .line_to(x + 0.32 * r, y - 0.2 * r)
-            .stroke(),
-        UnitKind::Ram => {
-            let p = p.begin_path().move_to(x - 0.65 * r, y - 0.15 * r).line_to(x + 0.45 * r, y - 0.15 * r).stroke();
-            let p = poly(p, &[(x + 0.45 * r, y - 0.4 * r), (x + 0.75 * r, y - 0.15 * r), (x + 0.45 * r, y + 0.1 * r)])
-                .fill();
-            let p = circle(p, (x - 0.35 * r, y + 0.4 * r), 0.16 * r).fill();
-            circle(p, (x + 0.3 * r, y + 0.4 * r), 0.16 * r).fill()
+    p.stroke_color(hex(palette::ink_on(color)))
+        .line_width(0.16 * r)
+        .begin_path()
+        .move_to(x, y - 0.6 * r)
+        .line_to(x, y + 0.55 * r)
+        .stroke()
+        .begin_path()
+        .move_to(x - 0.32 * r, y - 0.2 * r)
+        .line_to(x + 0.32 * r, y - 0.2 * r)
+        .stroke()
+}
+
+/// The colours of a spell: its fill, its deep tone and its glow.
+pub fn spell_colors(spell: Spell) -> (u32, u32, u32) {
+    match spell {
+        Spell::Frost => (0xcfeeff, 0x2f7fb8, 0x9fdcff),
+        Spell::Bounty => (0xffe58a, 0xb7791f, 0xffd447),
+        Spell::Rockslide => (0xe3cfb2, 0x6b4a2f, 0xc29a6b),
+        Spell::Motherlode => (0xd2f5dc, 0x1f7a44, 0x6fe09a),
+        Spell::Ward => (0xd8fff4, 0x1f8a74, 0x7fe8cf),
+        Spell::Lure => (0xffd9d0, 0xa33a2a, 0xff8a6a),
+        Spell::Swap => (0xf0dcff, 0x7a3fb8, 0xc99cff),
+        Spell::Rally => (0xffdcd6, 0xb3261e, 0xff7a6a),
+        Spell::Windfall => (0xfff0c8, 0xa86b00, 0xffc94a),
+    }
+}
+
+/// A six-armed snowflake of radius `r`.
+pub fn snowflake(mut p: Painter, (x, y): (f32, f32), r: f32, color: u32, width: f32) -> Painter {
+    p = p.stroke_color(hex(color)).line_width(width);
+    for i in 0..6 {
+        let a = i as f32 * PI / 3.0 - PI / 2.0;
+        let (dx, dy) = (a.cos(), a.sin());
+        p = p.begin_path().move_to(x, y).line_to(x + dx * r, y + dy * r).stroke();
+        let (bx, by) = (x + dx * r * 0.55, y + dy * r * 0.55);
+        for side in [-1.0, 1.0] {
+            let b = a + side * 0.75;
+            p = p.begin_path().move_to(bx, by).line_to(bx + b.cos() * r * 0.32, by + b.sin() * r * 0.32).stroke();
         }
     }
+    p
+}
+
+/// A four-pointed sparkle of radius `r`.
+pub fn sparkle(p: Painter, (x, y): (f32, f32), r: f32) -> Painter {
+    let k = r * 0.22;
+    poly(
+        p,
+        &[
+            (x, y - r),
+            (x + k, y - k),
+            (x + r, y),
+            (x + k, y + k),
+            (x, y + r),
+            (x - k, y + k),
+            (x - r, y),
+            (x - k, y - k),
+        ],
+    )
+}
+
+/// A spell's emblem: a round seal in the spell's colours bearing its sign.
+pub fn spell_emblem(p: Painter, spell: Spell, (x, y): (f32, f32), r: f32, line: f32) -> Painter {
+    let (fill, deep, _) = spell_colors(spell);
+    let face = CanvasGradient::radial(point(px(x - 0.3 * r), px(y - 0.35 * r)), px(0.0), point(px(x), px(y)), px(r))
+        .add_color_stop(percentage(0.0), hex(0xffffff))
+        .add_color_stop(percentage(0.5), hex(fill))
+        .add_color_stop(percentage(1.0), hex(palette::shade(fill, 0.8)));
+    let p = circle(p, (x, y), r).fill_style(face).fill().stroke_color(hex(deep)).line_width(line).stroke();
+    let at = |dx: f32, dy: f32| (x + dx * r, y + dy * r);
+    let ink = hex(deep);
+    let stroke = (r * 0.14).max(line);
+    let segment =
+        |p: Painter, a: (f32, f32), b: (f32, f32)| p.begin_path().move_to(a.0, a.1).line_to(b.0, b.1).stroke();
+    match spell {
+        Spell::Frost => snowflake(p, (x, y), r * 0.68, deep, (r * 0.13).max(line)),
+        Spell::Bounty => {
+            let mut p = p.fill_color(ink);
+            for i in 0..8 {
+                let a = i as f32 * PI / 4.0;
+                let (r0, r1) = (0.36, if i % 2 == 0 { 0.78 } else { 0.6 });
+                p = poly(
+                    p,
+                    &[
+                        at((a - 0.18).cos() * r0, (a - 0.18).sin() * r0),
+                        at(a.cos() * r1, a.sin() * r1),
+                        at((a + 0.18).cos() * r0, (a + 0.18).sin() * r0),
+                    ],
+                )
+                .fill();
+            }
+            circle(p, (x, y), r * 0.3).fill_color(hex(0xffffff)).fill().stroke_color(ink).line_width(line).stroke()
+        }
+        Spell::Rockslide => {
+            let mut p = p;
+            for (dx, dy, rr) in [(-0.3, 0.24, 0.26), (0.3, 0.27, 0.24), (0.0, -0.18, 0.3)] {
+                p = circle(p, at(dx, dy), rr * r).fill_color(ink).fill();
+                p = circle(p, at(dx - 0.08, dy - 0.08), rr * r * 0.35).fill_color(hexa(0xffffff, 0.45)).fill();
+            }
+            p
+        }
+        Spell::Motherlode => {
+            let gem = [at(-0.48, -0.12), at(-0.24, -0.46), at(0.24, -0.46), at(0.48, -0.12), at(0.0, 0.56)];
+            let p = poly(p, &gem).fill_color(ink).fill().stroke_color(hexa(0xffffff, 0.7)).line_width(line);
+            let p = segment(p, at(-0.48, -0.12), at(0.48, -0.12));
+            let p = segment(p, at(-0.24, -0.46), at(0.0, 0.56));
+            segment(p, at(0.24, -0.46), at(0.0, 0.56))
+        }
+        Spell::Ward => {
+            let shield = [
+                at(-0.45, -0.5),
+                at(0.45, -0.5),
+                at(0.45, 0.02),
+                at(0.3, 0.32),
+                at(0.0, 0.58),
+                at(-0.3, 0.32),
+                at(-0.45, 0.02),
+            ];
+            let p = poly(p, &shield).fill_color(ink).fill().stroke_color(hex(0xffffff)).line_width(stroke);
+            let p = segment(p, at(0.0, -0.35), at(0.0, 0.35));
+            segment(p, at(-0.25, -0.08), at(0.25, -0.08))
+        }
+        Spell::Lure => {
+            let (a, b, c, d) = (at(0.15, 0.62), at(0.15, -0.18), at(0.15, -0.58), at(-0.18, -0.52));
+            let (e, f) = (at(-0.46, -0.44), at(-0.4, -0.16));
+            p.stroke_color(ink)
+                .line_width(stroke * 1.2)
+                .begin_path()
+                .move_to(a.0, a.1)
+                .line_to(b.0, b.1)
+                .quadratic_curve_to(point(px(c.0), px(c.1)), point(px(d.0), px(d.1)))
+                .quadratic_curve_to(point(px(e.0), px(e.1)), point(px(f.0), px(f.1)))
+                .stroke()
+        }
+        Spell::Swap => {
+            let mut p = p.stroke_color(ink).fill_color(ink).line_width(stroke);
+            for start in [PI * 1.1, PI * 0.1] {
+                let end = start + PI * 0.8;
+                p = p.begin_path().arc(x, y, r * 0.5, start, end).stroke();
+                let back = end - 0.5;
+                let tip = at(end.cos() * 0.5, end.sin() * 0.5);
+                let (t1, t2) = (at(back.cos() * 0.72, back.sin() * 0.72), at(back.cos() * 0.28, back.sin() * 0.28));
+                p = poly(p, &[tip, t1, t2]).fill();
+            }
+            p
+        }
+        Spell::Rally => {
+            let p = segment(p.stroke_color(ink).line_width(stroke), at(-0.3, 0.6), at(-0.3, -0.6));
+            poly(p, &[at(-0.3, -0.6), at(0.52, -0.4), at(0.2, -0.22), at(0.52, -0.04), at(-0.3, 0.04)])
+                .fill_color(ink)
+                .fill()
+        }
+        Spell::Windfall => {
+            let mut p = p;
+            for dy in [0.36, 0.14, -0.08] {
+                p = ellipse(p, at(-0.05, dy), r * 0.42, r * 0.15, 0.0)
+                    .fill_color(ink)
+                    .fill()
+                    .stroke_color(hex(0xffe9a0))
+                    .line_width(line)
+                    .stroke();
+            }
+            sparkle(p, at(0.42, -0.42), r * 0.26).fill_color(ink).fill()
+        }
+    }
+}
+
+/// A spellbook: a violet cover with a gold star and the pages' edge.
+pub fn spellbook(p: Painter, w: f32, h: f32) -> Painter {
+    let (x0, y0, bw, bh) = (w * 0.2, h * 0.08, w * 0.6, h * 0.84);
+    let p = p.fill_color(hex(0xfffaf0)).fill_rect(x0 + bw - w * 0.05, y0 + h * 0.06, w * 0.07, bh - h * 0.12);
+    let p = rrect(p, (x0 + bw / 2.0 - w * 0.02, y0 + bh / 2.0), bw, bh, w * 0.06)
+        .fill_style(vgrad(y0, y0 + bh, 0x8a5cd0, 0x4b2a86))
+        .fill()
+        .stroke_color(hex(palette::INK))
+        .line_width(1.2)
+        .stroke();
+    let p = p.fill_color(hex(0x3a1f6a)).fill_rect(x0 - w * 0.02, y0, w * 0.06, bh);
+    star(p, (x0 + bw / 2.0, y0 + bh * 0.46), bh * 0.24)
+        .fill_color(hex(palette::GOLD))
+        .fill()
+        .stroke_color(hex(0x8a5a10))
+        .line_width(1.0)
+        .stroke()
 }
 
 /// A hooded pawn.
@@ -416,7 +574,9 @@ pub fn die(p: Painter, (x, y): (f32, f32), s: f32, value: u8, rot: f32, line: f3
 pub enum Glyph {
     Road,
     Building(BuildingKind),
-    Unit(UnitKind),
+    Knight,
+    Spell(Spell),
+    Spellbook,
     Trade,
     Robber,
 }
@@ -431,7 +591,9 @@ pub fn glyph(p: Painter, glyph: Glyph, color: u32, w: f32, h: f32) -> Painter {
             let y = if kind == BuildingKind::City { h * 0.6 } else { h * 0.52 };
             building(p, (c.0, y), kind, color, u, 1.2)
         }
-        Glyph::Unit(kind) => unit(p, (c.0, h * 0.45), kind, color, h * 0.36, 1.2),
+        Glyph::Knight => knight(p, (c.0, h * 0.45), color, h * 0.36, 1.2),
+        Glyph::Spell(spell) => spell_emblem(p, spell, c, h * 0.44, 1.2),
+        Glyph::Spellbook => spellbook(p, w, h),
         Glyph::Robber => robber(p, (c.0, h * 0.5), h * 0.36, 1.2),
         Glyph::Trade => {
             let arrow = |p: Painter, y: f32, dir: f32, color: u32| {
