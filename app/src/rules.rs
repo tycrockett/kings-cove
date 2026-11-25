@@ -280,8 +280,13 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 match goal {
                     Some(goal) => format!("The first player to {goal} victory points wins."),
                     None => format!(
-                        "The first player to the match's goal wins: {} victory points, chosen when it is created. Longer games play on a bigger island.",
-                        goals_text()
+                        "The first player to the match's goal wins: {} victory points, chosen when it is created along with the island's size: {}.",
+                        goals_text(),
+                        balance::MapSize::ALL
+                            .iter()
+                            .map(|s| format!("{} ({} tiles)", s.label().to_lowercase(), s.tiles()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 },
                 format!(

@@ -102,11 +102,11 @@ fn ids_are_stable_and_generation_is_seeded_and_balanced() {
 }
 
 #[test]
-fn bigger_goals_play_on_bigger_balanced_islands() {
-    for (goal, tiles) in [(10, 19), (20, 37), (30, 61)] {
+fn each_map_size_plays_on_its_own_balanced_island() {
+    for (size, tiles) in [(balance::MapSize::Small, 19), (balance::MapSize::Medium, 37), (balance::MapSize::Large, 61)] {
         for seed in 0..5 {
-            let g = Game::new(&names(3), goal, &mut Rng::new(seed));
-            assert_eq!((g.victory_points, g.board.tiles.len()), (goal, tiles));
+            let g = Game::new(&names(3), 10, size, &mut Rng::new(seed));
+            assert_eq!(g.board.tiles.len(), tiles);
             assert!(g.board.numbers_balanced());
             assert!(g.board.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
             // Each resource keeps its share of the island.
@@ -795,7 +795,7 @@ fn extra_robbers_appear_about_a_quarter_of_rounds_below_capacity_only() {
 
 #[test]
 fn the_island_always_has_a_robber() {
-    let g = Game::new(&names(2), 10, &mut Rng::new(5));
+    let g = Game::new(&names(2), 10, balance::MapSize::Small, &mut Rng::new(5));
     assert_eq!(g.robbers.len(), 1, "one stands from the start");
 
     // With none on the board and no towns at all, one appears at the round's end.
@@ -937,7 +937,7 @@ fn reaching_ten_points_wins_and_ends_the_game() {
 fn a_seeded_game_replays_identically() {
     let play = |seed: u64| {
         let mut r = Rng::new(seed);
-        let mut g = Game::new(&names(2), 10, &mut r);
+        let mut g = Game::new(&names(2), 10, balance::MapSize::Small, &mut r);
         let order = g.setup_order();
         for &p in &order {
             let v = g.setup_vertices(p).into_iter().find(|&v| g.board.vertex(v).tiles.len() == 3).unwrap();

@@ -58,8 +58,8 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 ## Rules
 
 - **Board**: hex tiles of Wood, Stone, Food and Iron, numbered 2–12 without 7; the 6s and 8s never touch and no two
-  neighbours share a number. A match is played to 10, 20 or 30 victory points (chosen when it is created, default 20)
-  on an island of 19, 37 or 61 tiles.
+  neighbours share a number. A match is played to 10, 20 or 30 victory points (default 20) on a small, medium or large
+  island of 19, 37 or 61 tiles (default medium), both chosen when it is created.
 - **Buildings** sit on tile corners and are upgraded in place: **Outpost → Town → City**. Every new building starts as
   an outpost on the owner's roads. Towns and cities never stand on neighbouring corners: an outpost next to a town or
   city can't be upgraded, and starting towns keep the same distance.

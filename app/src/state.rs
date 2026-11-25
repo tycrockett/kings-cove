@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind};
+use kings_cove_engine::{
+    Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize,
+};
 use kings_cove_protocol::{ActionRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, Session, SessionRequest};
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
@@ -66,6 +68,8 @@ pub struct AppState {
     pub name: Signal<String>,
     /// The victory points a match created here is played to.
     pub goal: Signal<u32>,
+    /// The island size a match created here is played on.
+    pub map_size: Signal<MapSize>,
     pub session: Signal<Option<Session>>,
     pub view: Signal<Option<MatchView>>,
     pub toast: Signal<Option<String>>,
@@ -116,6 +120,7 @@ impl AppState {
             server: signal(Storage::get_item(SERVER_KEY).unwrap_or_else(|| DEFAULT_SERVER.to_owned())),
             name: signal(Storage::get_item(NAME_KEY).unwrap_or_default()),
             goal: signal(kings_cove_engine::balance::DEFAULT_VICTORY_POINTS),
+            map_size: signal(MapSize::default()),
             session: signal(session.clone()),
             view: signal(None),
             toast: signal(None),
@@ -183,10 +188,10 @@ impl AppState {
 
     // ----- Session -----
 
-    pub fn create(&self, name: String, victory_points: u32) {
+    pub fn create(&self, name: String, victory_points: u32, map_size: MapSize) {
         self.remember_lobby_inputs(&name);
         let (this, base) = (*self, self.base());
-        let body = CreateRequest { name, victory_points: Some(victory_points) };
+        let body = CreateRequest { name, victory_points: Some(victory_points), map_size: Some(map_size) };
         self.request(async move { post::<_, Session>(&base, "/create", &body).await }, move |s| this.enter(s));
     }
 

@@ -691,9 +691,9 @@ pub struct Game {
 
 impl Game {
     /// A new game for `names` played to `victory_points`, on a generated
-    /// board sized for that goal.
-    pub fn new(names: &[String], victory_points: u32, rng: &mut Rng) -> Game {
-        let mut game = Game::with_board(names, Board::generate(balance::board_radius(victory_points), rng));
+    /// board of `map_size`.
+    pub fn new(names: &[String], victory_points: u32, map_size: balance::MapSize, rng: &mut Rng) -> Game {
+        let mut game = Game::with_board(names, Board::generate(map_size.radius(), rng));
         game.victory_points = victory_points;
         // The island always has a robber, from the first turn on.
         let tiles: Vec<TileId> = game.board.tile_ids().collect();

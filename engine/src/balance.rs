@@ -1,5 +1,7 @@
 //! Every balancing constant of the game, in one place.
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     game::ItemKind,
     types::{Resource, Resources},
@@ -16,11 +18,43 @@ pub const CITY_POINTS: u32 = 2;
 pub const MIN_PLAYERS: usize = 2;
 pub const MAX_PLAYERS: usize = 4;
 
-/// Rings of tiles around the centre tile for a match's goal: 10 points
-/// plays the classic 19 tiles (2 rings), and every 10 points more adds a
-/// ring (20 → 37 tiles, 30 → 61).
-pub const fn board_radius(goal: u32) -> i32 {
-    2 + (goal.saturating_sub(10) / 10) as i32
+/// The island a match is played on, chosen when it is created.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapSize {
+    /// The classic 19 tiles.
+    Small,
+    /// 37 tiles.
+    #[default]
+    Medium,
+    /// 61 tiles.
+    Large,
+}
+
+impl MapSize {
+    pub const ALL: [MapSize; 3] = [MapSize::Small, MapSize::Medium, MapSize::Large];
+
+    /// Rings of tiles around the centre tile.
+    pub const fn radius(self) -> i32 {
+        match self {
+            MapSize::Small => 2,
+            MapSize::Medium => 3,
+            MapSize::Large => 4,
+        }
+    }
+
+    pub const fn tiles(self) -> usize {
+        let r = self.radius() as usize;
+        3 * r * r + 3 * r + 1
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            MapSize::Small => "Small",
+            MapSize::Medium => "Medium",
+            MapSize::Large => "Large",
+        }
+    }
 }
 
 /// The resources of every 19 tiles (a bigger board repeats them).

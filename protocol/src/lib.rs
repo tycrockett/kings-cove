@@ -11,7 +11,7 @@
 //!
 //! Failures answer a 4xx status with an [`ErrorBody`].
 
-use kings_cove_engine::{Action, Game, PlayerId};
+use kings_cove_engine::{Action, Game, PlayerId, balance::MapSize};
 use serde::{Deserialize, Serialize};
 
 /// How long `/poll` holds a request open with no change, in seconds.
@@ -23,6 +23,9 @@ pub struct CreateRequest {
     /// One of `balance::VICTORY_POINT_GOALS`; the default when absent.
     #[serde(default)]
     pub victory_points: Option<u32>,
+    /// The island's size; the default when absent.
+    #[serde(default)]
+    pub map_size: Option<MapSize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,4 +77,7 @@ pub struct MatchView {
     /// Victory points that win the match, known from the lobby on.
     #[serde(default)]
     pub victory_points: u32,
+    /// The island's size, known from the lobby on.
+    #[serde(default)]
+    pub map_size: MapSize,
 }

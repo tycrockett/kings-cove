@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use kings_cove_engine::{Action, Game, PlayerId, Rng, balance};
+use kings_cove_engine::{Action, Game, PlayerId, Rng, balance, balance::MapSize};
 use kings_cove_protocol::{MatchView, Session};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,9 @@ pub struct Match {
     /// The goal its game is played to.
     #[serde(default = "classic_goal")]
     pub victory_points: u32,
+    /// The size of the island its game is played on.
+    #[serde(default)]
+    pub map_size: MapSize,
 }
 
 /// The goal of matches saved before goals could be chosen.
@@ -62,6 +65,7 @@ impl Match {
             }),
             ended: self.ended,
             victory_points: self.victory_points,
+            map_size: self.map_size,
         }
     }
 }
@@ -91,7 +95,12 @@ impl Store {
         }
     }
 
-    pub fn create(&mut self, name: &str, victory_points: Option<u32>) -> Result<Session, String> {
+    pub fn create(
+        &mut self,
+        name: &str,
+        victory_points: Option<u32>,
+        map_size: Option<MapSize>,
+    ) -> Result<Session, String> {
         let name = clean_name(name)?;
         let victory_points = victory_points.unwrap_or(balance::DEFAULT_VICTORY_POINTS);
         if !balance::VICTORY_POINT_GOALS.contains(&victory_points) {
@@ -110,6 +119,7 @@ impl Store {
                 version: 1,
                 ended: false,
                 victory_points,
+                map_size: map_size.unwrap_or_default(),
             },
         );
         Ok(Session { code, token, seat: PlayerId(0) })
@@ -153,7 +163,7 @@ impl Store {
             return Err(format!("At least {} players are needed", balance::MIN_PLAYERS));
         }
         let names: Vec<String> = m.seats.iter().map(|s| s.name.clone()).collect();
-        m.game = Some(Game::new(&names, m.victory_points, &mut m.rng));
+        m.game = Some(Game::new(&names, m.victory_points, m.map_size, &mut m.rng));
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -207,9 +217,10 @@ mod tests {
     #[test]
     fn create_join_start_and_act_with_seat_tokens() {
         let mut store = Store::new(7);
-        assert!(store.create("Ada", Some(15)).is_err(), "only the offered goals");
-        let host = store.create("Ada", None).unwrap();
-        assert_eq!(store.view(&host.code, &host.token).unwrap().victory_points, balance::DEFAULT_VICTORY_POINTS);
+        assert!(store.create("Ada", Some(15), None).is_err(), "only the offered goals");
+        let host = store.create("Ada", None, None).unwrap();
+        let lobby = store.view(&host.code, &host.token).unwrap();
+        assert_eq!((lobby.victory_points, lobby.map_size), (balance::DEFAULT_VICTORY_POINTS, MapSize::default()));
         let guest = store.join(&host.code.to_lowercase(), "Bo").unwrap();
         assert_eq!(guest.seat, PlayerId(1));
         assert!(store.start(&host.code, &guest.token).is_err(), "only the host starts");
@@ -218,6 +229,7 @@ mod tests {
         let game = view.game.unwrap();
         assert!(matches!(game.phase, Phase::Setup { .. }));
         assert_eq!(game.victory_points, balance::DEFAULT_VICTORY_POINTS);
+        assert_eq!(game.board.tiles.len(), MapSize::default().tiles());
         assert!(store.join(&host.code, "Cy").is_err(), "no joining a started match");
 
         // The guest may not act on the host's turn; a forged token is refused.
@@ -236,7 +248,7 @@ mod tests {
     #[test]
     fn only_the_host_ends_a_match_and_it_stays_ended() {
         let mut store = Store::new(3);
-        let host = store.create("Ada", Some(10)).unwrap();
+        let host = store.create("Ada", Some(10), None).unwrap();
         let guest = store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         assert!(store.end(&host.code, &guest.token).is_err(), "only the host ends it");
@@ -251,7 +263,7 @@ mod tests {
     #[test]
     fn store_round_trips_through_json() {
         let mut store = Store::new(1);
-        let host = store.create("Ada", Some(30)).unwrap();
+        let host = store.create("Ada", Some(30), Some(MapSize::Small)).unwrap();
         store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         let saved = serde_json::to_string(&store).unwrap();

@@ -9,7 +9,7 @@ mod palette;
 mod rules;
 mod state;
 
-use kings_cove_engine::{PlayerId, balance};
+use kings_cove_engine::{PlayerId, balance, balance::MapSize};
 use nsh_core::prelude::*;
 
 use crate::{
@@ -65,6 +65,26 @@ fn card() -> View {
     view().bg(hex(palette::PAPER)).rounded(px(18.0)).p(px(18.0)).gap(px(12.0)).shadow_lg()
 }
 
+/// A titled row of chips, one per option; pressing one picks it into `pick`.
+fn choice<T: Copy + PartialEq + 'static>(title: &str, options: &[T], pick: Signal<T>, text: fn(T) -> String) -> View {
+    let current = pick.get();
+    let chips: Vec<View> = options
+        .iter()
+        .map(|&option| {
+            let on = option == current;
+            view()
+                .flex_1()
+                .items_center()
+                .py(px(8.0))
+                .rounded(px(12.0))
+                .bg(hex(if on { palette::INK } else { palette::PAPER_DIM }))
+                .on_press(move || pick.set(option))
+                .child(bold(text(option), 14.0, if on { 0xffffff } else { palette::INK }))
+        })
+        .collect();
+    view().gap(px(6.0)).child(label(title, 12.0, palette::MUTED)).child(view().flex_row().gap(px(6.0)).child(chips))
+}
+
 fn home(app: AppState) -> impl IntoElement {
     let name = app.name;
     let code = signal(String::new());
@@ -90,32 +110,15 @@ fn home(app: AppState) -> impl IntoElement {
                     .child(label("Your name", 12.0, palette::MUTED))
                     .child(field("Name", name))
                     .child(dynamic(move || {
-                        let current = app.goal.get();
-                        let chips: Vec<View> = balance::VICTORY_POINT_GOALS
-                            .iter()
-                            .map(|&goal| {
-                                let on = goal == current;
-                                view()
-                                    .flex_1()
-                                    .items_center()
-                                    .py(px(8.0))
-                                    .rounded(px(12.0))
-                                    .bg(hex(if on { palette::INK } else { palette::PAPER_DIM }))
-                                    .on_press(move || app.goal.set(goal))
-                                    .child(bold(format!("{goal} VP"), 14.0, if on { 0xffffff } else { palette::INK }))
-                            })
-                            .collect();
-                        Some(
-                            view()
-                                .gap(px(6.0))
-                                .child(label("Play to (more points, bigger island)", 12.0, palette::MUTED))
-                                .child(view().flex_row().gap(px(6.0)).child(chips)),
-                        )
+                        Some(choice("Play to", &balance::VICTORY_POINT_GOALS, app.goal, |goal| format!("{goal} VP")))
+                    }))
+                    .child(dynamic(move || {
+                        Some(choice("Island size", &MapSize::ALL, app.map_size, |size| size.label().to_owned()))
                     }))
                     .child(dynamic(move || {
                         let ok = can_create() && !app.busy.get();
                         Some(pill("Create match", palette::GO, 0xffffff, ok, move || {
-                            app.create(name.get_untracked(), app.goal.get_untracked())
+                            app.create(name.get_untracked(), app.goal.get_untracked(), app.map_size.get_untracked())
                         }))
                     }))
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
@@ -239,7 +242,11 @@ fn lobby(app: AppState) -> impl IntoElement {
                     })
                     .child(
                         label(
-                            format!("Share it: 2–4 players · first to {} victory points", view_.victory_points),
+                            format!(
+                                "Share it: 2–4 players · first to {} victory points · {} island",
+                                view_.victory_points,
+                                view_.map_size.label().to_lowercase()
+                            ),
                             12.0,
                             palette::MUTED,
                         )
