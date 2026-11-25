@@ -30,6 +30,14 @@ pub struct Match {
     /// The host ended it: nothing more happens in it.
     #[serde(default)]
     pub ended: bool,
+    /// The goal its game is played to.
+    #[serde(default = "classic_goal")]
+    pub victory_points: u32,
+}
+
+/// The goal of matches saved before goals could be chosen.
+fn classic_goal() -> u32 {
+    balance::VICTORY_POINT_GOALS[0]
 }
 
 impl Match {
@@ -49,6 +57,7 @@ impl Match {
             players: self.seats.iter().map(|s| s.name.clone()).collect(),
             game: self.game.clone(),
             ended: self.ended,
+            victory_points: self.victory_points,
         }
     }
 }
@@ -78,8 +87,12 @@ impl Store {
         }
     }
 
-    pub fn create(&mut self, name: &str) -> Result<Session, String> {
+    pub fn create(&mut self, name: &str, victory_points: Option<u32>) -> Result<Session, String> {
         let name = clean_name(name)?;
+        let victory_points = victory_points.unwrap_or(balance::DEFAULT_VICTORY_POINTS);
+        if !balance::VICTORY_POINT_GOALS.contains(&victory_points) {
+            return Err(format!("Play to one of {:?} victory points", balance::VICTORY_POINT_GOALS));
+        }
         let code = self.new_code();
         let token = self.token();
         let rng = Rng::new(self.rng.next_u64());
@@ -92,6 +105,7 @@ impl Store {
                 rng,
                 version: 1,
                 ended: false,
+                victory_points,
             },
         );
         Ok(Session { code, token, seat: PlayerId(0) })
@@ -135,7 +149,7 @@ impl Store {
             return Err(format!("At least {} players are needed", balance::MIN_PLAYERS));
         }
         let names: Vec<String> = m.seats.iter().map(|s| s.name.clone()).collect();
-        m.game = Some(Game::new(&names, &mut m.rng));
+        m.game = Some(Game::new(&names, m.victory_points, &mut m.rng));
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -189,13 +203,17 @@ mod tests {
     #[test]
     fn create_join_start_and_act_with_seat_tokens() {
         let mut store = Store::new(7);
-        let host = store.create("Ada").unwrap();
+        assert!(store.create("Ada", Some(15)).is_err(), "only the offered goals");
+        let host = store.create("Ada", None).unwrap();
+        assert_eq!(store.view(&host.code, &host.token).unwrap().victory_points, balance::DEFAULT_VICTORY_POINTS);
         let guest = store.join(&host.code.to_lowercase(), "Bo").unwrap();
         assert_eq!(guest.seat, PlayerId(1));
         assert!(store.start(&host.code, &guest.token).is_err(), "only the host starts");
         assert!(store.act(&host.code, &host.token, Action::Roll).is_err(), "no game before start");
         let view = store.start(&host.code, &host.token).unwrap();
-        assert!(matches!(view.game.unwrap().phase, Phase::Setup { .. }));
+        let game = view.game.unwrap();
+        assert!(matches!(game.phase, Phase::Setup { .. }));
+        assert_eq!(game.victory_points, balance::DEFAULT_VICTORY_POINTS);
         assert!(store.join(&host.code, "Cy").is_err(), "no joining a started match");
 
         // The guest may not act on the host's turn; a forged token is refused.
@@ -214,7 +232,7 @@ mod tests {
     #[test]
     fn only_the_host_ends_a_match_and_it_stays_ended() {
         let mut store = Store::new(3);
-        let host = store.create("Ada").unwrap();
+        let host = store.create("Ada", Some(10)).unwrap();
         let guest = store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         assert!(store.end(&host.code, &guest.token).is_err(), "only the host ends it");
@@ -229,7 +247,7 @@ mod tests {
     #[test]
     fn store_round_trips_through_json() {
         let mut store = Store::new(1);
-        let host = store.create("Ada").unwrap();
+        let host = store.create("Ada", Some(30)).unwrap();
         store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         let saved = serde_json::to_string(&store).unwrap();

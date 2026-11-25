@@ -66,7 +66,7 @@ impl Item {
         match self {
             Item::Road => "No free side touches your roads or buildings",
             Item::Outpost => "No free corner on your roads",
-            Item::Town => "You have no outpost to upgrade",
+            Item::Town => "No outpost of yours has room: towns need no town or city next door",
             Item::City => "You have no town to upgrade",
             Item::Knight => "You cannot buy one now",
         }
@@ -99,7 +99,7 @@ impl Item {
                 "Upgrade it to a town to score and to deploy knights beside it.".to_owned(),
             ],
             Item::Town => vec![
-                "Upgrades one of your outposts in place.".to_owned(),
+                "Upgrades one of your outposts in place, unless a town or city stands on a corner next to it.".to_owned(),
                 format!(
                     "Worth {} VP. Collects {} from each neighbouring tile whose number is rolled.",
                     balance::TOWN_POINTS,
@@ -226,7 +226,17 @@ pub struct Section {
     pub lines: Vec<String>,
 }
 
-pub fn rulebook() -> Vec<Section> {
+/// The goals a match may be played to, as "10, 20 or 30".
+pub fn goals_text() -> String {
+    let goals: Vec<String> = balance::VICTORY_POINT_GOALS.iter().map(u32::to_string).collect();
+    match goals.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => goals.join(""),
+    }
+}
+
+/// The rulebook, for a match played to `goal` when there is one.
+pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
     let page = |title: &str, glyph, lines: Vec<String>| Section { title: title.to_owned(), glyph, cost: None, lines };
     let (spawn_num, spawn_den) = balance::ROBBER_SPAWN_CHANCE;
     let start = balance::STARTING_RESOURCES;
@@ -235,7 +245,13 @@ pub fn rulebook() -> Vec<Section> {
             "Goal",
             Some(Glyph::Building(BuildingKind::City)),
             vec![
-                format!("The first player to {} victory points wins.", balance::VICTORY_POINTS_TO_WIN),
+                match goal {
+                    Some(goal) => format!("The first player to {goal} victory points wins."),
+                    None => format!(
+                        "The first player to the match's goal wins: {} victory points, chosen when it is created. Longer games play on a bigger island.",
+                        goals_text()
+                    ),
+                },
                 format!(
                     "Towns are worth {} VP and cities {}; outposts score nothing.",
                     balance::TOWN_POINTS,

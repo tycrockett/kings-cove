@@ -64,6 +64,8 @@ pub enum Menu {
 pub struct AppState {
     pub server: Signal<String>,
     pub name: Signal<String>,
+    /// The victory points a match created here is played to.
+    pub goal: Signal<u32>,
     pub session: Signal<Option<Session>>,
     pub view: Signal<Option<MatchView>>,
     pub toast: Signal<Option<String>>,
@@ -93,8 +95,8 @@ pub struct AppState {
     pub spellbook_open: Signal<bool>,
     /// An attack the player tapped, waiting for them to confirm its outcome.
     pub confirm_attack: Signal<Option<Action>>,
-    /// Bumped to fit the board to the screen again.
-    pub fit_request: Signal<u32>,
+    /// The room code was just copied: the lobby says so for a moment.
+    pub code_copied: Signal<bool>,
     last_seq: Stored<Option<u64>>,
     poll_generation: Stored<u64>,
     ticker: Stored<Option<Spawned<()>>>,
@@ -113,6 +115,7 @@ impl AppState {
         let state = AppState {
             server: signal(Storage::get_item(SERVER_KEY).unwrap_or_else(|| DEFAULT_SERVER.to_owned())),
             name: signal(Storage::get_item(NAME_KEY).unwrap_or_default()),
+            goal: signal(kings_cove_engine::balance::DEFAULT_VICTORY_POINTS),
             session: signal(session.clone()),
             view: signal(None),
             toast: signal(None),
@@ -134,7 +137,7 @@ impl AppState {
             rules_open: signal(false),
             spellbook_open: signal(false),
             confirm_attack: signal(None),
-            fit_request: signal(0),
+            code_copied: signal(false),
             last_seq: stored(None),
             poll_generation: stored(0),
             ticker: stored(None),
@@ -152,6 +155,14 @@ impl AppState {
 
     pub fn seat(&self) -> Option<PlayerId> {
         self.view.with(|v| v.as_ref().map(|v| v.seat))
+    }
+
+    /// Puts the room code on the clipboard, to paste into a message.
+    pub fn copy_code(&self, code: String) {
+        set_clipboard(code);
+        self.code_copied.set(true);
+        let copied = self.code_copied;
+        self.root.run(|| set_timeout(Duration::from_millis(1800), move || copied.set(false)));
     }
 
     pub fn show_error(&self, message: String) {
@@ -172,12 +183,11 @@ impl AppState {
 
     // ----- Session -----
 
-    pub fn create(&self, name: String) {
+    pub fn create(&self, name: String, victory_points: u32) {
         self.remember_lobby_inputs(&name);
         let (this, base) = (*self, self.base());
-        self.request(async move { post::<_, Session>(&base, "/create", &CreateRequest { name }).await }, move |s| {
-            this.enter(s)
-        });
+        let body = CreateRequest { name, victory_points: Some(victory_points) };
+        self.request(async move { post::<_, Session>(&base, "/create", &body).await }, move |s| this.enter(s));
     }
 
     pub fn join(&self, code: String, name: String) {

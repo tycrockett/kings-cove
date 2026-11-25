@@ -57,10 +57,12 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 
 ## Rules
 
-- **Board**: 19 hex tiles of Wood, Stone, Food and Iron, numbered 2–12 without 7; the 6s and 8s never touch and no two
-  neighbours share a number.
+- **Board**: hex tiles of Wood, Stone, Food and Iron, numbered 2–12 without 7; the 6s and 8s never touch and no two
+  neighbours share a number. A match is played to 10, 20 or 30 victory points (chosen when it is created, default 20)
+  on an island of 19, 37 or 61 tiles.
 - **Buildings** sit on tile corners and are upgraded in place: **Outpost → Town → City**. Every new building starts as
-  an outpost on the owner's roads.
+  an outpost on the owner's roads. Towns and cities never stand on neighbouring corners: an outpost next to a town or
+  city can't be upgraded, and starting towns keep the same distance.
 
   | Level | Victory points | Production per matching tile |
   |---|---|---|
@@ -88,7 +90,7 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   appears on a free tile with a 25% chance. After a knight removes a robber none appear for two full rounds; then one
   appears if the island has none. Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place
   a new one when the island has none; it then stays put through the next complete round.
-- **Victory**: the first player to reach 10 victory points wins.
+- **Victory**: the first player to reach the match's goal (10, 20 or 30 victory points) wins.
 
 Costs (all in `engine/src/balance.rs`):
 

@@ -408,6 +408,7 @@ pub enum RuleError {
     NoKnights,
     WindfallPending,
     Warded,
+    SettlementTooClose,
 }
 
 impl fmt::Display for RuleError {
@@ -447,6 +448,7 @@ impl fmt::Display for RuleError {
             RuleError::NoKnights => "You have no knights on the board",
             RuleError::WindfallPending => "Windfall already waits for your next roll",
             RuleError::Warded => "A ward keeps robbers off that tile",
+            RuleError::SettlementTooClose => "Towns and cities can't stand next to another town or city",
         })
     }
 }
@@ -619,6 +621,9 @@ pub struct Game {
     /// Spells on tiles, at most one per tile.
     #[serde(default)]
     pub enchantments: Vec<Enchantment>,
+    /// Victory points that win this match.
+    #[serde(default = "classic_goal")]
+    pub victory_points: u32,
     pub trade: Option<TradeOffer>,
     pub next_piece_id: u32,
     /// The latest events, oldest first.
@@ -627,9 +632,11 @@ pub struct Game {
 }
 
 impl Game {
-    /// A new game for `names` (2–4 players, in turn order) on a generated board.
-    pub fn new(names: &[String], rng: &mut Rng) -> Game {
-        let mut game = Game::with_board(names, Board::generate(rng));
+    /// A new game for `names` played to `victory_points`, on a generated
+    /// board sized for that goal.
+    pub fn new(names: &[String], victory_points: u32, rng: &mut Rng) -> Game {
+        let mut game = Game::with_board(names, Board::generate(balance::board_radius(victory_points), rng));
+        game.victory_points = victory_points;
         // The island always has a robber, from the first turn on.
         let tiles: Vec<TileId> = game.board.tile_ids().collect();
         if let Some(tile) = rng.pick(&tiles) {
@@ -667,6 +674,7 @@ impl Game {
             robber_relocation: false,
             robbers_quiet_until: 0,
             enchantments: Vec::new(),
+            victory_points: classic_goal(),
             trade: None,
             next_piece_id: 1,
             events: Vec::new(),
@@ -815,9 +823,20 @@ impl Game {
             return Err(RuleError::NotUpgradable);
         }
         match building.kind.upgrade() {
-            Some((next, cost)) if next == to => self.require_funds(player, &cost),
+            Some((next, cost)) if next == to => {
+                if self.settlement_nearby(v) {
+                    return Err(RuleError::SettlementTooClose);
+                }
+                self.require_funds(player, &cost)
+            }
             _ => Err(RuleError::NotUpgradable),
         }
+    }
+
+    /// A town or city stands one side away from `v`: no town or city may
+    /// stand on `v` then.
+    pub fn settlement_nearby(&self, v: VertexId) -> bool {
+        self.board.vertex_neighbors(v).any(|n| self.building(n).is_some_and(|b| b.kind.is_settlement()))
     }
 
     pub fn can_buy_card(&self, player: PlayerId, kind: UnitKind) -> Result<(), RuleError> {
@@ -969,8 +988,14 @@ impl Game {
     /// Setup: where the player may place now.
     pub fn setup_vertices(&self, player: PlayerId) -> Vec<VertexId> {
         match self.phase {
-            Phase::Setup { placing: SetupPlacing::Building, .. } if self.current == player => {
-                self.board.vertices.iter().map(|v| v.id).filter(|&v| self.building(v).is_none()).collect()
+            Phase::Setup { step, placing: SetupPlacing::Building } if self.current == player => {
+                let town = self.setup_building_kind(step).is_settlement();
+                self.board
+                    .vertices
+                    .iter()
+                    .map(|v| v.id)
+                    .filter(|&v| self.building(v).is_none() && !(town && self.settlement_nearby(v)))
+                    .collect()
             }
             _ => Vec::new(),
         }
@@ -1285,6 +1310,9 @@ impl Game {
             return Err(RuleError::VertexTaken);
         }
         let kind = self.setup_building_kind(step);
+        if kind.is_settlement() && self.settlement_nearby(v) {
+            return Err(RuleError::SettlementTooClose);
+        }
         self.buildings[v.index()] = Some(Building { owner: player, kind });
         self.phase = Phase::Setup { step, placing: SetupPlacing::Road { from: v } };
         self.log(Event::Built { player, vertex: v, kind });
@@ -1514,7 +1542,7 @@ impl Game {
 
     fn check_victory(&mut self, player: PlayerId) {
         let points = self.points(player);
-        if points >= balance::VICTORY_POINTS_TO_WIN {
+        if points >= self.victory_points {
             self.phase = Phase::Finished { winner: player };
             self.trade = None;
             self.log(Event::Won { player, points });
@@ -1539,4 +1567,9 @@ impl Game {
             self.events.drain(..excess);
         }
     }
+}
+
+/// The goal of games saved before goals could be chosen.
+fn classic_goal() -> u32 {
+    balance::VICTORY_POINT_GOALS[0]
 }

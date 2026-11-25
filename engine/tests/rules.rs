@@ -13,7 +13,7 @@ fn names(n: usize) -> Vec<String> {
 /// A game in play: setup skipped, player 0 to act, dice already rolled
 /// (a 3), nobody holding anything.
 fn playing(n: usize) -> Game {
-    let mut g = Game::with_board(&names(n), Board::hexagon(balance::BOARD_RADIUS));
+    let mut g = Game::with_board(&names(n), Board::hexagon(2));
     g.phase = Phase::Playing;
     g.round = 1;
     g.dice = Some((1, 2));
@@ -88,17 +88,71 @@ fn centre_of(b: &Board) -> TileId {
 #[test]
 fn ids_are_stable_and_generation_is_seeded_and_balanced() {
     assert_eq!(Board::hexagon(2), Board::hexagon(2));
-    let a = Board::generate(&mut Rng::new(9));
-    assert_eq!(a, Board::generate(&mut Rng::new(9)));
+    let a = Board::generate(2, &mut Rng::new(9));
+    assert_eq!(a, Board::generate(2, &mut Rng::new(9)));
     assert!(a.numbers_balanced());
     for seed in 0..20 {
-        let b = Board::generate(&mut Rng::new(seed));
+        let b = Board::generate(2, &mut Rng::new(seed));
         assert!(b.numbers_balanced());
         assert!(b.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
         for (resource, count) in balance::TILE_RESOURCES {
             assert_eq!(b.tiles.iter().filter(|t| t.resource == resource).count(), count);
         }
     }
+}
+
+#[test]
+fn bigger_goals_play_on_bigger_balanced_islands() {
+    for (goal, tiles) in [(10, 19), (20, 37), (30, 61)] {
+        for seed in 0..5 {
+            let g = Game::new(&names(3), goal, &mut Rng::new(seed));
+            assert_eq!((g.victory_points, g.board.tiles.len()), (goal, tiles));
+            assert!(g.board.numbers_balanced());
+            assert!(g.board.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
+            // Each resource keeps its share of the island.
+            for (resource, per19) in balance::TILE_RESOURCES {
+                let n = g.board.tiles.iter().filter(|t| t.resource == resource).count();
+                assert!(n.abs_diff(per19 * tiles / 19) <= 2, "{resource:?}: {n} of {tiles}");
+            }
+        }
+    }
+    // The match ends at its own goal.
+    let mut g = playing(2);
+    g.victory_points = 20;
+    let mut r = rng();
+    g.players[0].resources = rich();
+    for i in 0..9u16 {
+        put(&mut g, VertexId(i * 6), P0, BuildingKind::City);
+    }
+    let v =
+        g.board.vertices.iter().map(|v| v.id).find(|&v| g.building(v).is_none() && !g.settlement_nearby(v)).unwrap();
+    put(&mut g, v, P0, BuildingKind::Town);
+    assert_eq!(g.points(P0), 19);
+    g.apply(P0, Action::UpgradeCity(v), &mut r).unwrap();
+    assert_eq!(g.winner(), Some(P0));
+}
+
+#[test]
+fn towns_and_cities_never_stand_side_by_side() {
+    let mut g = playing(2);
+    let mut r = rng();
+    g.players[0].resources = rich();
+    let v = VertexId(10);
+    let next = g.board.vertex_neighbors(v).next().unwrap();
+    put(&mut g, v, P1, BuildingKind::Town);
+    put(&mut g, next, P0, BuildingKind::Outpost);
+    assert_eq!(g.apply(P0, Action::UpgradeTown(next), &mut r), Err(RuleError::SettlementTooClose));
+    // Outposts may sit next to anything; once the town is razed the way is clear.
+    g.buildings[v.index()] = Some(Building { owner: P1, kind: BuildingKind::Outpost });
+    g.apply(P0, Action::UpgradeTown(next), &mut r).unwrap();
+
+    // Starting towns keep their distance too.
+    let mut g = Game::with_board(&names(2), Board::hexagon(2));
+    g.apply(P0, Action::SetupBuilding(v), &mut r).unwrap();
+    let e = g.setup_edges(P0)[0];
+    g.apply(P0, Action::SetupRoad(e), &mut r).unwrap();
+    assert!(!g.setup_vertices(P1).contains(&next));
+    assert_eq!(g.apply(P1, Action::SetupBuilding(next), &mut r), Err(RuleError::SettlementTooClose));
 }
 
 // ----- Setup -----
@@ -640,7 +694,7 @@ fn extra_robbers_appear_about_a_quarter_of_rounds_below_capacity_only() {
 
 #[test]
 fn the_island_always_has_a_robber() {
-    let g = Game::new(&names(2), &mut Rng::new(5));
+    let g = Game::new(&names(2), 10, &mut Rng::new(5));
     assert_eq!(g.robbers.len(), 1, "one stands from the start");
 
     // With none on the board and no towns at all, one appears at the round's end.
@@ -782,7 +836,7 @@ fn reaching_ten_points_wins_and_ends_the_game() {
 fn a_seeded_game_replays_identically() {
     let play = |seed: u64| {
         let mut r = Rng::new(seed);
-        let mut g = Game::new(&names(2), &mut r);
+        let mut g = Game::new(&names(2), 10, &mut r);
         let order = g.setup_order();
         for &p in &order {
             let v = g.setup_vertices(p).into_iter().find(|&v| g.board.vertex(v).tiles.len() == 3).unwrap();

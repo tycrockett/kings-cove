@@ -146,31 +146,77 @@ impl Board {
         Board { tiles, vertices, edges }
     }
 
-    /// A playable board: the hexagon of [`balance::BOARD_RADIUS`] with the
-    /// resources of [`balance::TILE_RESOURCES`] shuffled onto it and the
-    /// numbers of [`balance::PRODUCTION_NUMBERS`] placed so no two hot
-    /// numbers touch and no tile shares its number with a neighbour.
-    pub fn generate(rng: &mut Rng) -> Board {
-        let mut board = Board::hexagon(balance::BOARD_RADIUS);
-        let mut resources: Vec<Resource> =
-            balance::TILE_RESOURCES.iter().flat_map(|&(r, n)| std::iter::repeat_n(r, n)).collect();
-        assert_eq!(resources.len(), board.tiles.len(), "TILE_RESOURCES must cover every tile");
-        assert_eq!(balance::PRODUCTION_NUMBERS.len(), board.tiles.len(), "PRODUCTION_NUMBERS must cover every tile");
+    /// A playable board of `radius` rings: the resources of
+    /// [`balance::TILE_RESOURCES`] and the numbers of
+    /// [`balance::PRODUCTION_NUMBERS`] (repeated for a bigger board) dealt
+    /// onto it so no two hot numbers touch and no tile shares its number
+    /// with a neighbour.
+    pub fn generate(radius: i32, rng: &mut Rng) -> Board {
+        let mut board = Board::hexagon(radius);
+        let n = board.tiles.len();
+        let pool: Vec<Resource> =
+            balance::TILE_RESOURCES.iter().flat_map(|&(r, count)| std::iter::repeat_n(r, count)).collect();
+        let mut resources = deal(&pool, n, rng);
         rng.shuffle(&mut resources);
         for (tile, resource) in board.tiles.iter_mut().zip(resources) {
             tile.resource = resource;
         }
-        let mut numbers = balance::PRODUCTION_NUMBERS.to_vec();
+        let mut numbers = deal(&balance::PRODUCTION_NUMBERS, n, rng);
         loop {
             rng.shuffle(&mut numbers);
-            for (tile, &n) in board.tiles.iter_mut().zip(&numbers) {
-                tile.number = n;
-            }
-            if board.numbers_balanced() {
+            if board.place_numbers(&numbers, rng) {
                 break;
             }
         }
         board
+    }
+
+    /// Places `numbers` one per tile so they are balanced, backtracking when
+    /// a tile has no fitting number left; gives up (to be retried with
+    /// another draw) when that takes too long.
+    fn place_numbers(&mut self, numbers: &[u8], rng: &mut Rng) -> bool {
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for &n in numbers {
+            *counts.entry(n).or_default() += 1;
+        }
+        for tile in &mut self.tiles {
+            tile.number = 0;
+        }
+        let mut budget = 20_000;
+        self.fill(0, &mut counts, rng, &mut budget)
+    }
+
+    fn fill(&mut self, i: usize, counts: &mut BTreeMap<u8, usize>, rng: &mut Rng, budget: &mut u32) -> bool {
+        if i == self.tiles.len() {
+            return true;
+        }
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let mut options: Vec<u8> = counts.iter().filter(|&(_, &c)| c > 0).map(|(&n, _)| n).collect();
+        rng.shuffle(&mut options);
+        for n in options {
+            if self.fits(TileId(i as u16), n) {
+                self.tiles[i].number = n;
+                *counts.get_mut(&n).expect("counted") -= 1;
+                if self.fill(i + 1, counts, rng, budget) {
+                    return true;
+                }
+                *counts.get_mut(&n).expect("counted") += 1;
+                self.tiles[i].number = 0;
+            }
+        }
+        false
+    }
+
+    /// Whether `number` may go on `tile` next to the numbers already placed.
+    fn fits(&self, tile: TileId, number: u8) -> bool {
+        let hot = |n: u8| balance::HOT_NUMBERS.contains(&n);
+        self.tile(tile).neighbors.iter().all(|&nb| {
+            let other = self.tile(nb).number;
+            other == 0 || (other != number && !(hot(number) && hot(other)))
+        })
     }
 
     /// No hot numbers side by side, and no neighbours sharing a number.
@@ -192,6 +238,14 @@ impl Board {
         &self.vertices[id.index()]
     }
 
+    /// The corners one side away from `v`.
+    pub fn vertex_neighbors(&self, v: VertexId) -> impl Iterator<Item = VertexId> + '_ {
+        self.vertex(v).edges.iter().map(move |&e| {
+            let [a, b] = self.edge(e).vertices;
+            if a == v { b } else { a }
+        })
+    }
+
     pub fn edge(&self, id: EdgeId) -> &Edge {
         &self.edges[id.index()]
     }
@@ -209,4 +263,14 @@ impl Board {
         let t = self.tile(id);
         (2 * t.q + t.r, 3 * t.r)
     }
+}
+
+/// `n` items from whole copies of `set`, topped up with a random part of one
+/// more, so every kind keeps its share.
+fn deal<T: Copy>(set: &[T], n: usize, rng: &mut Rng) -> Vec<T> {
+    let mut out: Vec<T> = set.iter().copied().cycle().take(n / set.len() * set.len()).collect();
+    let mut extra = set.to_vec();
+    rng.shuffle(&mut extra);
+    out.extend_from_slice(&extra[..n % set.len()]);
+    out
 }

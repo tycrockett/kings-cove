@@ -461,7 +461,8 @@ pub fn draw(s: &Scene) -> Painter {
     let mut p = Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w, h);
     p = p.save().translate(s.cam.x, s.cam.y).scale(s.cam.scale, s.cam.scale);
     p = p.line_join(LineJoin::Round).line_cap(LineCap::Round);
-    p = waves(p, px1);
+    let rings = g.board.tiles.iter().map(|t| t.q.abs().max(t.r.abs()).max((t.q + t.r).abs())).max().unwrap_or(2);
+    p = waves(p, px1, rings as f32);
 
     // Shallows and the beach.
     for t in &g.board.tiles {
@@ -711,12 +712,14 @@ pub fn draw(s: &Scene) -> Painter {
     p.restore()
 }
 
-/// Foam marks on the open sea around the island.
-fn waves(mut p: Painter, px1: f32) -> Painter {
+/// Wave marks in a band of sea around an island of `rings` rings.
+fn waves(mut p: Painter, px1: f32, rings: f32) -> Painter {
     p = p.stroke_color(hexa(0xffffff, 0.13)).line_width(2.0 * px1);
-    for i in 0..44 {
+    // Each ring widens the island by about √3 tile sizes.
+    let shore = 5.3 + (rings - 2.0) * 1.73;
+    for i in 0..(44.0 * (rings + 3.0) / 5.0) as u32 {
         let ang = hash01(i) * TAU;
-        let d = (5.3 + hash01(i + 100) * 4.0) * S;
+        let d = (shore + hash01(i + 100) * 4.0) * S;
         let (x, y) = (d * ang.cos() * 1.1, d * ang.sin());
         let r = (0.16 + hash01(i + 200) * 0.12) * S;
         p = p.begin_path().arc(x, y, r, PI * 1.15, PI * 1.85).stroke();
@@ -1179,15 +1182,10 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             cam.set(Some(Camera::fit(&g, w, h)));
         }
     };
-    // Fit once the first game state arrives, and whenever the player asks.
+    // Fit once the first game state arrives.
     effect(move || {
         let has_game = app.view.with(|v| v.as_ref().is_some_and(|v| v.game.is_some()));
         if has_game && cam.get_untracked().is_none() {
-            untracked(refit);
-        }
-    });
-    effect(move || {
-        if app.fit_request.get() > 0 {
             untracked(refit);
         }
     });

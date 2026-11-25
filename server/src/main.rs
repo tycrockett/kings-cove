@@ -58,7 +58,9 @@ fn handle(shared: &Shared, mut request: Request) {
         return;
     }
     let result = match (request.method(), path) {
-        (Method::Post, "/create") => with_body(&body, |r: CreateRequest| mutate(shared, |s| s.create(&r.name))),
+        (Method::Post, "/create") => {
+            with_body(&body, |r: CreateRequest| mutate(shared, |s| s.create(&r.name, r.victory_points)))
+        }
         (Method::Post, "/join") => with_body(&body, |r: JoinRequest| mutate(shared, |s| s.join(&r.code, &r.name))),
         (Method::Post, "/start") => {
             with_body(&body, |r: SessionRequest| mutate(shared, |s| s.start(&r.code, &r.token)))

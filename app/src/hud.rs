@@ -401,28 +401,30 @@ fn top(app: AppState) -> impl IntoElement {
         .gap(px(6.0))
         .pointer_events(PointerEvents::BoxNone)
         .child(
-            view().flex_row().items_start().gap(px(6.0)).child(players_bar(app)).child(
+            // Above the status card, so the history panel opens over it.
+            view().flex_row().items_start().gap(px(6.0)).z_index(1).child(players_bar(app)).child(
                 view()
                     .items_end()
                     .gap(px(4.0))
                     .child(dice(app))
                     .child(dynamic(move || {
-                        let round = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.round)))?;
+                        let (round, goal) = app
+                            .view
+                            .with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| (g.round, g.victory_points))))?;
                         let online = app.connected.get();
                         Some(bold(
                             if !online {
                                 "reconnecting…".to_owned()
                             } else if round == 0 {
-                                "SETUP".to_owned()
+                                format!("SETUP · TO {goal}")
                             } else {
-                                format!("ROUND {round}")
+                                format!("ROUND {round} · TO {goal}")
                             },
                             10.0,
                             if online { 0xe7dfcb } else { palette::GOLD },
                         ))
                     }))
-                    .child(small_button("Recenter", move || app.fit_request.update(|n| *n += 1)))
-                    .child(small_button("Menu", move || app.menu.set(Menu::Open))),
+                    .child(history(app)),
             ),
         )
         .child(dynamic(move || {
@@ -449,13 +451,16 @@ fn top(app: AppState) -> impl IntoElement {
                     .bg(hexa(if my_turn { 0xfff0c2 } else { palette::PAPER }, 0.97))
                     .border_color(hex(if my_turn { palette::GOLD } else { palette::PAPER_DIM }))
                     .border_2()
-                    .active(|s| s.opacity(0.8))
-                    .on_press(move || app.history_open.update(|o| *o = !*o))
                     .child(bold(main, 13.5, palette::INK))
                     .child(last.map(|l| label(l, 11.0, palette::MUTED).number_of_lines(1))),
             )
         }))
-        .child(dynamic(move || {
+}
+
+/// The turn history: a button under the dice, its panel dropping below it.
+fn history(app: AppState) -> View {
+    view().items_end().child(small_button("History", move || app.history_open.update(|o| *o = !*o))).child(dynamic(
+        move || {
             if !app.history_open.get() {
                 return None;
             }
@@ -469,8 +474,13 @@ fn top(app: AppState) -> impl IntoElement {
                 .take(14)
                 .map(|l| label(l, 12.0, palette::INK).number_of_lines(1))
                 .collect();
+            // Out of the column's flow, so opening it moves nothing else.
             Some(
                 panel()
+                    .absolute()
+                    .top(px(28.0))
+                    .right(px(0.0))
+                    .w(px(270.0))
                     .px(px(12.0))
                     .py(px(8.0))
                     .gap(px(3.0))
@@ -478,7 +488,8 @@ fn top(app: AppState) -> impl IntoElement {
                     .child(bold("History", 12.0, palette::MUTED))
                     .child(lines),
             )
-        }))
+        },
+    ))
 }
 
 // ----- Bottom -----
@@ -538,12 +549,32 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
             v
         }
     };
+    // Trading with the bank or the table, right beside what is traded.
+    let trading = app.trade_open.get_untracked();
+    let trade_enabled = g.is_active(seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing) && g.trade.is_none();
+    let trade = view()
+        .items_center()
+        .justify_center()
+        .px(px(6.0))
+        .py(px(4.0))
+        .rounded(px(12.0))
+        .bg(hex(if trading { palette::GOLD } else { 0xfffdf6 }))
+        .border_1()
+        .border_color(hex(if trading { 0xb8860b } else { palette::PAPER_DIM }))
+        .opacity(if trade_enabled || trading { 1.0 } else { 0.45 })
+        .child(glyph_icon(Glyph::Trade, palette::player(seat), 30.0, 26.0));
+    let trade = if trade_enabled {
+        trade.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || app.trade_open.update(|o| *o = !*o))
+    } else {
+        trade
+    };
     view()
         .flex_row()
         .items_center()
         .gap(px(5.0))
         .child(view().flex_row().flex_1().gap(px(4.0)).child(resources))
         .child(card(me.cards.knights))
+        .child(trade)
 }
 
 /// What buying an item does: pick a place on the board, or buy a card.
@@ -629,18 +660,6 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 })
         })
         .collect();
-    let trading = app.trade_open.get_untracked();
-    let trade_enabled = my_move && g.trade.is_none();
-    let trade = tile(Glyph::Trade, "Trade", trading, if trade_enabled || trading { 1.0 } else { 0.5 }).child(label(
-        "bank · offer",
-        11.0,
-        palette::MUTED,
-    ));
-    let trade = if trade_enabled {
-        trade.active(|s| s.opacity(0.75).scale(0.95)).on_press(move || app.trade_open.update(|o| *o = !*o))
-    } else {
-        trade
-    };
     // One card for all the spells: it opens the spellbook.
     let casting = matches!(current, Mode::Cast(..));
     let mana = mana_state(g, seat);
@@ -655,7 +674,7 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 app.spellbook_open.set(true);
             }
         });
-    view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(spells).child(trade)))
+    view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)))
 }
 
 /// The player's mana, in a word or two.
@@ -894,7 +913,8 @@ pub fn rulebook(app: AppState) -> impl IntoElement {
             return None;
         }
         let color = app.seat().map_or(palette::PLAYERS[0], palette::player);
-        let pages: Vec<View> = rules::rulebook()
+        let goal = app.view.with(|v| v.as_ref().map(|v| v.victory_points).filter(|&g| g > 0));
+        let pages: Vec<View> = rules::rulebook(goal)
             .into_iter()
             .map(|s| {
                 let lines: Vec<Text> = s.lines.into_iter().map(|l| label(l, 13.5, palette::INK)).collect();
@@ -1316,7 +1336,15 @@ fn bottom(app: AppState) -> impl IntoElement {
                     .gap(px(7.0))
                     .child(inventory(app, g, seat, before))
                     .child(tray(app, g, seat))
-                    .child(primary(app, g, seat, &view_.players)),
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(primary(app, g, seat, &view_.players).map(|p| p.flex_1()))
+                            .child(menu_button(app)),
+                    ),
             )
         }))
 }
@@ -1383,6 +1411,43 @@ fn small_button(title: &'static str, on: impl Fn() + 'static) -> View {
         .active(|s| s.opacity(0.6))
         .on_press(on)
         .child(bold(title, 11.0, palette::INK))
+}
+
+/// The round gear button beside the main button: it opens the menu.
+fn menu_button(app: AppState) -> View {
+    let gear = canvas(move || {
+        let (s, c) = (28.0_f32, 14.0_f32);
+        let (outer, inner) = (s * 0.48, s * 0.36);
+        let mut p = Painter::new().begin_path();
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let at = |r: f32, a: f32| (c + r * a.cos(), c + r * a.sin());
+            let pts = [at(inner, a - 0.36), at(outer, a - 0.2), at(outer, a + 0.2), at(inner, a + 0.36)];
+            for (i, (x, y)) in pts.into_iter().enumerate() {
+                p = if k == 0 && i == 0 { p.move_to(x, y) } else { p.line_to(x, y) };
+            }
+        }
+        p.close_path()
+            .fill_color(hex(palette::INK))
+            .fill()
+            .begin_path()
+            .arc(c, c, s * 0.15, 0.0, std::f32::consts::TAU)
+            .fill_color(hex(0xfffdf6))
+            .fill()
+    })
+    .size(px(28.0));
+    view()
+        .size(px(52.0))
+        .rounded(px(26.0))
+        .items_center()
+        .justify_center()
+        .bg(hex(0xfffdf6))
+        .border_2()
+        .border_color(hex(palette::PAPER_DIM))
+        .shadow_md()
+        .active(|s| s.opacity(0.7).scale(0.94))
+        .on_press(move || app.menu.set(Menu::Open))
+        .child(gear)
 }
 
 /// A dimmed screen with a card in the middle. The card swallows its own

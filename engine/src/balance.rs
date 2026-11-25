@@ -2,8 +2,9 @@
 
 use crate::types::{Resource, Resources};
 
-/// Victory points needed to win.
-pub const VICTORY_POINTS_TO_WIN: u32 = 10;
+/// The victory points a match may be played to, chosen when it is created.
+pub const VICTORY_POINT_GOALS: [u32; 3] = [10, 20, 30];
+pub const DEFAULT_VICTORY_POINTS: u32 = 20;
 /// Victory points of a town.
 pub const TOWN_POINTS: u32 = 1;
 /// Victory points of a city.
@@ -12,15 +13,19 @@ pub const CITY_POINTS: u32 = 2;
 pub const MIN_PLAYERS: usize = 2;
 pub const MAX_PLAYERS: usize = 4;
 
-/// Rings of tiles around the centre tile: 2 gives the classic 19 tiles.
-pub const BOARD_RADIUS: i32 = 2;
+/// Rings of tiles around the centre tile for a match's goal: 10 points
+/// plays the classic 19 tiles (2 rings), and every 10 points more adds a
+/// ring (20 → 37 tiles, 30 → 61).
+pub const fn board_radius(goal: u32) -> i32 {
+    2 + (goal.saturating_sub(10) / 10) as i32
+}
 
-/// How many tiles of each resource the board holds (sums to the tile count).
+/// The resources of every 19 tiles (a bigger board repeats them).
 pub const TILE_RESOURCES: [(Resource, usize); 4] =
     [(Resource::Wood, 5), (Resource::Stone, 5), (Resource::Food, 5), (Resource::Iron, 4)];
 
-/// Production numbers, one per tile: 2..=12 without 7, weighted toward the
-/// middle like two dice are.
+/// The production numbers of every 19 tiles: 2..=12 without 7, weighted
+/// toward the middle like two dice are (a bigger board repeats them).
 pub const PRODUCTION_NUMBERS: [u8; 19] = [2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
 
 /// Numbers that may not sit next to each other (the most frequent ones).

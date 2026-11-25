@@ -20,6 +20,9 @@ pub const POLL_SECONDS: u64 = 20;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateRequest {
     pub name: String,
+    /// One of `balance::VICTORY_POINT_GOALS`; the default when absent.
+    #[serde(default)]
+    pub victory_points: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,4 +71,7 @@ pub struct MatchView {
     /// The host ended the match; it takes no more actions.
     #[serde(default)]
     pub ended: bool,
+    /// Victory points that win the match, known from the lobby on.
+    #[serde(default)]
+    pub victory_points: u32,
 }

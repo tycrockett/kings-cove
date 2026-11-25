@@ -90,8 +90,33 @@ fn home(app: AppState) -> impl IntoElement {
                     .child(label("Your name", 12.0, palette::MUTED))
                     .child(field("Name", name))
                     .child(dynamic(move || {
+                        let current = app.goal.get();
+                        let chips: Vec<View> = balance::VICTORY_POINT_GOALS
+                            .iter()
+                            .map(|&goal| {
+                                let on = goal == current;
+                                view()
+                                    .flex_1()
+                                    .items_center()
+                                    .py(px(8.0))
+                                    .rounded(px(12.0))
+                                    .bg(hex(if on { palette::INK } else { palette::PAPER_DIM }))
+                                    .on_press(move || app.goal.set(goal))
+                                    .child(bold(format!("{goal} VP"), 14.0, if on { 0xffffff } else { palette::INK }))
+                            })
+                            .collect();
+                        Some(
+                            view()
+                                .gap(px(6.0))
+                                .child(label("Play to (more points, bigger island)", 12.0, palette::MUTED))
+                                .child(view().flex_row().gap(px(6.0)).child(chips)),
+                        )
+                    }))
+                    .child(dynamic(move || {
                         let ok = can_create() && !app.busy.get();
-                        Some(pill("Create match", palette::GO, 0xffffff, ok, move || app.create(name.get_untracked())))
+                        Some(pill("Create match", palette::GO, 0xffffff, ok, move || {
+                            app.create(name.get_untracked(), app.goal.get_untracked())
+                        }))
                     }))
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                     .child(label("Join with a room code", 12.0, palette::MUTED))
@@ -127,8 +152,8 @@ fn rules_card(app: AppState) -> impl IntoElement {
         .child(bold("How to play", 14.0, palette::INK))
         .child(label(
             format!(
-                "Build and upgrade settlements, command knights, cast spells from your cities, and be first to {} victory points.",
-                balance::VICTORY_POINTS_TO_WIN
+                "Build and upgrade settlements, command knights, cast spells from your cities, and be first to the match's goal of {} victory points.",
+                rules::goals_text()
             ),
             12.0,
             palette::INK,
@@ -190,8 +215,36 @@ fn lobby(app: AppState) -> impl IntoElement {
                 card()
                     .items_stretch()
                     .child(label("Room code", 12.0, palette::MUTED).self_center())
-                    .child(bold(view_.code.clone(), 40.0, palette::INK).self_center())
-                    .child(label("Share it: 2–4 players", 12.0, palette::MUTED).self_center())
+                    .child({
+                        let code = view_.code.clone();
+                        view()
+                            .self_center()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .active(|s| s.opacity(0.7))
+                            .on_press(move || app.copy_code(code.clone()))
+                            .child(bold(view_.code.clone(), 40.0, palette::INK))
+                            .child(dynamic(move || {
+                                let copied = app.code_copied.get();
+                                Some(
+                                    view()
+                                        .px(px(10.0))
+                                        .py(px(5.0))
+                                        .rounded(px(12.0))
+                                        .bg(hex(if copied { palette::GO } else { palette::INK }))
+                                        .child(bold(if copied { "Copied ✓" } else { "Copy" }, 12.0, 0xffffff)),
+                                )
+                            }))
+                    })
+                    .child(
+                        label(
+                            format!("Share it: 2–4 players · first to {} victory points", view_.victory_points),
+                            12.0,
+                            palette::MUTED,
+                        )
+                        .self_center(),
+                    )
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                     .child(players)
                     .child(if host {
