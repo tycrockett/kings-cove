@@ -27,8 +27,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Rules and server tests
         run: cargo test -p kings-cove-engine -p kings-cove-server
-      - name: WebAssembly C toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - name: Build dependencies
+        # clang and llvm-ar compile C to WebAssembly; GTK 4's headers are for
+        # the crate's Linux platform dependency, which nsh compiles as well.
+        run: sudo apt-get update && sudo apt-get install -y clang llvm pkg-config libgtk-4-dev
       - name: Install nsh
         run: |
           curl -fsSL https://nsh.dev/install.sh | sh
