@@ -42,9 +42,10 @@ jobs:
           AR_wasm32_unknown_unknown: llvm-ar
           KC_SERVER_URL: ${{ vars.KC_SERVER_URL }}
         run: nsh package --target web --out ../site
+      # nsh writes the site into a folder named after the app.
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: "site/King's Cove"
 
   deploy:
     needs: build
