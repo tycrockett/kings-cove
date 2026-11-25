@@ -113,7 +113,7 @@ pub const MANA_RECHARGE_ROUNDS: u32 = 4;
 /// Chance (numerator / denominator) an item appears at the end of a round.
 pub const ITEM_SPAWN_CHANCE: (u64, u64) = (1, 2);
 /// Rounds an item lies unclaimed before it vanishes.
-pub const ITEM_ROUNDS: u32 = 3;
+pub const ITEM_ROUNDS: u32 = 5;
 /// How often each item turns up, against the others.
 pub const ITEM_WEIGHTS: [(ItemKind, u32); 8] = [
     (ItemKind::IronOre, 3),

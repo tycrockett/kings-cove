@@ -91,7 +91,7 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   appears if the island has none. Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place
   a new one when the island has none; it then stays put through the next complete round.
 - **Items**: at the end of each round, with a 50% chance, an item appears on a free tile touching no town or city. It
-  stays hidden until a knight walks onto its tile (knights can't deploy onto it), vanishes after 3 rounds, and is taken
+  stays hidden until a knight walks onto its tile (knights can't deploy onto it), vanishes after 5 rounds, and is taken
   by any robber landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one random resource; a *mana crystal* refills
   the finder's mana; a *spell scroll* one free cast of a random spell (no price, city or mana needed); a *recruit* a
   knight card; a *relic* is carried by the knight for 1 VP and dropped where it falls; a *trap* fells the knight; a
