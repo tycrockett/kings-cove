@@ -6,6 +6,7 @@ mod board;
 mod fx;
 mod hud;
 mod palette;
+mod rules;
 mod state;
 
 use kings_cove_engine::{PlayerId, balance};
@@ -31,14 +32,18 @@ pub fn App() -> impl IntoElement {
         let started = app.view.with(|v| v.as_ref().map(|v| v.game.is_some()));
         (in_session, started)
     });
-    view().flex_1().bg(hex(palette::TABLE)).child(dynamic(move || {
-        Some(match screen.get() {
-            (false, _) => home(app).into_element(),
-            (true, None) => connecting(app).into_element(),
-            (true, Some(false)) => lobby(app).into_element(),
-            (true, Some(true)) => hud::game_screen(app).into_element(),
-        })
-    }))
+    view()
+        .flex_1()
+        .bg(hex(palette::TABLE))
+        .child(dynamic(move || {
+            Some(match screen.get() {
+                (false, _) => home(app).into_element(),
+                (true, None) => connecting(app).into_element(),
+                (true, Some(false)) => lobby(app).into_element(),
+                (true, Some(true)) => hud::game_screen(app).into_element(),
+            })
+        }))
+        .child(hud::rulebook(app))
 }
 
 fn field(placeholder: &str, value: Signal<String>) -> impl IntoElement {
@@ -111,23 +116,24 @@ fn home(app: AppState) -> impl IntoElement {
                         show_server.get().then(|| card().child(field("http://host:8787", app.server)))
                     })),
             )
-            .child(rules_card())
+            .child(rules_card(app))
             .child(dynamic(move || app.toast.get().map(|t| bold(t, 13.0, palette::GOLD).self_center()))),
     )
 }
 
-fn rules_card() -> impl IntoElement {
-    let line = |s: &str| label(s.to_owned(), 12.0, palette::INK);
+fn rules_card(app: AppState) -> impl IntoElement {
     card()
-        .gap(px(6.0))
+        .gap(px(8.0))
         .child(bold("How to play", 14.0, palette::INK))
-        .child(line("Outposts, towns and cities collect from adjacent tiles when their number is rolled; cities collect double."))
-        .child(line("Build outposts on your roads, then upgrade them: outpost → town (1 VP) → city (2 VP)."))
-        .child(line("Knights fight robbers, knights and rams. Rams knock buildings down a level."))
-        .child(line(&format!(
-            "Robbers block production. First to {} victory points wins.",
-            balance::VICTORY_POINTS_TO_WIN
-        )))
+        .child(label(
+            format!(
+                "Build and upgrade settlements, command knights and rams, and be first to {} victory points.",
+                balance::VICTORY_POINTS_TO_WIN
+            ),
+            12.0,
+            palette::INK,
+        ))
+        .child(pill("Read the rules", palette::INK, 0xffffff, true, move || app.rules_open.set(true)))
 }
 
 fn connecting(app: AppState) -> impl IntoElement {
@@ -142,64 +148,75 @@ fn connecting(app: AppState) -> impl IntoElement {
 }
 
 fn lobby(app: AppState) -> impl IntoElement {
-    view().flex_1().p_safe_area().px(px(20.0)).justify_center().child(dynamic(move || {
-        let view_ = app.view.get()?;
-        let host = view_.seat == PlayerId(0);
-        let count = view_.players.len();
-        let players: Vec<View> = view_
-            .players
-            .iter()
-            .enumerate()
-            .map(|(i, n)| {
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(
-                        view()
-                            .size(px(16.0))
-                            .rounded(px(8.0))
-                            .bg(hex(palette::player(PlayerId(i as u8))))
-                            .border_1()
-                            .border_color(hex(palette::INK)),
-                    )
-                    .child(bold(
-                        format!(
-                            "{n}{}{}",
-                            if i == 0 { " · host" } else { "" },
-                            if i == view_.seat.index() { " (you)" } else { "" }
-                        ),
-                        15.0,
-                        palette::INK,
-                    ))
-            })
-            .collect();
-        let can_start = host && count >= balance::MIN_PLAYERS && !app.busy.get();
-        Some(
-            card()
-                .items_stretch()
-                .child(label("Room code", 12.0, palette::MUTED).self_center())
-                .child(bold(view_.code.clone(), 40.0, palette::INK).self_center())
-                .child(label("Share it: 2–4 players", 12.0, palette::MUTED).self_center())
-                .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
-                .child(players)
-                .child(if host {
-                    pill(
-                        if count < balance::MIN_PLAYERS {
-                            "Waiting for players…".to_owned()
-                        } else {
-                            format!("Start with {count} players")
-                        },
-                        palette::GO,
-                        0xffffff,
-                        can_start,
-                        move || app.start_match(),
-                    )
-                } else {
-                    pill("Waiting for the host to start", 0x8a8070, 0xffffff, false, || {})
+    view()
+        .flex_1()
+        .p_safe_area()
+        .px(px(20.0))
+        .justify_center()
+        .child(dynamic(move || {
+            let view_ = app.view.get()?;
+            let host = view_.seat == PlayerId(0);
+            let count = view_.players.len();
+            let players: Vec<View> = view_
+                .players
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            view()
+                                .size(px(16.0))
+                                .rounded(px(8.0))
+                                .bg(hex(palette::player(PlayerId(i as u8))))
+                                .border_1()
+                                .border_color(hex(palette::INK)),
+                        )
+                        .child(bold(
+                            format!(
+                                "{n}{}{}",
+                                if i == 0 { " · host" } else { "" },
+                                if i == view_.seat.index() { " (you)" } else { "" }
+                            ),
+                            15.0,
+                            palette::INK,
+                        ))
                 })
-                .child(pill("Leave", 0x8a8070, 0xffffff, true, move || app.leave()))
-                .child(dynamic(move || app.toast.get().map(|t| label(t, 12.0, palette::DANGER)))),
-        )
-    }))
+                .collect();
+            let can_start = host && count >= balance::MIN_PLAYERS && !app.busy.get();
+            Some(
+                card()
+                    .items_stretch()
+                    .child(label("Room code", 12.0, palette::MUTED).self_center())
+                    .child(bold(view_.code.clone(), 40.0, palette::INK).self_center())
+                    .child(label("Share it: 2–4 players", 12.0, palette::MUTED).self_center())
+                    .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
+                    .child(players)
+                    .child(if host {
+                        pill(
+                            if count < balance::MIN_PLAYERS {
+                                "Waiting for players…".to_owned()
+                            } else {
+                                format!("Start with {count} players")
+                            },
+                            palette::GO,
+                            0xffffff,
+                            can_start,
+                            move || app.start_match(),
+                        )
+                    } else {
+                        pill("Waiting for the host to start", 0x8a8070, 0xffffff, false, || {})
+                    })
+                    .child(if host {
+                        // Leaving would strand the guests: the host cancels for everyone.
+                        pill("Cancel match", palette::DANGER, 0xffffff, !app.busy.get(), move || app.end_match())
+                    } else {
+                        pill("Leave", 0x8a8070, 0xffffff, true, move || app.leave())
+                    })
+                    .child(dynamic(move || app.toast.get().map(|t| label(t, 12.0, palette::DANGER)))),
+            )
+        }))
+        .child(hud::ended(app))
 }

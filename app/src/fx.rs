@@ -45,6 +45,8 @@ pub const DICE_LANDED_MS: f64 = 1850.0;
 pub const CONFETTI_MS: f64 = 3200.0;
 
 const TUMBLE_END: f32 = 850.0;
+/// How far through the tumble the dice start showing the roll.
+const SETTLE: f32 = 0.55;
 const FLY_START: f32 = 1400.0;
 const FLY_END: f32 = 1850.0;
 const BIG_DIE: f32 = 88.0;
@@ -169,8 +171,10 @@ fn dice_roll(
         let at = (x, y - (PI * fly).sin() * 70.0);
         let s = BIG_DIE + (SLOT_DIE - BIG_DIE) * fly;
         let rot = dir * ((1.0 - ease_out(tumble)) * TAU * 1.6 + (PI * fly).sin() * 0.8);
-        let face = if tumble < 1.0 {
-            let frame = (ease_out(tumble) * 14.0) as u32;
+        // Faces flicker while the die spins fast, then it shows the roll for
+        // the last bounces, so it lands already reading the result.
+        let face = if tumble < SETTLE {
+            let frame = (ms / 70.0) as u32;
             1 + (hash01(frame * 2 + i as u32 + dice.0 as u32 * 31) * 5.99) as u8
         } else {
             value

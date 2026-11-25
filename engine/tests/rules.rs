@@ -192,7 +192,7 @@ fn robber_blocks_its_tile_and_seven_produces_nothing() {
         let (a, b) = g2.dice.unwrap();
         if a + b == 7 {
             assert_eq!(g2.players[0].resources.total(), 0);
-            assert!(!g2.robber_relocation, "no robbers: a 7 has no further effect");
+            assert!(g2.robber_relocation, "no robbers: the roller places one");
             return;
         }
     }
@@ -555,6 +555,36 @@ fn rolling_seven_relocates_a_robber_which_then_rests_a_full_round() {
     g.round += 1;
     g.end_round(&mut Rng::new(1));
     assert_ne!(g.robber(RobberId(1)).unwrap().tile, t, "resumes wandering");
+}
+
+#[test]
+fn rolling_seven_with_no_robber_lets_the_roller_place_one() {
+    let (mut g, mut r) = (0..)
+        .find_map(|seed| {
+            let mut g = playing(2);
+            g.dice = None;
+            let mut probe = Rng::new(seed);
+            g.apply(P0, Action::Roll, &mut probe).unwrap();
+            (g.dice.map(|(a, b)| a + b) == Some(7)).then_some((g, probe))
+        })
+        .unwrap();
+    assert!(g.robbers.is_empty() && g.robber_relocation);
+    let t = centre(&g);
+    assert_eq!(g.apply(P1, Action::PlaceRobber { to: t }, &mut r), Err(RuleError::NotYourTurn));
+    g.apply(P0, Action::PlaceRobber { to: t }, &mut r).unwrap();
+    let placed = g.robber_at(t).expect("placed").id;
+    assert_eq!(g.apply(P0, Action::PlaceRobber { to: TileId(2) }, &mut r), Err(RuleError::NoRobberRelocation));
+    // Like a moved robber it skips this round's wander.
+    g.end_round(&mut Rng::new(1));
+    assert_eq!(g.robber(placed).unwrap().tile, t);
+}
+
+#[test]
+fn a_robber_on_the_board_is_moved_not_placed() {
+    let mut g = playing(2);
+    robber(&mut g, 1, TileId(0));
+    g.robber_relocation = true;
+    assert_eq!(g.apply(P0, Action::PlaceRobber { to: centre(&g) }, &mut Rng::new(1)), Err(RuleError::RobberToMove));
 }
 
 // ----- Victory -----

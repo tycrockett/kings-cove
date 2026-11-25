@@ -3,7 +3,7 @@
 //! history and the winner.
 
 use kings_cove_engine::{
-    Action, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, UnitKind, balance,
+    Action, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Target, UnitKind,
 };
 use nsh_core::prelude::*;
 
@@ -11,7 +11,8 @@ use crate::{
     art::{self, Glyph},
     board, fx,
     palette::{self, hex, hexa},
-    state::{AppState, Inspect, Mode, now_ms},
+    rules::{self, Item},
+    state::{AppState, Inspect, Menu, Mode, now_ms},
 };
 
 // ----- Small pieces -----
@@ -160,6 +161,7 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::RobberRelocated { player, .. } => format!("{} moved a robber", n(*player)),
         Event::RobberWandered { .. } => "A robber wandered".to_owned(),
         Event::RobberSpawned { .. } => "A robber appeared".to_owned(),
+        Event::RobberPlaced { player, .. } => format!("{} placed a robber", n(*player)),
         Event::TradeProposed { from, to, give, want } => format!(
             "{} offers {} for {}{}",
             n(*from),
@@ -311,6 +313,9 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
                 _ => "Gold: move · Red: ram a building".to_owned(),
             },
             Mode::Robber(_) => "Tap any free tile to move the robber".to_owned(),
+            Mode::Idle if g.robber_relocation && g.robbers.is_empty() => {
+                "You rolled 7: tap a tile to place a robber".to_owned()
+            }
             Mode::Idle if g.robber_relocation => "You rolled 7: tap a robber to move it".to_owned(),
             Mode::Idle => "Build, trade, or command your units".to_owned(),
         },
@@ -383,16 +388,8 @@ fn top(app: AppState) -> impl IntoElement {
                             if online { 0xe7dfcb } else { palette::GOLD },
                         ))
                     }))
-                    .child(
-                        view()
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(px(10.0))
-                            .bg(hexa(palette::PAPER, 0.85))
-                            .active(|s| s.opacity(0.6))
-                            .on_press(move || app.fit_request.update(|n| *n += 1))
-                            .child(bold("Recenter", 11.0, palette::INK)),
-                    ),
+                    .child(small_button("Recenter", move || app.fit_request.update(|n| *n += 1)))
+                    .child(small_button("Menu", move || app.menu.set(Menu::Open))),
             ),
         )
         .child(dynamic(move || {
@@ -517,57 +514,47 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         .child(card(UnitKind::Ram, me.cards.rams))
 }
 
-struct TrayItem {
-    title: &'static str,
-    glyph: Glyph,
-    cost: Resources,
-    mode: Option<Mode>,
-    action: Option<Action>,
+/// What buying an item does: pick a place on the board, or buy a card.
+enum Use {
+    Place(Mode),
+    Buy(UnitKind),
 }
 
-/// Every build, upgrade and card with its price; usable ones light up on
-/// the player's turn, the rest stay visible so prices can be planned for.
+fn item_use(item: Item) -> Use {
+    match item {
+        Item::Road => Use::Place(Mode::Road),
+        Item::Outpost => Use::Place(Mode::Outpost),
+        Item::Town => Use::Place(Mode::UpgradeTown),
+        Item::City => Use::Place(Mode::UpgradeCity),
+        Item::Knight => Use::Buy(UnitKind::Knight),
+        Item::Ram => Use::Buy(UnitKind::Ram),
+    }
+}
+
+/// Why the player cannot use `item` right now, or `None` when they can.
+fn item_blocker(g: &Game, seat: PlayerId, item: Item) -> Option<&'static str> {
+    if !g.is_active(seat) || !matches!(g.phase, Phase::Playing) {
+        return Some("Wait for your turn");
+    }
+    if g.dice.is_none() {
+        return Some("Roll the dice first");
+    }
+    if !g.players[seat.index()].resources.covers(&item.cost()) {
+        return Some("Not enough resources");
+    }
+    let usable = match item_use(item) {
+        Use::Place(mode) => !board::options(g, seat, mode).is_empty(),
+        Use::Buy(kind) => g.can_buy_card(seat, kind).is_ok(),
+    };
+    (!usable).then(|| item.no_place())
+}
+
+/// Every build, upgrade and card with its price. A tap opens the item's card,
+/// which says what it does and buys it; usable ones light up on the
+/// player's turn.
 fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
     let my_move = g.is_active(seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing);
     let have = g.players[seat.index()].resources;
-    let items = [
-        TrayItem { title: "Road", glyph: Glyph::Road, cost: balance::ROAD_COST, mode: Some(Mode::Road), action: None },
-        TrayItem {
-            title: "Outpost",
-            glyph: Glyph::Building(BuildingKind::Outpost),
-            cost: balance::OUTPOST_COST,
-            mode: Some(Mode::Outpost),
-            action: None,
-        },
-        TrayItem {
-            title: "Town",
-            glyph: Glyph::Building(BuildingKind::Town),
-            cost: balance::TOWN_UPGRADE_COST,
-            mode: Some(Mode::UpgradeTown),
-            action: None,
-        },
-        TrayItem {
-            title: "City",
-            glyph: Glyph::Building(BuildingKind::City),
-            cost: balance::CITY_UPGRADE_COST,
-            mode: Some(Mode::UpgradeCity),
-            action: None,
-        },
-        TrayItem {
-            title: "Knight",
-            glyph: Glyph::Unit(UnitKind::Knight),
-            cost: balance::KNIGHT_CARD_COST,
-            mode: None,
-            action: Some(Action::BuyCard(UnitKind::Knight)),
-        },
-        TrayItem {
-            title: "Ram",
-            glyph: Glyph::Unit(UnitKind::Ram),
-            cost: balance::RAM_CARD_COST,
-            mode: None,
-            action: Some(Action::BuyCard(UnitKind::Ram)),
-        },
-    ];
     let color = palette::player(seat);
     let current = app.mode.get_untracked();
     let tile = |glyph: Glyph, title: &str, selected: bool, opacity: f32| {
@@ -586,36 +573,29 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
             .child(glyph_icon(glyph, color, 40.0, 26.0))
             .child(bold(title.to_owned(), 11.5, palette::INK))
     };
-    let buttons: Vec<View> = items
+    let buttons: Vec<View> = Item::ALL
         .into_iter()
         .map(|item| {
-            let enabled = my_move
-                && match (item.mode, &item.action) {
-                    (Some(mode), _) => !board::options(g, seat, mode).is_empty(),
-                    (None, Some(Action::BuyCard(k))) => g.can_buy_card(seat, *k).is_ok(),
-                    _ => false,
-                };
-            let selected = item.mode.is_some_and(|m| m == current);
-            let opacity = if enabled || selected {
+            let usable = item_blocker(g, seat, item).is_none();
+            let selected = matches!(item_use(item), Use::Place(m) if m == current);
+            let opacity = if usable || selected {
                 1.0
             } else if my_move {
                 0.62
             } else {
                 0.5
             };
-            let v =
-                tile(item.glyph, item.title, selected, opacity).child(cost_row(&item.cost, Some(&have), 14.0, 11.5));
-            if !(enabled || selected) {
-                return v;
-            }
-            v.active(|s| s.opacity(0.75).scale(0.95)).on_press(move || {
-                app.inspect.set(None);
-                match (item.mode, item.action.clone()) {
-                    (Some(mode), _) => app.mode.set(if app.mode.get_untracked() == mode { Mode::Idle } else { mode }),
-                    (None, Some(action)) => app.send(action),
-                    _ => {}
-                }
-            })
+            tile(item.glyph(), item.title(), selected, opacity)
+                .child(cost_row(&item.cost(), Some(&have), 14.0, 11.5))
+                .active(|s| s.opacity(0.75).scale(0.95))
+                .on_press(move || {
+                    app.inspect.set(None);
+                    if selected {
+                        app.mode.set(Mode::Idle);
+                    } else {
+                        app.item_card.set(Some(item));
+                    }
+                })
         })
         .collect();
     let trading = app.trade_open.get_untracked();
@@ -631,6 +611,153 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
         trade
     };
     view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(trade)))
+}
+
+/// An item's card: what it is, what it costs, what it does, and the button
+/// that buys it (or why it cannot be bought now).
+fn item_card(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let item = app.item_card.get()?;
+        let view_ = app.view.get()?;
+        let g = view_.game.as_ref()?;
+        let seat = view_.seat;
+        let have = g.players[seat.index()].resources;
+        let blocker = item_blocker(g, seat, item);
+        let close = move || app.item_card.set(None);
+        let lines: Vec<Text> = item.rules().into_iter().map(|l| label(l, 14.0, palette::INK)).collect();
+        let buy = pill(item.verb(), palette::GO, 0xffffff, blocker.is_none() && !app.busy.get(), move || {
+            app.item_card.set(None);
+            match item_use(item) {
+                Use::Place(mode) => app.mode.set(mode),
+                Use::Buy(kind) => app.send(Action::BuyCard(kind)),
+            }
+        });
+        let card = panel()
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(glyph_icon(item.glyph(), palette::player(seat), 72.0, 52.0))
+                    .child(view().flex_1().gap(px(2.0)).child(bold(item.title(), 22.0, palette::INK)).child(label(
+                        item.summary(),
+                        13.0,
+                        palette::MUTED,
+                    ))),
+            )
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(bold("Cost", 13.0, palette::MUTED))
+                    .child(cost_row(&item.cost(), Some(&have), 22.0, 15.0)),
+            )
+            .child(view().gap(px(6.0)).child(lines))
+            .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
+            .child(buy)
+            .child(pill("Close", 0x8a8070, 0xffffff, true, close));
+        Some(sheet(card).on_press(close))
+    })
+}
+
+/// An attack the player tapped: what it will do, before it is done.
+fn attack_confirm(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let action = app.confirm_attack.get()?;
+        let Action::Attack { unit, target } = action else { return None };
+        let view_ = app.view.get()?;
+        let g = view_.game.as_ref()?;
+        let (title, outcome) = rules::attack_outcome(g, &view_.players, unit, target)?;
+        let attacker = g.unit(unit)?;
+        let (victim, victim_color) = match target {
+            Target::Robber(_) => (Glyph::Robber, 0x2b2b2e),
+            Target::Unit(u) => g.unit(u).map(|u| (Glyph::Unit(u.kind), palette::player(u.owner)))?,
+            Target::Building(v) => g.building(v).map(|b| (Glyph::Building(b.kind), palette::player(b.owner)))?,
+        };
+        let cancel = move || app.confirm_attack.set(None);
+        let card = panel()
+            .items_center()
+            .child(bold(title, 22.0, palette::INK))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(glyph_icon(Glyph::Unit(attacker.kind), palette::player(attacker.owner), 64.0, 52.0))
+                    .child(bold("vs", 18.0, palette::DANGER))
+                    .child(glyph_icon(victim, victim_color, 64.0, 52.0)),
+            )
+            .child(label(outcome, 15.0, palette::INK).text_center())
+            .child(
+                pill("Attack", palette::DANGER, 0xffffff, !app.busy.get(), move || {
+                    app.confirm_attack.set(None);
+                    app.mode.set(Mode::Idle);
+                    app.send(action.clone());
+                })
+                .self_stretch(),
+            )
+            .child(pill("Cancel", 0x8a8070, 0xffffff, true, cancel).self_stretch());
+        Some(sheet(card).on_press(cancel))
+    })
+}
+
+/// Every rule, piece and price, from the home screen or the game menu.
+pub fn rulebook(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        if !app.rules_open.get() {
+            return None;
+        }
+        let color = app.seat().map_or(palette::PLAYERS[0], palette::player);
+        let pages: Vec<View> = rules::rulebook()
+            .into_iter()
+            .map(|s| {
+                let lines: Vec<Text> = s.lines.into_iter().map(|l| label(l, 13.5, palette::INK)).collect();
+                view()
+                    .gap(px(6.0))
+                    .pb(px(14.0))
+                    .border_b(px(1.0))
+                    .border_color(hexa(palette::INK, 0.1))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(s.glyph.map(|g| glyph_icon(g, color, 44.0, 32.0)))
+                            .child(bold(s.title, 17.0, palette::INK).flex_1())
+                            .child(s.cost.map(|c| cost_row(&c, None, 18.0, 13.0))),
+                    )
+                    .child(lines)
+            })
+            .collect();
+        Some(
+            view()
+                .absolute()
+                .inset_0()
+                .bg(hexa(0x000000, 0.55))
+                .pt_safe_area_plus(px(16.0))
+                .pb_safe_area_plus(px(16.0))
+                .px(px(12.0))
+                .child(
+                    panel()
+                        .flex_1()
+                        .border_2()
+                        .border_color(hex(palette::GOLD))
+                        .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .px(px(16.0))
+                                .pt(px(14.0))
+                                .pb(px(10.0))
+                                .child(bold("How to play", 22.0, palette::INK).flex_1())
+                                .child(pill("Close", palette::INK, 0xffffff, true, move || app.rules_open.set(false))),
+                        )
+                        .child(scroll().flex_1().child(view().px(px(16.0)).pb(px(16.0)).gap(px(14.0)).child(pages))),
+                ),
+        )
+    })
 }
 
 /// The one big button: roll, end the turn, or whose turn it is.
@@ -975,6 +1102,111 @@ fn winner(app: AppState) -> impl IntoElement {
     })
 }
 
+fn small_button(title: &'static str, on: impl Fn() + 'static) -> View {
+    view()
+        .px(px(10.0))
+        .py(px(4.0))
+        .rounded(px(10.0))
+        .bg(hexa(palette::PAPER, 0.85))
+        .active(|s| s.opacity(0.6))
+        .on_press(on)
+        .child(bold(title, 11.0, palette::INK))
+}
+
+/// A dimmed screen with a card in the middle. The card swallows its own
+/// taps, so a press handler on the sheet only hears taps outside it.
+fn sheet(card: View) -> View {
+    view().absolute().inset_0().items_center().justify_center().px(px(24.0)).bg(hexa(0x000000, 0.5)).child(
+        card.self_stretch()
+            .px(px(20.0))
+            .py(px(20.0))
+            .gap(px(12.0))
+            .border_2()
+            .border_color(hex(palette::GOLD))
+            .on_press(|| {})
+            .bind_motion(&motion().entering(MotionPreset::ZoomIn)),
+    )
+}
+
+/// Leaving the match, or (for the host) ending it for everyone, each asked
+/// twice.
+fn menu(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let choice = app.menu.get();
+        if choice == Menu::Closed {
+            return None;
+        }
+        let view_ = app.view.get()?;
+        if view_.ended {
+            return None;
+        }
+        let host = view_.seat == PlayerId(0);
+        let busy = app.busy.get();
+        let back = move || app.menu.set(Menu::Open);
+        let card = match choice {
+            Menu::Open => panel()
+                .child(bold(format!("Match {}", view_.code), 20.0, palette::INK).self_center())
+                .child(pill("Resume", palette::GO, 0xffffff, true, move || app.menu.set(Menu::Closed)))
+                .child(pill("How to play", palette::INK, 0xffffff, true, move || {
+                    app.menu.set(Menu::Closed);
+                    app.rules_open.set(true);
+                }))
+                .child(pill("Leave match", 0x8a8070, 0xffffff, true, move || app.menu.set(Menu::ConfirmLeave)))
+                .child(host.then(|| {
+                    pill("End match for everyone", palette::DANGER, 0xffffff, true, move || {
+                        app.menu.set(Menu::ConfirmEnd)
+                    })
+                })),
+            Menu::ConfirmLeave => panel()
+                .child(bold("Leave this match?", 20.0, palette::INK))
+                .child(label(
+                    if host {
+                        "Your seat stays and the others wait on your turns. To stop the game for everyone, end the match instead."
+                    } else {
+                        "Your seat stays and the others wait on your turns until the host ends the match."
+                    },
+                    14.0,
+                    palette::MUTED,
+                ))
+                .child(pill("Leave", palette::DANGER, 0xffffff, true, move || app.leave()))
+                .child(pill("Back", 0x8a8070, 0xffffff, true, back)),
+            Menu::ConfirmEnd => panel()
+                .child(bold("End the match for everyone?", 20.0, palette::INK))
+                .child(label("Every player goes back to the home screen. This can't be undone.", 14.0, palette::MUTED))
+                .child(pill("End match", palette::DANGER, 0xffffff, !busy, move || app.end_match()))
+                .child(pill("Back", 0x8a8070, 0xffffff, true, back)),
+            Menu::Closed => return None,
+        };
+        Some(sheet(card).on_press(move || app.menu.set(Menu::Closed)))
+    })
+}
+
+/// The host ended the match: everyone heads home.
+pub fn ended(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let view_ = app.view.get()?;
+        if !view_.ended {
+            return None;
+        }
+        let by_me = view_.seat == PlayerId(0);
+        let host = name(&view_.players, PlayerId(0));
+        Some(
+            sheet(
+                panel()
+                    .items_center()
+                    .child(bold("Match ended", 26.0, palette::INK))
+                    .child(label(
+                        if by_me { "You ended the match.".to_owned() } else { format!("{host} ended the match.") },
+                        14.0,
+                        palette::MUTED,
+                    ))
+                    .child(pill("Back to home", palette::GO, 0xffffff, true, move || app.leave()).self_stretch()),
+            )
+            .on_press(|| {}),
+        )
+    })
+}
+
 /// A gold frame that glows around the screen while it is the player's turn.
 fn turn_glow(app: AppState) -> impl IntoElement {
     let mine = computed(move || {
@@ -1009,6 +1241,10 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         if stale {
             app.mode.set(Mode::Idle);
         }
+        // An attack waiting for confirmation lapses when the turn does.
+        if !g.is_active(view_.seat) {
+            app.confirm_attack.set(None);
+        }
     });
     view()
         .flex_1()
@@ -1019,4 +1255,8 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .child(bottom(app))
         .child(winner(app))
         .child(fx::fx_layer(app))
+        .child(item_card(app))
+        .child(attack_confirm(app))
+        .child(menu(app))
+        .child(ended(app))
 }

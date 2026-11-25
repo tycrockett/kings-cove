@@ -9,6 +9,7 @@ use kings_cove_protocol::{MatchView, Session};
 use serde::{Deserialize, Serialize};
 
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+const ENDED: &str = "The host ended this match";
 const CODE_LEN: usize = 5;
 const MAX_NAME: usize = 16;
 
@@ -26,6 +27,9 @@ pub struct Match {
     /// The match's own dice, robbers and board: never sent to clients.
     pub rng: Rng,
     pub version: u64,
+    /// The host ended it: nothing more happens in it.
+    #[serde(default)]
+    pub ended: bool,
 }
 
 impl Match {
@@ -44,6 +48,7 @@ impl Match {
             seat,
             players: self.seats.iter().map(|s| s.name.clone()).collect(),
             game: self.game.clone(),
+            ended: self.ended,
         }
     }
 }
@@ -80,7 +85,14 @@ impl Store {
         let rng = Rng::new(self.rng.next_u64());
         self.matches.insert(
             code.clone(),
-            Match { code: code.clone(), seats: vec![Seat { name, token: token.clone() }], game: None, rng, version: 1 },
+            Match {
+                code: code.clone(),
+                seats: vec![Seat { name, token: token.clone() }],
+                game: None,
+                rng,
+                version: 1,
+                ended: false,
+            },
         );
         Ok(Session { code, token, seat: PlayerId(0) })
     }
@@ -90,6 +102,9 @@ impl Store {
         let code = code.trim().to_ascii_uppercase();
         let token = self.token();
         let m = self.matches.get_mut(&code).ok_or("No match with that code")?;
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
         if m.game.is_some() {
             return Err("That match has already started".to_owned());
         }
@@ -110,6 +125,9 @@ impl Store {
         if seat != PlayerId(0) {
             return Err("Only the host can start the match".to_owned());
         }
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
         if m.game.is_some() {
             return Err("The match has already started".to_owned());
         }
@@ -125,9 +143,26 @@ impl Store {
     pub fn act(&mut self, code: &str, token: &str, action: Action) -> Result<MatchView, String> {
         let m = self.matches.get_mut(code).ok_or("No match with that code")?;
         let seat = m.seat_of(token)?;
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
         let game = m.game.as_mut().ok_or("The match has not started")?;
         game.apply(seat, action, &mut m.rng).map_err(|e| e.to_string())?;
         m.version += 1;
+        Ok(m.view(seat))
+    }
+
+    /// The host ends the match for everyone, in the lobby or mid-game.
+    pub fn end(&mut self, code: &str, token: &str) -> Result<MatchView, String> {
+        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
+        let seat = m.seat_of(token)?;
+        if seat != PlayerId(0) {
+            return Err("Only the host can end the match".to_owned());
+        }
+        if !m.ended {
+            m.ended = true;
+            m.version += 1;
+        }
         Ok(m.view(seat))
     }
 
@@ -174,6 +209,21 @@ mod tests {
         let resumed = store.view(&host.code, &guest.token).unwrap();
         assert_eq!(resumed.seat, PlayerId(1));
         assert_eq!(resumed.players, vec!["Ada".to_owned(), "Bo".to_owned()]);
+    }
+
+    #[test]
+    fn only_the_host_ends_a_match_and_it_stays_ended() {
+        let mut store = Store::new(3);
+        let host = store.create("Ada").unwrap();
+        let guest = store.join(&host.code, "Bo").unwrap();
+        store.start(&host.code, &host.token).unwrap();
+        assert!(store.end(&host.code, &guest.token).is_err(), "only the host ends it");
+        let before = store.version(&host.code).unwrap();
+        assert!(store.end(&host.code, &host.token).unwrap().ended);
+        assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
+        assert!(store.view(&host.code, &guest.token).unwrap().ended);
+        assert!(store.act(&host.code, &host.token, Action::SetupBuilding(VertexId(0))).is_err());
+        assert!(store.join(&host.code, "Cy").is_err());
     }
 
     #[test]

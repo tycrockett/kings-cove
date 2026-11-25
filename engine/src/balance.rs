@@ -26,7 +26,8 @@ pub const PRODUCTION_NUMBERS: [u8; 19] = [2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9,
 /// Numbers that may not sit next to each other (the most frequent ones).
 pub const HOT_NUMBERS: [u8; 2] = [6, 8];
 
-/// The dice total that produces nothing and lets the roller relocate a robber.
+/// The dice total that produces nothing and lets the roller move a robber
+/// (or place one when the board has none).
 pub const ROBBER_ROLL: u8 = 7;
 
 /// `robber_capacity = total_settlements / SETTLEMENTS_PER_ROBBER`.

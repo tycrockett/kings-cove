@@ -28,6 +28,10 @@ On a phone, open *Server settings* on the home screen and enter the server's LAN
 A client that closes or loses its connection resumes its seat on the next launch (the seat token is kept in the app's
 storage); a restarted server resumes its matches from the data file.
 
+In a match, **Menu** opens *How to play* (every rule and piece; also on the home screen), *Leave match* (this device
+gives up its seat; the match goes on) and, for the host, *End match for everyone*. Tapping an item in the build tray
+shows what it does and its price before buying it, and tapping an attack target shows the outcome before it is made.
+
 Server settings: `KC_ADDR` (listen address), `KC_DATA` (data file). Client build setting: `KC_SERVER_URL`, the server a
 fresh install talks to (default `http://127.0.0.1:8787`). On a desktop, `KC_DATA_DIR=<dir>` gives a window its own
 storage, so several local windows each take their own seat.
@@ -75,8 +79,8 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   One unit or robber per tile.
 - **Robbers** block production on their tile. At the end of each round they wander to a free neighbouring tile; then,
   if there are fewer robbers than `floor(towns and cities / 4)`, one appears on a free tile with a 25% chance.
-  Rolling 7 produces nothing and lets the roller move one robber anywhere free; it then stays put through the next
-  complete round.
+  Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place a new one when the island has
+  none; it then stays put through the next complete round.
 - **Victory**: the first player to reach 10 victory points wins.
 
 Costs (all in `engine/src/balance.rs`):

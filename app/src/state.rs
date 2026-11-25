@@ -13,6 +13,7 @@ use crate::{
     board::{self, Anim, AnimKind},
     fx::{self, Fx, FxKind},
     palette,
+    rules::Item,
 };
 
 const SERVER_KEY: &str = "server";
@@ -46,6 +47,15 @@ pub enum Inspect {
     Edge(kings_cove_engine::EdgeId),
 }
 
+/// The game menu, and which choice it is asking the player to confirm.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Menu {
+    Closed,
+    Open,
+    ConfirmLeave,
+    ConfirmEnd,
+}
+
 #[derive(Copy, Clone)]
 pub struct AppState {
     pub server: Signal<String>,
@@ -72,6 +82,12 @@ pub struct AppState {
     pub gains_at: Stored<f64>,
     pub trade_open: Signal<bool>,
     pub history_open: Signal<bool>,
+    pub menu: Signal<Menu>,
+    /// The build tray item whose card is open.
+    pub item_card: Signal<Option<Item>>,
+    pub rules_open: Signal<bool>,
+    /// An attack the player tapped, waiting for them to confirm its outcome.
+    pub confirm_attack: Signal<Option<Action>>,
     /// Bumped to fit the board to the screen again.
     pub fit_request: Signal<u32>,
     last_seq: Stored<Option<u64>>,
@@ -108,6 +124,10 @@ impl AppState {
             gains_at: stored(0.0),
             trade_open: signal(false),
             history_open: signal(false),
+            menu: signal(Menu::Closed),
+            item_card: signal(None),
+            rules_open: signal(false),
+            confirm_attack: signal(None),
             fit_request: signal(0),
             last_seq: stored(None),
             poll_generation: stored(0),
@@ -171,6 +191,21 @@ impl AppState {
         self.request(async move { post::<_, MatchView>(&base, "/start", &body).await }, move |v| this.receive(v));
     }
 
+    /// The host ends the match for every player.
+    pub fn end_match(&self) {
+        let Some(s) = self.session.get_untracked() else {
+            return;
+        };
+        let (this, base) = (*self, self.base());
+        let body = SessionRequest { code: s.code, token: s.token };
+        self.request(async move { post::<_, MatchView>(&base, "/end", &body).await }, move |v| {
+            this.menu.set(Menu::Closed);
+            this.receive(v)
+        });
+    }
+
+    /// Gives up this device's seat and goes back home. The match goes on
+    /// on the server; the host can end it.
     pub fn leave(&self) {
         Storage::remove_item(SESSION_KEY);
         self.poll_generation.with(|g| *g += 1);
@@ -179,6 +214,13 @@ impl AppState {
         self.mode.set(Mode::Idle);
         self.inspect.set(None);
         self.trade_open.set(false);
+        self.history_open.set(false);
+        self.menu.set(Menu::Closed);
+        self.item_card.set(None);
+        self.confirm_attack.set(None);
+        self.anims.set(Vec::new());
+        self.fx.set(Vec::new());
+        self.fx_cursor.replace(0.0);
         self.last_seq.replace(None);
     }
 
@@ -248,7 +290,12 @@ impl AppState {
                     match get::<MatchView>(&url).await {
                         Ok(view) if this.poll_generation.get() == generation => {
                             this.connected.set(true);
+                            let ended = view.ended;
                             this.receive(view);
+                            // Nothing more will change in an ended match.
+                            if ended {
+                                return;
+                            }
                         }
                         Ok(_) => return,
                         Err(e) if e.contains("not seated") || e.contains("No match") => {
@@ -346,8 +393,15 @@ impl AppState {
                         kind: FxKind::Dice {
                             dice,
                             caption: if mine { "You rolled".to_owned() } else { format!("{} rolled", name(player)) },
-                            note: (sum == 7)
-                                .then(|| if mine { "Move a robber!".to_owned() } else { "A robber moves".to_owned() }),
+                            note: (sum == 7).then(|| {
+                                let place = after.robber_relocation && after.robbers.is_empty();
+                                match (mine, place) {
+                                    (true, true) => "Place a robber!".to_owned(),
+                                    (true, false) => "Move a robber!".to_owned(),
+                                    (false, true) => "A robber is coming".to_owned(),
+                                    (false, false) => "A robber moves".to_owned(),
+                                }
+                            }),
                         },
                     });
                     self.dice_hidden.set(true);

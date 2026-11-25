@@ -66,6 +66,7 @@ fn handle(shared: &Shared, mut request: Request) {
         (Method::Post, "/action") => {
             with_body(&body, |r: ActionRequest| mutate(shared, |s| s.act(&r.code, &r.token, r.action)))
         }
+        (Method::Post, "/end") => with_body(&body, |r: SessionRequest| mutate(shared, |s| s.end(&r.code, &r.token))),
         (Method::Get, "/poll") => poll(shared, query),
         (Method::Get, "/") => Ok("\"King's Cove\"".to_owned()),
         _ => Err((404, "Not found".to_owned())),

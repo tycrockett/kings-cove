@@ -6,6 +6,7 @@
 //! | `POST /join` | [`JoinRequest`] | [`Session`] |
 //! | `POST /start` | [`SessionRequest`] | [`MatchView`] |
 //! | `POST /action` | [`ActionRequest`] | [`MatchView`] |
+//! | `POST /end` | [`SessionRequest`] (the host's) | [`MatchView`], now `ended` |
 //! | `GET /poll?code=&token=&since=` | | [`MatchView`] once its version passes `since` (long poll) |
 //!
 //! Failures answer a 4xx status with an [`ErrorBody`].
@@ -64,4 +65,7 @@ pub struct MatchView {
     pub players: Vec<String>,
     /// `None` while in the lobby.
     pub game: Option<Game>,
+    /// The host ended the match; it takes no more actions.
+    #[serde(default)]
+    pub ended: bool,
 }

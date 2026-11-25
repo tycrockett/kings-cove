@@ -224,6 +224,10 @@ pub enum Action {
         robber: RobberId,
         to: TileId,
     },
+    /// After a 7 with no robber on the board: put a new one on a free tile.
+    PlaceRobber {
+        to: TileId,
+    },
     ProposeTrade {
         to: Option<PlayerId>,
         give: Resources,
@@ -257,6 +261,7 @@ pub enum RuleError {
     NotAdjacent,
     InvalidTarget,
     NoRobberRelocation,
+    RobberToMove,
     NoSuchRobber,
     NoTrade,
     TradeAlreadyOpen,
@@ -289,6 +294,7 @@ impl fmt::Display for RuleError {
             RuleError::NotAdjacent => "Units only reach adjacent tiles",
             RuleError::InvalidTarget => "That unit cannot attack that",
             RuleError::NoRobberRelocation => "No robber to relocate",
+            RuleError::RobberToMove => "Move a robber already on the board",
             RuleError::NoSuchRobber => "No such robber",
             RuleError::NoTrade => "No open trade",
             RuleError::TradeAlreadyOpen => "A trade is already open",
@@ -388,6 +394,12 @@ pub enum Event {
         to: TileId,
     },
     RobberSpawned {
+        robber: RobberId,
+        tile: TileId,
+    },
+    /// The roller of a 7 put a new robber on the board.
+    RobberPlaced {
+        player: PlayerId,
         robber: RobberId,
         tile: TileId,
     },
@@ -750,6 +762,24 @@ impl Game {
         Ok(())
     }
 
+    /// After a 7 with no robber on the board, the roller places a new one.
+    pub fn can_place_robber(&self, player: PlayerId, to: TileId) -> Result<(), RuleError> {
+        self.require_main_action(player)?;
+        if !self.robber_relocation {
+            return Err(RuleError::NoRobberRelocation);
+        }
+        if !self.robbers.is_empty() {
+            return Err(RuleError::RobberToMove);
+        }
+        if to.index() >= self.board.tiles.len() {
+            return Err(RuleError::InvalidTarget);
+        }
+        if self.occupied(to) {
+            return Err(RuleError::TileOccupied);
+        }
+        Ok(())
+    }
+
     /// Setup: where the player may place now.
     pub fn setup_vertices(&self, player: PlayerId) -> Vec<VertexId> {
         match self.phase {
@@ -847,6 +877,14 @@ impl Game {
                 r.frozen_through_round = round;
                 self.robber_relocation = false;
                 self.log(Event::RobberRelocated { player, robber, from, to });
+                Ok(())
+            }
+            Action::PlaceRobber { to } => {
+                self.can_place_robber(player, to)?;
+                let robber = RobberId(self.next_id());
+                self.robbers.push(Robber { id: robber, tile: to, frozen_through_round: self.round });
+                self.robber_relocation = false;
+                self.log(Event::RobberPlaced { player, robber, tile: to });
                 Ok(())
             }
             Action::ProposeTrade { to, give, want } => {
@@ -986,7 +1024,8 @@ impl Game {
         self.log(Event::Rolled { player, dice });
         let total = dice.0 + dice.1;
         if total == balance::ROBBER_ROLL {
-            self.robber_relocation = !self.robbers.is_empty();
+            // Move a robber, or place one when the board has none.
+            self.robber_relocation = true;
             return Ok(());
         }
         self.produce(total);

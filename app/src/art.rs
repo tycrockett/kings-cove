@@ -418,6 +418,7 @@ pub enum Glyph {
     Building(BuildingKind),
     Unit(UnitKind),
     Trade,
+    Robber,
 }
 
 /// `glyph` drawn to fit a `w` × `h` box at the origin, in `color`.
@@ -431,6 +432,7 @@ pub fn glyph(p: Painter, glyph: Glyph, color: u32, w: f32, h: f32) -> Painter {
             building(p, (c.0, y), kind, color, u, 1.2)
         }
         Glyph::Unit(kind) => unit(p, (c.0, h * 0.45), kind, color, h * 0.36, 1.2),
+        Glyph::Robber => robber(p, (c.0, h * 0.5), h * 0.36, 1.2),
         Glyph::Trade => {
             let arrow = |p: Painter, y: f32, dir: f32, color: u32| {
                 let (x0, x1) = if dir > 0.0 { (w * 0.2, w * 0.8) } else { (w * 0.8, w * 0.2) };

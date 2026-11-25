@@ -143,6 +143,13 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
     }
     let vertices = || g.board.vertices.iter().map(|v| v.id);
     match mode {
+        // A 7 with no robber on the island: the roller places a new one.
+        Mode::Idle if g.robber_relocation && g.robbers.is_empty() => g
+            .board
+            .tile_ids()
+            .filter(|&t| g.can_place_robber(seat, t).is_ok())
+            .map(|t| opt(Spot::Tile(t), Action::PlaceRobber { to: t }))
+            .collect(),
         Mode::Idle => Vec::new(),
         Mode::Road => g
             .board
@@ -194,6 +201,8 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
 pub enum Tap {
     Act(Action, Mode),
     Select(Mode),
+    /// An attack: show its outcome and let the player confirm it.
+    Confirm(Action),
     Inspect(Option<Inspect>),
 }
 
@@ -215,6 +224,9 @@ pub fn resolve_tap(g: &Game, seat: PlayerId, mode: Mode, p: (f32, f32)) -> Tap {
         .filter(|(d, _)| *d <= 1.0)
         .min_by(|a, b| a.0.total_cmp(&b.0));
     if let Some((_, o)) = best {
+        if o.hostile {
+            return Tap::Confirm(o.action.clone());
+        }
         let next = if mode == Mode::Road { Mode::Road } else { Mode::Idle };
         return Tap::Act(o.action.clone(), next);
     }
@@ -330,7 +342,7 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
         Event::Deployed { player, tile, .. } => {
             vec![a(650.0, AnimKind::Pop { at: piece_pos(g, tile), color: color(player) })]
         }
-        Event::RobberSpawned { tile, .. } => vec![
+        Event::RobberSpawned { tile, .. } | Event::RobberPlaced { tile, .. } => vec![
             a(800.0, AnimKind::Pop { at: piece_pos(g, tile), color: 0x222222 }),
             a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: "A robber!".to_owned() }),
         ],
@@ -520,6 +532,12 @@ pub fn draw(s: &Scene) -> Painter {
         && let Some(r) = g.robber(r)
     {
         p = circle(p, piece_pos(g, r.tile), 0.38 * S).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
+    }
+    // A robber waiting to be placed: a faint one on every tile it may go.
+    for o in s.opts {
+        if let (Spot::Tile(t), Action::PlaceRobber { .. }) = (o.spot, &o.action) {
+            p = art::robber(p.global_alpha(0.45), piece_pos(g, t), 0.22 * S, 1.6 * px1).global_alpha(1.0);
+        }
     }
 
     // What the player is looking at.
@@ -885,6 +903,10 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             Tap::Select(mode) => {
                 app.inspect.set(None);
                 app.mode.set(mode);
+            }
+            Tap::Confirm(action) => {
+                app.inspect.set(None);
+                app.confirm_attack.set(Some(action));
             }
             Tap::Inspect(i) => {
                 if !matches!(
