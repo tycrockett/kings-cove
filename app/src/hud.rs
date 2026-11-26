@@ -356,8 +356,8 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
             Mode::Road => "Tap a glowing edge to build a road".to_owned(),
             Mode::Outpost => "Tap a spot on your roads for an outpost".to_owned(),
             Mode::UpgradeTown => "Tap an outpost to make it a town".to_owned(),
-            Mode::UpgradeCity => "Tap a town to make it a city".to_owned(),
-            Mode::Deploy(k) => format!("Tap a tile beside your town or city for the {}", k.name()),
+            Mode::UpgradeCity => "Tap a town to make it a castle".to_owned(),
+            Mode::Deploy(k) => format!("Tap a tile beside your town or castle for the {}", k.name()),
             Mode::Cast(spell, first) => rules::spell_hint(spell, first.is_some()),
             Mode::Unit(u) => match g.unit(u).and_then(|u| u.blockade) {
                 Some(Blockade::Holding) => "Your knight holds a blockade: it can't move or attack".to_owned(),
@@ -743,7 +743,7 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
 fn mana_state(g: &Game, seat: PlayerId) -> String {
     if !g.has_city(seat) {
         return match g.players[seat.index()].scrolls.len() {
-            0 => "need a city".to_owned(),
+            0 => "need a castle".to_owned(),
             1 => "1 scroll".to_owned(),
             n => format!("{n} scrolls"),
         };
@@ -766,7 +766,7 @@ fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
     // A scroll of the spell casts it free, with no city and whatever the mana.
     if !g.players[seat.index()].scrolls.contains(&spell) {
         if !g.has_city(seat) {
-            return Some("Build a city to unlock spells".to_owned());
+            return Some("Build a castle to unlock spells".to_owned());
         }
         let wait = g.players[seat.index()].mana_ready_round.saturating_sub(g.round);
         if wait > 0 {

@@ -480,31 +480,46 @@ pub fn spellbook(p: Painter, w: f32, h: f32) -> Painter {
         .stroke()
 }
 
-/// A hooded pawn.
-pub fn robber(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
-    let p = ground_shadow(p, (x, y + 1.0 * u), 0.95 * u);
-    let cloak = vgrad(y - u, y + u, 0x4a4a52, 0x17171a);
-    let p = poly(
-        p,
-        &[
-            (x - 0.8 * u, y + 1.0 * u),
-            (x + 0.8 * u, y + 1.0 * u),
-            (x + 0.35 * u, y - 0.2 * u),
-            (x - 0.35 * u, y - 0.2 * u),
-        ],
-    )
-    .fill_style(cloak.clone())
-    .fill()
-    .stroke_color(hex(0xd9d4c5))
-    .line_width(line)
-    .stroke();
-    let p = circle(p, (x, y - 0.55 * u), 0.5 * u).fill_style(cloak).fill().stroke();
-    p.fill_color(hex(0xffd35a)).fill_rect(x - 0.24 * u, y - 0.6 * u, 0.16 * u, 0.1 * u).fill_rect(
-        x + 0.08 * u,
-        y - 0.6 * u,
-        0.16 * u,
-        0.1 * u,
-    )
+/// A bandit: hooded, masked with a red kerchief, a dagger in hand and a
+/// sack of loot over the shoulder.
+pub fn bandit(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
+    let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
+    let outline = hex(0xd9d4c5);
+    let p = ground_shadow(p, at(0.0, 1.0), 0.95 * u);
+    // The sack, behind the shoulder.
+    let p = circle(p, at(0.6, 0.0), 0.36 * u)
+        .fill_style(vgrad(y - 0.36 * u, y + 0.36 * u, 0xc9a26a, 0x8a6a3c))
+        .fill()
+        .stroke_color(hex(0x3b2a18))
+        .line_width(line)
+        .stroke();
+    let p = poly(p, &[at(0.5, -0.3), at(0.7, -0.3), at(0.6, -0.42)]).fill_color(hex(0x3b2a18)).fill();
+    // Cloak and hood.
+    let cloak = vgrad(y - u, y + u, 0x5b4a3a, 0x241a12);
+    let p = poly(p, &[at(-0.8, 1.0), at(0.8, 1.0), at(0.35, -0.2), at(-0.35, -0.2)])
+        .fill_style(cloak.clone())
+        .fill()
+        .stroke_color(outline)
+        .line_width(line)
+        .stroke();
+    let p = circle(p, at(0.0, -0.55), 0.5 * u).fill_style(cloak).fill().stroke();
+    // The face in the hood, the kerchief over its lower half, glinting eyes.
+    let p = ellipse(p, at(0.0, -0.48), 0.31 * u, 0.29 * u, 0.0).fill_color(hex(0xe2b58a)).fill();
+    let p = poly(p, &[at(-0.31, -0.5), at(0.31, -0.5), at(0.26, -0.3), at(0.0, -0.2), at(-0.26, -0.3)])
+        .fill_color(hex(0xb3261e))
+        .fill();
+    let p = poly(p, &[at(0.28, -0.46), at(0.5, -0.38), at(0.34, -0.3)]).fill_color(hex(0x8f1d17)).fill();
+    let p = circle(p, at(-0.12, -0.6), 0.055 * u).fill_color(hex(0x17171a)).fill();
+    let p = circle(p, at(0.12, -0.6), 0.055 * u).fill_color(hex(0x17171a)).fill();
+    // The dagger, held low.
+    let p = poly(p, &[at(-0.5, 0.35), at(-0.42, 0.42), at(-0.98, 0.0)])
+        .fill_color(hex(0xe3e7ec))
+        .fill()
+        .stroke_color(hex(0x3b3f45))
+        .line_width(line * 0.7)
+        .stroke();
+    let (h0, h1) = (at(-0.58, 0.48), at(-0.36, 0.3));
+    p.stroke_color(hex(0x6b4a2f)).line_width(0.12 * u).begin_path().move_to(h0.0, h0.1).line_to(h1.0, h1.1).stroke()
 }
 
 /// A treasure chest: an item nobody has found yet.
@@ -606,7 +621,7 @@ pub fn glyph(p: Painter, glyph: Glyph, color: u32, w: f32, h: f32) -> Painter {
         Glyph::Knight => knight(p, (c.0, h * 0.45), color, h * 0.36, 1.2),
         Glyph::Spell(spell) => spell_emblem(p, spell, c, h * 0.44, 1.2),
         Glyph::Spellbook => spellbook(p, w, h),
-        Glyph::Robber => robber(p, (c.0, h * 0.5), h * 0.36, 1.2),
+        Glyph::Robber => bandit(p, (c.0, h * 0.5), h * 0.36, 1.2),
         Glyph::Chest => chest(p, (c.0, h * 0.55), h * 0.4, 1.2),
         Glyph::Trade => {
             let arrow = |p: Painter, y: f32, dir: f32, color: u32| {

@@ -44,7 +44,7 @@ impl Item {
             Item::Road => "Road",
             Item::Outpost => "Outpost",
             Item::Town => "Town",
-            Item::City => "City",
+            Item::City => "Castle",
             Item::Knight => "Knight",
         }
     }
@@ -55,7 +55,7 @@ impl Item {
             Item::Road => "Build a road",
             Item::Outpost => "Build an outpost",
             Item::Town => "Upgrade to a town",
-            Item::City => "Upgrade to a city",
+            Item::City => "Upgrade to a castle",
             Item::Knight => "Buy a knight card",
         }
     }
@@ -66,7 +66,7 @@ impl Item {
         match self {
             Item::Road => "No free side touches your roads or buildings",
             Item::Outpost => "No free corner on your roads",
-            Item::Town => "No outpost of yours has room: towns need no town or city next door",
+            Item::Town => "No outpost of yours has room: towns need no town or castle next door",
             Item::City => "You have no town to upgrade",
             Item::Knight => "You cannot buy one now",
         }
@@ -77,7 +77,7 @@ impl Item {
             Item::Road => "Stretches your reach across the island.",
             Item::Outpost => "A new settlement at the end of your roads.",
             Item::Town => "An outpost grown into a town.",
-            Item::City => "A town grown into a walled city.",
+            Item::City => "A town raised into a stone castle.",
             Item::Knight => "A fighter that clears bandits, duels enemy knights and blockades tiles.",
         }
     }
@@ -103,7 +103,7 @@ impl Item {
                 "Upgrade it to a town to score and to deploy knights beside it.".to_owned(),
             ],
             Item::Town => vec![
-                "Upgrades one of your outposts in place, unless a town or city stands on a corner next to it.".to_owned(),
+                "Upgrades one of your outposts in place, unless a town or castle stands on a corner next to it.".to_owned(),
                 format!(
                     "Worth {} VP. Collects {} from each neighbouring tile whose number is rolled.",
                     balance::TOWN_POINTS,
@@ -118,10 +118,10 @@ impl Item {
                     balance::CITY_POINTS,
                     balance::CITY_YIELD
                 ),
-                "Your first city unlocks spells.".to_owned(),
+                "Your first castle unlocks spells.".to_owned(),
             ],
             Item::Knight => vec![
-                "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or city (not an outpost).".to_owned(),
+                "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or castle (not an outpost).".to_owned(),
                 "Each turn it either moves to a free neighbouring tile or attacks; it rests the turn it arrives.".to_owned(),
                 "Attacks a neighbouring bandit or enemy knight:".to_owned(),
                 "• Bandit: the bandit and your knight both fall.".to_owned(),
@@ -192,7 +192,7 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
         lines.push("A spell cast on a tile that already holds one replaces it.".to_owned());
     }
     lines.push(format!(
-        "Spells unlock with your first city. Any spell empties your mana for {} rounds.",
+        "Spells unlock with your first castle. Any spell empties your mana for {} rounds.",
         balance::MANA_RECHARGE_ROUNDS
     ));
     lines
@@ -235,7 +235,7 @@ pub fn item_rule(kind: ItemKind) -> String {
         ItemKind::Supplies => format!("{} of one resource, whichever turns up.", balance::SUPPLIES_FIND),
         ItemKind::ManaCrystal => "Your mana refills at once.".to_owned(),
         ItemKind::Scroll => {
-            "One free cast of a random spell: no price, no city needed, and your mana stays as it is.".to_owned()
+            "One free cast of a random spell: no price, no castle needed, and your mana stays as it is.".to_owned()
         }
         ItemKind::Recruit => "A knight card.".to_owned(),
         ItemKind::Relic => format!(
@@ -299,7 +299,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                     ),
                 },
                 format!(
-                    "Towns are worth {} VP and cities {}; outposts score nothing.",
+                    "Towns are worth {} VP and castles {}; outposts score nothing.",
                     balance::TOWN_POINTS,
                     balance::CITY_POINTS
                 ),
@@ -338,7 +338,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
     let (item_num, item_den) = balance::ITEM_SPAWN_CHANCE;
     let mut items = vec![
         format!(
-            "At the end of each round, an item appears with a {}% chance on a free tile touching no town or city.",
+            "At the end of each round, an item appears with a {}% chance on a free tile touching no town or castle.",
             item_num * 100 / item_den
         ),
         format!(
@@ -369,7 +369,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 ),
                 "At the end of every round each bandit wanders to a free neighbouring tile.".to_owned(),
                 format!(
-                    "While there are fewer bandits than one per {} towns and cities on the island, another may appear at the end of a round ({}% chance).",
+                    "While there are fewer bandits than one per {} towns and castles on the island, another may appear at the end of a round ({}% chance).",
                     balance::SETTLEMENTS_PER_ROBBER,
                     spawn_num * 100 / spawn_den
                 ),

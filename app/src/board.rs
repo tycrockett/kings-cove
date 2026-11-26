@@ -632,7 +632,7 @@ pub fn draw(s: &Scene) -> Painter {
             .unwrap_or(to)
     };
     for r in &g.robbers {
-        p = art::robber(p, slide_pos(&Piece::Robber(r.id), piece_pos(g, r.tile)), 0.22 * S, 1.6 * px1);
+        p = art::bandit(p, slide_pos(&Piece::Robber(r.id), piece_pos(g, r.tile)), 0.22 * S, 1.6 * px1);
     }
     let my_turn = g.is_active(s.seat) && g.dice.is_some();
     for u in &g.units {
@@ -664,7 +664,7 @@ pub fn draw(s: &Scene) -> Painter {
     // A robber waiting to be placed: a faint one on every tile it may go.
     for o in s.opts {
         if let (Spot::Tile(t), Then::Send(Action::PlaceRobber { .. })) = (o.spot, &o.then) {
-            p = art::robber(p.global_alpha(0.45), piece_pos(g, t), 0.22 * S, 1.6 * px1).global_alpha(1.0);
+            p = art::bandit(p.global_alpha(0.45), piece_pos(g, t), 0.22 * S, 1.6 * px1).global_alpha(1.0);
         }
     }
     // A two-tile spell's first pick.

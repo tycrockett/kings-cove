@@ -60,7 +60,7 @@ impl BuildingKind {
         match self {
             BuildingKind::Outpost => "outpost",
             BuildingKind::Town => "town",
-            BuildingKind::City => "city",
+            BuildingKind::City => "castle",
         }
     }
 }
@@ -474,7 +474,7 @@ impl fmt::Display for RuleError {
             RuleError::NotConnected => "Must connect to your road network",
             RuleError::NotUpgradable => "Only your own outposts and towns can be upgraded",
             RuleError::NoCard => "You have no such unit card",
-            RuleError::NotNextToYourTown => "Units deploy next to your towns or cities",
+            RuleError::NotNextToYourTown => "Units deploy next to your towns or castles",
             RuleError::NoSuchUnit => "No such unit",
             RuleError::NotYourUnit => "That unit is not yours",
             RuleError::UnitExhausted => "That unit cannot act until your next turn",
@@ -489,11 +489,11 @@ impl fmt::Display for RuleError {
             RuleError::NotTradeRecipient => "That trade is not offered to you",
             RuleError::TraderCannotPay => "The offering player no longer has those resources",
             RuleError::NoSuchPlayer => "No such player",
-            RuleError::SpellsLocked => "Build a city to unlock spells",
+            RuleError::SpellsLocked => "Build a castle to unlock spells",
             RuleError::ManaEmpty => "Your mana is still recharging",
             RuleError::SpellTarget => "That spell cannot be cast there",
             RuleError::WindfallPending => "Windfall already waits for your next roll",
-            RuleError::SettlementTooClose => "Towns and cities can't stand next to another town or city",
+            RuleError::SettlementTooClose => "Towns and castles can't stand next to another town or castle",
             RuleError::Blockading => "That knight is holding a blockade",
             RuleError::NotBlockading => "That knight has no blockade to lift",
         })
