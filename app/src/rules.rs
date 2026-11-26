@@ -78,7 +78,7 @@ impl Item {
             Item::Outpost => "A new settlement at the end of your roads.",
             Item::Town => "An outpost grown into a town.",
             Item::City => "A town grown into a walled city.",
-            Item::Knight => "A fighter that clears robbers and duels enemy knights.",
+            Item::Knight => "A fighter that clears bandits, duels enemy knights and blockades tiles.",
         }
     }
 
@@ -88,6 +88,10 @@ impl Item {
                 "Sits on a side of a tile.".to_owned(),
                 "Must touch one of your roads or buildings.".to_owned(),
                 "New outposts can only go on a corner your roads reach.".to_owned(),
+                format!(
+                    "Ring a tile with your roads on all six sides and your buildings on all six corners: it pays you {} of its resource at the start of each of your turns, unless a bandit or a blockade stands on it.",
+                    balance::RING_INCOME
+                ),
             ],
             Item::Outpost => vec![
                 "Goes on any free corner one of your roads reaches.".to_owned(),
@@ -119,9 +123,14 @@ impl Item {
             Item::Knight => vec![
                 "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or city (not an outpost).".to_owned(),
                 "Each turn it either moves to a free neighbouring tile or attacks; it rests the turn it arrives.".to_owned(),
-                "Attacks a neighbouring robber or enemy knight:".to_owned(),
-                "• Robber: the robber and your knight both fall.".to_owned(),
+                "Attacks a neighbouring bandit or enemy knight:".to_owned(),
+                "• Bandit: the bandit and your knight both fall.".to_owned(),
                 "• Knight: both knights fall.".to_owned(),
+                "Instead of moving or attacking, it can blockade its tile: the tile produces nothing for anyone, and the knight can neither move nor attack.".to_owned(),
+                format!(
+                    "Lifting the blockade is an order too: the blockade holds for {} more full rounds, then the knight is free.",
+                    balance::BLOCKADE_LIFT_ROUNDS
+                ),
             ],
         }
     }
@@ -142,7 +151,7 @@ pub fn spell_summary(spell: Spell) -> &'static str {
     match spell {
         Spell::Frost => "Freezes a tile solid.",
         Spell::Bounty => "Blesses a tile with a double harvest.",
-        Spell::Lure => "Draws a robber wherever you want it.",
+        Spell::Lure => "Draws a bandit wherever you want it.",
         Spell::Swap => "Two tiles trade their numbers.",
         Spell::Windfall => "Your next roll brings a bit of everything.",
         Spell::Luck => "Tilts the next roll toward a tile.",
@@ -161,7 +170,7 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
         Spell::Frost => rolls("It produces nothing"),
         Spell::Bounty => rolls("It produces double"),
         Spell::Lure => {
-            "Pick a robber, then any free tile: the robber moves there and stays put through the next full round."
+            "Pick a bandit, then any free tile: the bandit moves there and stays put through the next full round."
                 .to_owned()
         }
         Spell::Swap => format!(
@@ -198,7 +207,7 @@ pub fn charges_word(n: u32) -> String {
 pub fn spell_hint(spell: Spell, picked_first: bool) -> String {
     match (spell, picked_first) {
         (Spell::Frost | Spell::Bounty | Spell::Luck, _) => format!("Tap a tile for {}", spell.name()),
-        (Spell::Lure, false) => "Tap the robber to lure".to_owned(),
+        (Spell::Lure, false) => "Tap the bandit to lure".to_owned(),
         (Spell::Lure, true) => "Tap a free tile to lure it to".to_owned(),
         (Spell::Swap, false) => "Tap the first tile to swap".to_owned(),
         (Spell::Swap, true) => "Tap a tile with another number to swap with".to_owned(),
@@ -215,7 +224,7 @@ pub fn item_title(kind: ItemKind) -> &'static str {
         ItemKind::Recruit => "Recruit",
         ItemKind::Relic => "Relic",
         ItemKind::Trap => "Trap",
-        ItemKind::Hoard => "Robber's hoard",
+        ItemKind::Hoard => "Bandit's hoard",
     }
 }
 
@@ -234,7 +243,7 @@ pub fn item_rule(kind: ItemKind) -> String {
             balance::RELIC_POINTS
         ),
         ItemKind::Trap => "The knight falls.".to_owned(),
-        ItemKind::Hoard => format!("{}, but a robber appears next to it.", balance::HOARD_FIND),
+        ItemKind::Hoard => format!("{}, but a bandit appears next to it.", balance::HOARD_FIND),
     }
 }
 
@@ -333,7 +342,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             item_num * 100 / item_den
         ),
         format!(
-            "Nobody knows what it is until a knight walks onto its tile; knights can't deploy onto it. It vanishes after {} rounds, and a robber landing on it takes it.",
+            "Nobody knows what it is until a knight walks onto its tile; knights can't deploy onto it. It vanishes after {} rounds, and a bandit landing on it takes it.",
             balance::ITEM_ROUNDS
         ),
     ];
@@ -344,28 +353,28 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             "Combat",
             None,
             vec![
-                "Knight → robber: the robber and the knight both fall.".to_owned(),
+                "Knight → bandit: the bandit and the knight both fall.".to_owned(),
                 "Knight → knight: both knights fall.".to_owned(),
-                "Every attack costs the attacking knight. One knight or robber per tile.".to_owned(),
+                "Every attack costs the attacking knight. One knight or bandit per tile.".to_owned(),
             ],
         ),
         page(
-            "Robbers",
+            "Bandits",
             Some(Glyph::Robber),
             vec![
-                "A robber blocks production on its tile. The island always has at least one: one stands from the start.".to_owned(),
+                "A bandit blocks production on its tile. The island always has at least one: one stands from the start.".to_owned(),
                 format!(
-                    "Rolling {} produces nothing. The roller moves a robber to any free tile, or places a new one when the island has none. It then stays put through the next full round.",
+                    "Rolling {} produces nothing. The roller moves a bandit to any free tile, or places a new one when the island has none. It then stays put through the next full round.",
                     balance::ROBBER_ROLL
                 ),
-                "At the end of every round each robber wanders to a free neighbouring tile.".to_owned(),
+                "At the end of every round each bandit wanders to a free neighbouring tile.".to_owned(),
                 format!(
-                    "While there are fewer robbers than one per {} towns and cities on the island, another may appear at the end of a round ({}% chance).",
+                    "While there are fewer bandits than one per {} towns and cities on the island, another may appear at the end of a round ({}% chance).",
                     balance::SETTLEMENTS_PER_ROBBER,
                     spawn_num * 100 / spawn_den
                 ),
                 format!(
-                    "A knight can bring a robber down, falling with it. After that, no robber appears for {} full rounds; then a new one appears if the island has none.",
+                    "A knight can bring a bandit down, falling with it. After that, no bandit appears for {} full rounds; then a new one appears if the island has none.",
                     balance::ROBBER_RESPAWN_ROUNDS
                 ),
             ],
@@ -391,7 +400,7 @@ pub fn attack_outcome(g: &Game, names: &[String], unit: UnitId, target: Target) 
     g.unit(unit)?;
     Some(match target {
         Target::Robber(_) => {
-            ("Knight vs robber".to_owned(), "The robber is removed, and your knight falls with it.".to_owned())
+            ("Knight vs bandit".to_owned(), "The bandit is removed, and your knight falls with it.".to_owned())
         }
         Target::Unit(u) => {
             let defender = g.unit(u)?;

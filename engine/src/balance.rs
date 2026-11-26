@@ -79,7 +79,7 @@ pub const MIN_ROBBERS: u32 = 1;
 pub const SETTLEMENTS_PER_ROBBER: u32 = 4;
 /// Chance (numerator / denominator) an extra robber appears at the end of a
 /// round while below capacity.
-pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 4);
+pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 2);
 /// After a knight removes a robber, no robber appears for this many full
 /// rounds; one appears at the end of the last of them if the island is
 /// below its minimum.
@@ -111,7 +111,7 @@ pub const MANA_RECHARGE_ROUNDS: u32 = 4;
 // Items turn up on the island for knights to walk onto.
 
 /// Chance (numerator / denominator) an item appears at the end of a round.
-pub const ITEM_SPAWN_CHANCE: (u64, u64) = (1, 2);
+pub const ITEM_SPAWN_CHANCE: (u64, u64) = (3, 4);
 /// Rounds an item lies unclaimed before it vanishes.
 pub const ITEM_ROUNDS: u32 = 5;
 /// How often each item turns up, against the others.
@@ -131,6 +131,11 @@ pub const SUPPLIES_FIND: u32 = 2;
 pub const HOARD_FIND: Resources = res(2, 2, 2, 2);
 /// Victory points of each relic a player's knights carry.
 pub const RELIC_POINTS: u32 = 1;
+
+/// Full rounds a knight's blockade holds after it starts packing up.
+pub const BLOCKADE_LIFT_ROUNDS: u32 = 2;
+/// What a tile pays each turn to the player ringing it with roads and buildings.
+pub const RING_INCOME: u32 = 1;
 
 /// How many of one resource the bank takes for one of another.
 pub const BANK_TRADE_RATE: u32 = 4;

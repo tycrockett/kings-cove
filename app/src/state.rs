@@ -429,10 +429,10 @@ impl AppState {
                             note: (sum == 7).then(|| {
                                 let place = after.robber_relocation && after.robbers.is_empty();
                                 match (mine, place) {
-                                    (true, true) => "Place a robber!".to_owned(),
-                                    (true, false) => "Move a robber!".to_owned(),
-                                    (false, true) => "A robber is coming".to_owned(),
-                                    (false, false) => "A robber moves".to_owned(),
+                                    (true, true) => "Place a bandit!".to_owned(),
+                                    (true, false) => "Move a bandit!".to_owned(),
+                                    (false, true) => "A bandit is coming".to_owned(),
+                                    (false, false) => "A bandit moves".to_owned(),
                                 }
                             }),
                         },
@@ -442,7 +442,7 @@ impl AppState {
                     harvest = cursor + fx::DICE_LANDED_MS - 100.0;
                     for t in after.board.tiles.iter().filter(|t| t.number == sum) {
                         let spell = before.and_then(|b| b.enchantment_at(t.id)).map(|e| e.spell);
-                        let mood = match (after.robber_at(t.id).is_some(), spell) {
+                        let mood = match (after.robber_at(t.id).is_some() || after.blockaded(t.id), spell) {
                             (true, _) => Mood::Blocked,
                             (false, Some(s)) if s.stops() => Mood::Stopped(s),
                             (false, Some(s)) if s.doubles() => Mood::Doubled(s),
@@ -487,10 +487,12 @@ impl AppState {
                 Event::Won { .. } => effects.push(Fx { start: cursor, dur: fx::CONFETTI_MS, kind: FxKind::Confetti }),
                 // What a roll's tiles did, shown with their wobble.
                 Event::ProductionBlocked { tile }
+                | Event::ProductionBlockaded { tile, .. }
                 | Event::ProductionStopped { tile, .. }
                 | Event::SpellFaded { tile, .. } => {
                     let (label, delay) = match *event {
                         Event::ProductionBlocked { .. } => ("Blocked", 250.0),
+                        Event::ProductionBlockaded { .. } => ("Blockaded!", 250.0),
                         Event::ProductionStopped { .. } => ("Frozen!", 250.0),
                         Event::SpellFaded { spell, .. } => (
                             match spell {
@@ -517,6 +519,11 @@ impl AppState {
                     let color = crate::art::spell_colors(Spell::Windfall).1;
                     let kind = AnimKind::Float { at: (0.0, 0.0), color, label };
                     anims.push(Anim { start: harvest + 400.0, dur: 1800.0, kind });
+                }
+                Event::RingPaid { player, tile, resource, amount } => {
+                    let color = palette::player(player);
+                    let kind = AnimKind::Gain { tile, resource, amount, color, mine: player == seat, slot: 0, of: 1 };
+                    anims.push(Anim { start: cursor, dur: board::GAIN_MS, kind });
                 }
                 _ => anims.extend(board::anims_for(after, event, cursor)),
             }

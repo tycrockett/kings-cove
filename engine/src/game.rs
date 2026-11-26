@@ -227,7 +227,7 @@ impl ItemKind {
             ItemKind::Recruit => "recruit",
             ItemKind::Relic => "relic",
             ItemKind::Trap => "trap",
-            ItemKind::Hoard => "robber's hoard",
+            ItemKind::Hoard => "bandit's hoard",
         }
     }
 }
@@ -248,6 +248,15 @@ pub struct Item {
     pub last_round: u32,
 }
 
+/// A knight's blockade of the tile it stands on: the tile produces nothing,
+/// and the knight neither moves nor attacks.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Blockade {
+    Holding,
+    /// Packing up: it holds until the end of round `free_after`.
+    Lifting { free_after: u32 },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unit {
     pub id: UnitId,
@@ -259,6 +268,8 @@ pub struct Unit {
     /// Relics it carries for its owner.
     #[serde(default)]
     pub relics: u32,
+    #[serde(default)]
+    pub blockade: Option<Blockade>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,6 +408,14 @@ pub enum Action {
         spell: Spell,
         tiles: Vec<TileId>,
     },
+    /// The knight blockades the tile it stands on.
+    LayBlockade {
+        unit: UnitId,
+    },
+    /// The knight starts packing up its blockade.
+    LiftBlockade {
+        unit: UnitId,
+    },
     EndTurn,
 }
 
@@ -435,6 +454,8 @@ pub enum RuleError {
     SpellTarget,
     WindfallPending,
     SettlementTooClose,
+    Blockading,
+    NotBlockading,
 }
 
 impl fmt::Display for RuleError {
@@ -459,9 +480,9 @@ impl fmt::Display for RuleError {
             RuleError::UnitExhausted => "That unit cannot act until your next turn",
             RuleError::NotAdjacent => "Units only reach adjacent tiles",
             RuleError::InvalidTarget => "That unit cannot attack that",
-            RuleError::NoRobberRelocation => "No robber to relocate",
-            RuleError::RobberToMove => "Move a robber already on the board",
-            RuleError::NoSuchRobber => "No such robber",
+            RuleError::NoRobberRelocation => "No bandit to relocate",
+            RuleError::RobberToMove => "Move a bandit already on the board",
+            RuleError::NoSuchRobber => "No such bandit",
             RuleError::NoTrade => "No open trade",
             RuleError::TradeAlreadyOpen => "A trade is already open",
             RuleError::InvalidTrade => "A trade must give and ask for something",
@@ -473,6 +494,8 @@ impl fmt::Display for RuleError {
             RuleError::SpellTarget => "That spell cannot be cast there",
             RuleError::WindfallPending => "Windfall already waits for your next roll",
             RuleError::SettlementTooClose => "Towns and cities can't stand next to another town or city",
+            RuleError::Blockading => "That knight is holding a blockade",
+            RuleError::NotBlockading => "That knight has no blockade to lift",
         })
     }
 }
@@ -545,6 +568,38 @@ pub enum Event {
         player: PlayerId,
         tile: TileId,
         count: u32,
+    },
+    /// A knight blockades its tile: it produces nothing.
+    BlockadeLaid {
+        player: PlayerId,
+        unit: UnitId,
+        tile: TileId,
+    },
+    /// The knight packs up; the blockade holds until the end of round
+    /// `free_after`.
+    BlockadeLifting {
+        player: PlayerId,
+        unit: UnitId,
+        tile: TileId,
+        free_after: u32,
+    },
+    /// The blockade is gone: the knight is free and the tile produces again.
+    BlockadeEnded {
+        player: PlayerId,
+        unit: UnitId,
+        tile: TileId,
+    },
+    /// A tile's number came up under a knight's blockade: it produced nothing.
+    ProductionBlockaded {
+        player: PlayerId,
+        tile: TileId,
+    },
+    /// A tile the player rings with roads and buildings paid them its resource.
+    RingPaid {
+        player: PlayerId,
+        tile: TileId,
+        resource: Resource,
+        amount: u32,
     },
     BuiltRoad {
         player: PlayerId,
@@ -975,7 +1030,7 @@ impl Game {
     }
 
     pub fn can_move(&self, player: PlayerId, id: UnitId, to: TileId) -> Result<(), RuleError> {
-        let unit = self.ready_unit(player, id)?;
+        let unit = self.free_unit(player, id)?;
         if to.index() >= self.board.tiles.len() || !self.board.are_adjacent(unit.tile, to) {
             return Err(RuleError::NotAdjacent);
         }
@@ -983,6 +1038,46 @@ impl Game {
             return Err(RuleError::TileOccupied);
         }
         Ok(())
+    }
+
+    /// A ready unit of the player's that holds no blockade.
+    fn free_unit(&self, player: PlayerId, id: UnitId) -> Result<&Unit, RuleError> {
+        let unit = self.ready_unit(player, id)?;
+        if unit.blockade.is_some() {
+            return Err(RuleError::Blockading);
+        }
+        Ok(unit)
+    }
+
+    pub fn can_lay_blockade(&self, player: PlayerId, id: UnitId) -> Result<(), RuleError> {
+        self.free_unit(player, id).map(|_| ())
+    }
+
+    pub fn can_lift_blockade(&self, player: PlayerId, id: UnitId) -> Result<(), RuleError> {
+        let unit = self.ready_unit(player, id)?;
+        if unit.blockade != Some(Blockade::Holding) {
+            return Err(RuleError::NotBlockading);
+        }
+        Ok(())
+    }
+
+    /// A knight's blockade stops the tile producing.
+    pub fn blockaded(&self, tile: TileId) -> bool {
+        self.unit_at(tile).is_some_and(|u| u.blockade.is_some())
+    }
+
+    /// Tiles the player rings: their roads on all six sides and their
+    /// buildings on all six corners.
+    pub fn ringed_tiles(&self, player: PlayerId) -> Vec<TileId> {
+        self.board
+            .tiles
+            .iter()
+            .filter(|t| {
+                t.edges.iter().all(|&e| self.road(e) == Some(player))
+                    && t.vertices.iter().all(|&v| self.building(v).is_some_and(|b| b.owner == player))
+            })
+            .map(|t| t.id)
+            .collect()
     }
 
     /// Tiles the unit may move to now.
@@ -994,7 +1089,7 @@ impl Game {
     }
 
     pub fn can_attack(&self, player: PlayerId, id: UnitId, target: Target) -> Result<(), RuleError> {
-        let unit = self.ready_unit(player, id)?;
+        let unit = self.free_unit(player, id)?;
         match target {
             Target::Robber(r) => {
                 let robber = self.robber(r).ok_or(RuleError::NoSuchRobber)?;
@@ -1245,7 +1340,7 @@ impl Game {
                 self.can_deploy(player, kind, tile)?;
                 *self.players[player.index()].cards.get_mut(kind) -= 1;
                 let id = UnitId(self.next_id());
-                self.units.push(Unit { id, owner: player, kind, tile, ready: false, relics: 0 });
+                self.units.push(Unit { id, owner: player, kind, tile, ready: false, relics: 0, blockade: None });
                 self.log(Event::Deployed { player, unit: id, kind, tile });
                 Ok(())
             }
@@ -1338,6 +1433,25 @@ impl Game {
                     self.trade = None;
                 }
                 self.log(Event::TradeDeclined { player });
+                Ok(())
+            }
+            Action::LayBlockade { unit } => {
+                self.can_lay_blockade(player, unit)?;
+                let u = self.units.iter_mut().find(|u| u.id == unit).expect("checked");
+                u.blockade = Some(Blockade::Holding);
+                u.ready = false;
+                let tile = u.tile;
+                self.log(Event::BlockadeLaid { player, unit, tile });
+                Ok(())
+            }
+            Action::LiftBlockade { unit } => {
+                self.can_lift_blockade(player, unit)?;
+                let free_after = self.round + balance::BLOCKADE_LIFT_ROUNDS;
+                let u = self.units.iter_mut().find(|u| u.id == unit).expect("checked");
+                u.blockade = Some(Blockade::Lifting { free_after });
+                u.ready = false;
+                let tile = u.tile;
+                self.log(Event::BlockadeLifting { player, unit, tile, free_after });
                 Ok(())
             }
             Action::EndTurn => {
@@ -1486,14 +1600,18 @@ impl Game {
     }
 
     /// Every building on a tile showing `number` collects its resource,
-    /// unless a robber stands there. Frost stops it; bounty doubles it. Each
-    /// roll of the number uses one of the tile's spell charges.
+    /// unless a bandit or a knight's blockade stands there. Frost stops it;
+    /// bounty doubles it. Each roll of the number uses one of the tile's
+    /// spell charges.
     pub fn produce(&mut self, number: u8) {
         let tiles: Vec<TileId> = self.board.tiles.iter().filter(|t| t.number == number).map(|t| t.id).collect();
         for tile in tiles {
             let spell = self.enchantment_at(tile).map(|e| e.spell);
             if self.robber_at(tile).is_some() {
                 self.log(Event::ProductionBlocked { tile });
+            } else if let Some(u) = self.unit_at(tile).filter(|u| u.blockade.is_some()) {
+                let player = u.owner;
+                self.log(Event::ProductionBlockaded { player, tile });
             } else if let Some(spell) = spell.filter(|s| s.stops()) {
                 self.log(Event::ProductionStopped { tile, spell });
             } else {
@@ -1647,6 +1765,8 @@ impl Game {
         self.begin_turn(PlayerId(next as u8));
     }
 
+    /// The player's knights stand ready, and every tile they ring pays them,
+    /// unless a bandit or a blockade stands on it.
     fn begin_turn(&mut self, player: PlayerId) {
         self.current = player;
         self.dice = None;
@@ -1656,10 +1776,20 @@ impl Game {
             unit.ready = true;
         }
         self.log(Event::TurnStarted { player, round: self.round });
+        for tile in self.ringed_tiles(player) {
+            if self.robber_at(tile).is_some() || self.blockaded(tile) {
+                continue;
+            }
+            let resource = self.board.tile(tile).resource;
+            let amount = balance::RING_INCOME;
+            *self.players[player.index()].resources.get_mut(resource) += amount;
+            self.log(Event::RingPaid { player, tile, resource, amount });
+        }
     }
 
     /// Robbers wander, then one may spawn if the board is below capacity;
-    /// old items vanish, then a new one may appear.
+    /// knights packing up long enough are free; old items vanish, then a new
+    /// one may appear.
     pub fn end_round(&mut self, rng: &mut Rng) {
         let round = self.round;
         for i in 0..self.robbers.len() {
@@ -1689,6 +1819,15 @@ impl Game {
                 self.robbers.push(Robber { id, tile, frozen_through_round: 0 });
                 self.log(Event::RobberSpawned { robber: id, tile });
                 self.robber_landed(tile);
+            }
+        }
+        for i in 0..self.units.len() {
+            if let Some(Blockade::Lifting { free_after }) = self.units[i].blockade
+                && free_after <= round
+            {
+                self.units[i].blockade = None;
+                let Unit { owner: player, id: unit, tile, .. } = self.units[i];
+                self.log(Event::BlockadeEnded { player, unit, tile });
             }
         }
         let (gone, kept): (Vec<Item>, Vec<Item>) =

@@ -8,8 +8,8 @@ pub mod types;
 
 pub use board::{Board, Edge, Tile, Vertex};
 pub use game::{
-    Action, Building, BuildingKind, Cards, Enchantment, Event, Game, Item, ItemKind, LoggedEvent, Phase, Player,
-    Robber, RuleError, SetupPlacing, Spell, Target, TradeOffer, Unit, UnitKind,
+    Action, Blockade, Building, BuildingKind, Cards, Enchantment, Event, Game, Item, ItemKind, LoggedEvent, Phase,
+    Player, Robber, RuleError, SetupPlacing, Spell, Target, TradeOffer, Unit, UnitKind,
 };
 pub use rng::Rng;
 pub use types::{EdgeId, PlayerId, Resource, Resources, RobberId, TileId, UnitId, VertexId};

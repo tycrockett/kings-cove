@@ -4,7 +4,7 @@
 use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{
-    Action, BuildingKind, EdgeId, Enchantment, Event, Game, ItemKind, Phase, PlayerId, Resource, RobberId,
+    Action, Blockade, BuildingKind, EdgeId, Enchantment, Event, Game, ItemKind, Phase, PlayerId, Resource, RobberId,
     SetupPlacing, Spell, Target, TileId, UnitId, VertexId,
 };
 use nsh_core::{
@@ -385,7 +385,7 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
         }
         Event::RobberSpawned { tile, .. } | Event::RobberPlaced { tile, .. } => vec![
             a(800.0, AnimKind::Pop { at: piece_pos(g, tile), color: 0x222222 }),
-            a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: "A robber!".to_owned() }),
+            a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: "A bandit!".to_owned() }),
         ],
         Event::UnitMoved { unit, from, .. } => {
             vec![a(380.0, AnimKind::Slide { piece: Piece::Unit(unit), from: piece_pos(g, from) })]
@@ -439,10 +439,24 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
         Event::ItemVanished { tile } | Event::ItemStolen { tile } | Event::RelicDropped { tile, .. } => {
             let label = match *event {
                 Event::ItemVanished { .. } => "Vanished",
-                Event::ItemStolen { .. } => "Stolen by a robber!",
+                Event::ItemStolen { .. } => "Stolen by a bandit!",
                 _ => "Relic dropped",
             };
             vec![a(1300.0, AnimKind::Float { at: piece_pos(g, tile), color: 0x2b2b2e, label: label.to_owned() })]
+        }
+        Event::BlockadeLaid { player, tile, .. }
+        | Event::BlockadeLifting { player, tile, .. }
+        | Event::BlockadeEnded { player, tile, .. } => {
+            let at = piece_pos(g, tile);
+            let label = match *event {
+                Event::BlockadeLaid { .. } => "Blockade!",
+                Event::BlockadeLifting { .. } => "Packing up",
+                _ => "Blockade lifted",
+            };
+            vec![
+                a(700.0, AnimKind::Pop { at, color: color(player) }),
+                a(1300.0, AnimKind::Float { at, color: color(player), label: label.to_owned() }),
+            ]
         }
         _ => Vec::new(),
     }
@@ -623,6 +637,9 @@ pub fn draw(s: &Scene) -> Painter {
     let my_turn = g.is_active(s.seat) && g.dice.is_some();
     for u in &g.units {
         let at = slide_pos(&Piece::Unit(u.id), piece_pos(g, u.tile));
+        if let Some(b) = u.blockade {
+            p = palisade(p, g, u.tile, u.owner, b, px1);
+        }
         p = art::knight(p, at, palette::player(u.owner), 0.25 * S, 2.0 * px1);
         if u.relics > 0 {
             p = art::relic(p, (at.0 - 0.26 * S, at.1 + 0.12 * S), 0.11 * S, px1);
@@ -973,6 +990,32 @@ fn twinkles(mut p: Painter, c: (f32, f32), t: f32, seed: u32, color: u32) -> Pai
         p = art::sparkle(p, (c.0 + a.cos() * d, c.1 + a.sin() * d), 0.11 * S * twinkle)
             .fill_color(hexa(color, twinkle))
             .fill();
+    }
+    p
+}
+
+/// A knight's blockade: a ring of stakes round its tile in the owner's
+/// colour, faded while it packs up, with the rounds it still holds.
+fn palisade(mut p: Painter, g: &Game, tile: TileId, owner: PlayerId, b: Blockade, px1: f32) -> Painter {
+    let c = tile_pos(g, tile);
+    let color = palette::player(owner);
+    let alpha = if b == Blockade::Holding { 0.95 } else { 0.5 };
+    p = poly(p, &hex_points(c, S * 0.8)).stroke_color(hexa(color, alpha)).line_width(4.0 * px1).stroke();
+    for i in 0..18 {
+        let a = i as f32 * TAU / 18.0;
+        let (x, y) = (c.0 + a.cos() * 0.7 * S, c.1 + a.sin() * 0.7 * S);
+        p = poly(p, &[(x - 0.035 * S, y + 0.05 * S), (x + 0.035 * S, y + 0.05 * S), (x, y - 0.08 * S)])
+            .fill_color(hexa(palette::shade(color, 0.7), alpha))
+            .fill()
+            .stroke_color(hexa(palette::INK, alpha))
+            .line_width(px1)
+            .stroke();
+    }
+    if let Blockade::Lifting { free_after } = b {
+        let left = (free_after + 1).saturating_sub(g.round);
+        let badge = (c.0 - 0.5 * S, c.1 + 0.45 * S);
+        p = circle(p, badge, 0.1 * S).fill_color(hex(color)).fill();
+        p = text_at(p, &left.to_string(), badge, 0.13 * S, palette::ink_on(color), 900, px1);
     }
     p
 }

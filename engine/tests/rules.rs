@@ -32,7 +32,7 @@ fn put(g: &mut Game, v: VertexId, owner: PlayerId, kind: BuildingKind) {
 }
 
 fn unit(g: &mut Game, id: u32, owner: PlayerId, kind: UnitKind, tile: TileId) -> UnitId {
-    g.units.push(Unit { id: UnitId(id), owner, kind, tile, ready: true, relics: 0 });
+    g.units.push(Unit { id: UnitId(id), owner, kind, tile, ready: true, relics: 0, blockade: None });
     UnitId(id)
 }
 
@@ -650,7 +650,7 @@ fn items_appear_half_the_rounds_away_from_towns_and_vanish_after_three() {
             assert_eq!(it.last_round, g.round + balance::ITEM_ROUNDS);
         }
     }
-    assert!((150..=250).contains(&appeared), "about half the rounds: {appeared} of {trials}");
+    assert!((260..=340).contains(&appeared), "about three rounds in four: {appeared} of {trials}");
 
     // One left at the end of this round lasts the next three, guarded from
     // robbers by a knight standing on it.
@@ -736,6 +736,68 @@ fn robbers_take_items_they_land_on_and_views_hide_unfound_ones() {
     assert_eq!(g.item_at(ns[2]).unwrap().kind, Some(ItemKind::Relic));
 }
 
+// ----- Blockades and rings -----
+
+#[test]
+fn a_blockade_starves_its_tile_and_takes_two_full_rounds_to_lift() {
+    let mut g = playing(2);
+    let mut r = rng();
+    let t = centre(&g);
+    g.board.tiles[t.index()].number = 6;
+    for tile in &mut g.board.tiles {
+        if tile.id != t && tile.number == 6 {
+            tile.number = 5;
+        }
+    }
+    let v = g.board.tile(t).vertices[0];
+    put(&mut g, v, P1, BuildingKind::Outpost);
+    let ns = g.board.tile(t).neighbors.clone();
+    let k = unit(&mut g, 1, P0, UnitKind::Knight, t);
+    g.apply(P0, Action::LayBlockade { unit: k }, &mut r).unwrap();
+    g.produce(6);
+    assert_eq!(g.players[1].resources.total(), 0, "the blockaded tile yields nothing");
+
+    // It neither moves nor attacks; packing up holds two full rounds more.
+    g.units[0].ready = true;
+    assert_eq!(g.apply(P0, Action::MoveUnit { unit: k, to: ns[0] }, &mut r), Err(RuleError::Blockading));
+    g.apply(P0, Action::LiftBlockade { unit: k }, &mut r).unwrap();
+    for _ in 0..=balance::BLOCKADE_LIFT_ROUNDS {
+        assert!(g.blockaded(t), "still holding in round {}", g.round);
+        g.end_round(&mut Rng::new(1));
+        g.round += 1;
+    }
+    assert!(!g.blockaded(t));
+    assert_eq!(g.unit(k).unwrap().blockade, None);
+}
+
+#[test]
+fn a_tile_ringed_with_roads_and_buildings_pays_every_turn() {
+    let mut g = playing(2);
+    let mut r = rng();
+    let t = centre(&g);
+    let tile = g.board.tile(t).clone();
+    for &e in &tile.edges {
+        g.roads[e.index()] = Some(P0);
+    }
+    for &v in &tile.vertices[..5] {
+        put(&mut g, v, P0, BuildingKind::Outpost);
+    }
+    // A knight without a blockade keeps bandits off and blocks nothing.
+    unit(&mut g, 9, P1, UnitKind::Knight, t);
+    let pass = |g: &mut Game, r: &mut Rng| {
+        g.apply(P0, Action::EndTurn, r).unwrap();
+        g.dice = Some((1, 2));
+        g.apply(P1, Action::EndTurn, r).unwrap();
+        g.dice = Some((1, 2));
+    };
+    let before = g.players[0].resources.get(tile.resource);
+    pass(&mut g, &mut r);
+    assert_eq!(g.players[0].resources.get(tile.resource), before, "five corners are no ring");
+    put(&mut g, tile.vertices[5], P0, BuildingKind::Outpost);
+    pass(&mut g, &mut r);
+    assert_eq!(g.players[0].resources.get(tile.resource), before + balance::RING_INCOME);
+}
+
 // ----- Robbers -----
 
 #[test]
@@ -758,7 +820,7 @@ fn robber_capacity_counts_towns_and_cities_only() {
 }
 
 #[test]
-fn extra_robbers_appear_about_a_quarter_of_rounds_below_capacity_only() {
+fn extra_robbers_appear_about_half_the_rounds_below_capacity_only() {
     let mut base = playing(2);
     for i in 0..8u16 {
         put(&mut base, VertexId(i * 5), P0, BuildingKind::Town);
@@ -781,7 +843,7 @@ fn extra_robbers_appear_about_a_quarter_of_rounds_below_capacity_only() {
             assert_eq!(again.robbers.len(), 2);
         }
     }
-    assert!((70..=130).contains(&spawned), "25% of 400 rounds, got {spawned}");
+    assert!((160..=240).contains(&spawned), "50% of 400 rounds, got {spawned}");
 
     // Existing robbers stay when capacity drops below them.
     let mut g = playing(2);

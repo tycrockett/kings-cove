@@ -3,8 +3,8 @@
 //! history and the winner.
 
 use kings_cove_engine::{
-    Action, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Spell, Target, UnitKind,
-    balance,
+    Action, Blockade, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Spell, Target,
+    UnitKind, balance,
 };
 use nsh_core::prelude::*;
 
@@ -149,7 +149,7 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::Produced { player, resource, amount, .. } => {
             format!("{} collected {amount} {}", n(*player), resource.name())
         }
-        Event::ProductionBlocked { .. } => "A robber blocked production".to_owned(),
+        Event::ProductionBlocked { .. } => "A bandit blocked production".to_owned(),
         Event::BuiltRoad { player, .. } => format!("{} built a road", n(*player)),
         Event::Built { player, kind, .. } => {
             format!("{} placed {} {}", n(*player), article(*kind), kind.name())
@@ -163,7 +163,7 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         }
         Event::UnitMoved { player, kind, .. } => format!("{}'s {} moved", n(*player), kind.name()),
         Event::KnightKilledRobber { player, .. } => {
-            format!("{}'s knight fell bringing down a robber", n(*player))
+            format!("{}'s knight fell bringing down a bandit", n(*player))
         }
         Event::KnightsClashed { attacker, defender, .. } => {
             format!("{}'s and {}'s knights fell together", n(*attacker), n(*defender))
@@ -176,17 +176,26 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
             format!("{}'s knight found {}", n(*player), rules::item_found(*kind, *count, gained, *scroll))
         }
         Event::ItemVanished { .. } => "An item vanished".to_owned(),
-        Event::ItemStolen { .. } => "A robber took an item".to_owned(),
+        Event::ItemStolen { .. } => "A bandit took an item".to_owned(),
         Event::RelicDropped { player, count, .. } => {
             format!("{}'s fallen knight dropped {count} relic{}", n(*player), if *count == 1 { "" } else { "s" })
         }
         Event::SpellFaded { spell, .. } => {
             format!("The {} faded", spell.name())
         }
-        Event::RobberRelocated { player, .. } => format!("{} moved a robber", n(*player)),
-        Event::RobberWandered { .. } => "A robber wandered".to_owned(),
-        Event::RobberSpawned { .. } => "A robber appeared".to_owned(),
-        Event::RobberPlaced { player, .. } => format!("{} placed a robber", n(*player)),
+        Event::RobberRelocated { player, .. } => format!("{} moved a bandit", n(*player)),
+        Event::RobberWandered { .. } => "A bandit wandered".to_owned(),
+        Event::RobberSpawned { .. } => "A bandit appeared".to_owned(),
+        Event::RobberPlaced { player, .. } => format!("{} placed a bandit", n(*player)),
+        Event::BlockadeLaid { player, .. } => format!("{}'s knight blockaded a tile", n(*player)),
+        Event::BlockadeLifting { player, free_after, .. } => {
+            format!("{}'s knight is packing up its blockade (free after round {free_after})", n(*player))
+        }
+        Event::BlockadeEnded { player, .. } => format!("{}'s blockade lifted", n(*player)),
+        Event::ProductionBlockaded { player, .. } => format!("{}'s blockade stopped a harvest", n(*player)),
+        Event::RingPaid { player, resource, amount, .. } => {
+            format!("{} collected {amount} {} from a ringed tile", n(*player), resource.name())
+        }
         Event::TradeProposed { from, to, give, want } => format!(
             "{} offers {} for {}{}",
             n(*from),
@@ -350,12 +359,18 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
             Mode::UpgradeCity => "Tap a town to make it a city".to_owned(),
             Mode::Deploy(k) => format!("Tap a tile beside your town or city for the {}", k.name()),
             Mode::Cast(spell, first) => rules::spell_hint(spell, first.is_some()),
-            Mode::Unit(_) => "Gold: move · Red: attack robbers and knights".to_owned(),
-            Mode::Robber(_) => "Tap any free tile to move the robber".to_owned(),
+            Mode::Unit(u) => match g.unit(u).and_then(|u| u.blockade) {
+                Some(Blockade::Holding) => "Your knight holds a blockade: it can't move or attack".to_owned(),
+                Some(Blockade::Lifting { free_after }) => {
+                    format!("Your knight is packing up: free after round {free_after}")
+                }
+                None => "Gold: move · Red: attack bandits and knights".to_owned(),
+            },
+            Mode::Robber(_) => "Tap any free tile to move the bandit".to_owned(),
             Mode::Idle if g.robber_relocation && g.robbers.is_empty() => {
-                "You rolled 7: tap a tile to place a robber".to_owned()
+                "You rolled 7: tap a tile to place a bandit".to_owned()
             }
-            Mode::Idle if g.robber_relocation => "You rolled 7: tap a robber to move it".to_owned(),
+            Mode::Idle if g.robber_relocation => "You rolled 7: tap a bandit to move it".to_owned(),
             Mode::Idle => "Build, trade, or command your units".to_owned(),
         },
     }
@@ -372,21 +387,29 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
                     1 => " carrying a relic".to_owned(),
                     n => format!(" carrying {n} relics"),
                 };
+                let blockade = match u.blockade {
+                    None => String::new(),
+                    Some(Blockade::Holding) => " blockading".to_owned(),
+                    Some(Blockade::Lifting { free_after }) => format!(" packing up (free after round {free_after})"),
+                };
                 s += &format!(
-                    " · {}'s {}{relics}{}",
+                    " · {}'s {}{relics}{blockade}{}",
                     name(names, u.owner),
                     u.kind.name(),
                     if u.ready { "" } else { " (resting)" }
                 );
             }
             if g.robber_at(t).is_some() {
-                s += " · robber (blocked)";
+                s += " · bandit (blocked)";
             }
             if let Some(e) = g.enchantment_at(t) {
                 s += &format!(" · {} ({})", e.spell.name(), rules::charges_word(e.charges));
             }
             if g.luck == Some(t) {
                 s += " · luck (next roll)";
+            }
+            if let Some(p) = g.players.iter().find(|p| g.ringed_tiles(p.id).contains(&t)) {
+                s += &format!(" · ringed by {}", name(names, p.id));
             }
             if let Some(item) = g.item_at(t) {
                 let what = item.kind.map_or("an unknown item", rules::item_title);
@@ -473,9 +496,26 @@ fn top(app: AppState) -> impl IntoElement {
                     .border_color(hex(if my_turn { palette::GOLD } else { palette::PAPER_DIM }))
                     .border_2()
                     .child(bold(main, 13.5, palette::INK))
-                    .child(last.map(|l| label(l, 11.0, palette::MUTED).number_of_lines(1))),
+                    .child(last.map(|l| label(l, 11.0, palette::MUTED).number_of_lines(1)))
+                    .child(unit_command(app, g, view.seat)),
             )
         }))
+}
+
+/// The selected knight's blockade order, under the status line.
+fn unit_command(app: AppState, g: &Game, seat: PlayerId) -> Option<View> {
+    let Mode::Unit(id) = app.mode.get() else { return None };
+    let (text, action, ok) = match g.unit(id)?.blockade {
+        None => ("Blockade this tile", Action::LayBlockade { unit: id }, g.can_lay_blockade(seat, id).is_ok()),
+        Some(Blockade::Holding) => {
+            ("Lift the blockade", Action::LiftBlockade { unit: id }, g.can_lift_blockade(seat, id).is_ok())
+        }
+        Some(Blockade::Lifting { .. }) => return None,
+    };
+    Some(pill(text, palette::INK, 0xffffff, ok && !app.busy.get(), move || {
+        app.mode.set(Mode::Idle);
+        app.send(action.clone());
+    }))
 }
 
 /// The turn history: a button under the dice, its panel dropping below it.

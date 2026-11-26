@@ -70,32 +70,36 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   | Town | 1 | 1 |
   | City | 2 | 2 |
 
-- **Roads** sit on tile sides and must connect to the owner's roads or buildings.
+- **Roads** sit on tile sides and must connect to the owner's roads or buildings. A player whose roads cover all six
+  sides of a tile and whose buildings stand on all six of its corners has *ringed* it: it pays them 1 of its resource at
+  the start of each of their turns, unless a bandit or a blockade stands on it.
 - **Setup**: in snake order each player places a starting town with a road, then an outpost with a road, and starts
   with a small stock of resources.
-- **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a robber stands there.
-  Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight cards, cast a spell,
-  deploy, and move or attack with knights, and end the turn.
+- **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a bandit or a blockade
+  stands there. Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight cards, cast
+  a spell, deploy, and move, attack or blockade with knights, and end the turn.
 - **Knights**: a Knight card deploys onto a free tile next to the owner's town or city (not an outpost). Knights move
-  one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a robber or an enemy
-  knight falls with it. One knight or robber per tile.
+  one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a bandit or an enemy
+  knight falls with it. One knight or bandit per tile. Instead of acting, a knight can *blockade* its tile: the tile
+  produces nothing for anyone and the knight can neither move nor attack. Lifting the blockade is an order too; the
+  blockade then holds for 2 more full rounds before the knight is free.
 - **Spells** unlock with a player's first city and are cast from the spellbook on their turn; any spell empties the
   caster's mana for 4 rounds. *Frost* stops any tile producing for the next 2 rolls of its number; *Bounty* doubles it.
-  *Lure* moves any robber to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Windfall* pays 1 of each
+  *Lure* moves any bandit to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Windfall* pays 1 of each
   resource the caster's buildings touch on their next roll. *Luck* gives the next roll, whoever makes it, a 50% chance
   of coming up as a chosen tile's number. Tile spells affect everyone on the tile, and a new one on a tile replaces the
   old.
-- **Robbers** block production on their tile. The island always has at least one, from the start. At the end of each
+- **Bandits** block production on their tile. The island always has at least one, from the start. At the end of each
   round they wander to a free neighbouring tile; then, while there are fewer than `floor(towns and cities / 4)`, another
-  appears on a free tile with a 25% chance. After a knight removes a robber none appear for two full rounds; then one
-  appears if the island has none. Rolling 7 produces nothing and lets the roller move one robber anywhere free, or place
+  appears on a free tile with a 50% chance. After a knight removes a bandit none appear for two full rounds; then one
+  appears if the island has none. Rolling 7 produces nothing and lets the roller move one bandit anywhere free, or place
   a new one when the island has none; it then stays put through the next complete round.
-- **Items**: at the end of each round, with a 50% chance, an item appears on a free tile touching no town or city. It
+- **Items**: at the end of each round, with a 75% chance, an item appears on a free tile touching no town or city. It
   stays hidden until a knight walks onto its tile (knights can't deploy onto it), vanishes after 5 rounds, and is taken
-  by any robber landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one random resource; a *mana crystal* refills
+  by any bandit landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one random resource; a *mana crystal* refills
   the finder's mana; a *spell scroll* one free cast of a random spell (no price, city or mana needed); a *recruit* a
   knight card; a *relic* is carried by the knight for 1 VP and dropped where it falls; a *trap* fells the knight; a
-  *robber's hoard* gives 2 of each resource but brings a robber next to it.
+  *bandit's hoard* gives 2 of each resource but brings a bandit next to it.
 - **Victory**: the first player to reach the match's goal (10, 20 or 30 victory points, relics included) wins.
 
 Costs (all in `engine/src/balance.rs`):
