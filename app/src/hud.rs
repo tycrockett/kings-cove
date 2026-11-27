@@ -896,144 +896,143 @@ fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
 /// read it in full and cast it.
 fn spellbook(app: AppState) -> impl IntoElement {
     let chosen = signal(Spell::Frost);
-    dynamic(move || {
-        if !app.spellbook_open.get() {
-            return None;
-        }
-        let view_ = app.view.get()?;
-        let g = view_.game.as_ref()?;
-        let seat = view_.seat;
-        let have = g.players[seat.index()].resources;
-        let castle = g.has_city(seat);
-        let picked = chosen.get();
-        let busy = app.busy.get();
-        let close = move || app.spellbook_open.set(false);
-        let rows: Vec<View> = Spell::ALL
-            .into_iter()
-            .map(|spell| {
-                let open = spell == picked;
-                let free = g.players[seat.index()].scrolls.iter().filter(|&&s| s == spell).count();
-                let head = view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(glyph_icon(Glyph::Spell(spell), palette::player(seat), 40.0, 40.0))
-                    .child(
-                        view()
-                            .flex_1()
-                            .gap(px(1.0))
-                            .child(bold(rules::spell_title(spell), 15.0, palette::INK))
-                            .child(label(rules::spell_summary(spell), 12.0, palette::MUTED))
-                            .child((free > 0).then(|| {
-                                bold(
-                                    format!("{free} free scroll{}", if free == 1 { "" } else { "s" }),
-                                    12.0,
-                                    palette::GO,
-                                )
-                            })),
-                    )
-                    .child(if castle {
-                        view().child(bold("Free", 13.0, palette::GO))
-                    } else {
-                        cost_row(&spell.cost(), Some(&have), 16.0, 12.0)
-                    });
-                let row = view()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .gap(px(8.0))
-                    .rounded(px(14.0))
-                    .bg(hex(if open { 0xfff4d6 } else { 0xfffdf6 }))
-                    .border_2()
-                    .border_color(hex(if open { palette::GOLD } else { palette::PAPER_DIM }))
-                    .on_press(move || chosen.set(spell))
-                    .child(head);
-                if !open {
-                    return row;
-                }
-                let blocker = spell_blocker(g, seat, spell);
-                let lines: Vec<Text> = rules::spell_rules(spell)
-                    .into_iter()
-                    .chain([rules::mana_rule()])
-                    .map(|l| label(l, 13.0, palette::INK))
-                    .collect();
-                let cast = pill(
-                    format!("Cast {}", spell.name()),
-                    palette::GO,
-                    0xffffff,
-                    blocker.is_none() && !busy,
-                    move || {
-                        app.spellbook_open.set(false);
-                        if spell.targets() == 0 {
-                            app.send(Action::CastSpell { spell, tiles: Vec::new() });
-                        } else {
-                            app.mode.set(Mode::Cast(spell, None));
-                        }
-                    },
-                );
-                row.child(view().gap(px(5.0)).child(lines))
-                    .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
-                    .child(cast)
-            })
-            .collect();
-        Some(
-            view()
-                .absolute()
-                .inset_0()
-                .bg(hexa(0x000000, 0.55))
-                .pt_safe_area_plus(px(16.0))
-                .pb_safe_area_plus(px(16.0))
-                .px(px(12.0))
-                .on_press(close)
-                .child(
-                    panel()
-                        .flex_1()
-                        .border_2()
-                        .border_color(hex(palette::GOLD))
-                        .on_press(|| {})
-                        .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+    let close = move || app.spellbook_open.set(false);
+    // Made once per opening, so it rises into view only then; the mana line
+    // and the spells update in place, so picking one does not flash.
+    when(app.spellbook_open, move || {
+        let status = dynamic(move || {
+            let (mana, castle) = app.view.with(|v| {
+                let v = v.as_ref()?;
+                let g = v.game.as_ref()?;
+                Some((mana_state(g, v.seat), g.has_city(v.seat)))
+            })?;
+            Some(view().child(label(format!("Mana: {mana}"), 12.0, palette::MUTED)).child(label(
+                if castle { "Free: you have a castle" } else { "Free once you have a castle" },
+                12.0,
+                palette::MUTED,
+            )))
+        });
+        let rows = dynamic(move || {
+            let view_ = app.view.get()?;
+            let g = view_.game.as_ref()?;
+            let seat = view_.seat;
+            let have = g.players[seat.index()].resources;
+            let castle = g.has_city(seat);
+            let picked = chosen.get();
+            let busy = app.busy.get();
+            let rows: Vec<View> = Spell::ALL
+                .into_iter()
+                .map(|spell| {
+                    let open = spell == picked;
+                    let free = g.players[seat.index()].scrolls.iter().filter(|&&s| s == spell).count();
+                    let head = view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(glyph_icon(Glyph::Spell(spell), palette::player(seat), 40.0, 40.0))
                         .child(
                             view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(10.0))
-                                .px(px(16.0))
-                                .pt(px(14.0))
-                                .pb(px(10.0))
-                                .child(glyph_icon(Glyph::Spellbook, 0, 36.0, 40.0))
-                                .child(
-                                    view()
-                                        .flex_1()
-                                        .child(bold("Spells", 22.0, palette::INK))
-                                        .child(label(format!("Mana: {}", mana_state(g, seat)), 12.0, palette::MUTED))
-                                        .child(label(
-                                            if castle {
-                                                "Free: you have a castle"
-                                            } else {
-                                                "Free once you have a castle"
-                                            },
-                                            12.0,
-                                            palette::MUTED,
-                                        )),
-                                )
-                                .child(pill("Close", palette::INK, 0xffffff, true, close)),
+                                .flex_1()
+                                .gap(px(1.0))
+                                .child(bold(rules::spell_title(spell), 15.0, palette::INK))
+                                .child(label(rules::spell_summary(spell), 12.0, palette::MUTED))
+                                .child((free > 0).then(|| {
+                                    bold(
+                                        format!("{free} free scroll{}", if free == 1 { "" } else { "s" }),
+                                        12.0,
+                                        palette::GO,
+                                    )
+                                })),
                         )
-                        .child(scroll().flex_1().child(view().px(px(12.0)).pb(px(16.0)).gap(px(8.0)).child(rows))),
-                ),
-        )
+                        .child(if castle {
+                            view().child(bold("Free", 13.0, palette::GO))
+                        } else {
+                            cost_row(&spell.cost(), Some(&have), 16.0, 12.0)
+                        });
+                    let row = view()
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .gap(px(8.0))
+                        .rounded(px(14.0))
+                        .bg(hex(if open { 0xfff4d6 } else { 0xfffdf6 }))
+                        .border_2()
+                        .border_color(hex(if open { palette::GOLD } else { palette::PAPER_DIM }))
+                        .on_press(move || chosen.set(spell))
+                        .child(head);
+                    if !open {
+                        return row;
+                    }
+                    let blocker = spell_blocker(g, seat, spell);
+                    let lines: Vec<Text> = rules::spell_rules(spell)
+                        .into_iter()
+                        .chain([rules::mana_rule()])
+                        .map(|l| label(l, 13.0, palette::INK))
+                        .collect();
+                    let cast = pill(
+                        format!("Cast {}", spell.name()),
+                        palette::GO,
+                        0xffffff,
+                        blocker.is_none() && !busy,
+                        move || {
+                            app.spellbook_open.set(false);
+                            if spell.targets() == 0 {
+                                app.send(Action::CastSpell { spell, tiles: Vec::new() });
+                            } else {
+                                app.mode.set(Mode::Cast(spell, None));
+                            }
+                        },
+                    );
+                    row.child(view().gap(px(5.0)).child(lines))
+                        .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
+                        .child(cast)
+                })
+                .collect();
+            Some(view().px(px(12.0)).pb(px(16.0)).gap(px(8.0)).child(rows))
+        });
+        view()
+            .absolute()
+            .inset_0()
+            .bg(hexa(0x000000, 0.55))
+            .pt_safe_area_plus(px(16.0))
+            .pb_safe_area_plus(px(16.0))
+            .px(px(12.0))
+            .on_press(close)
+            .child(
+                panel()
+                    .flex_1()
+                    .border_2()
+                    .border_color(hex(palette::GOLD))
+                    .on_press(|| {})
+                    .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .px(px(16.0))
+                            .pt(px(14.0))
+                            .pb(px(10.0))
+                            .child(glyph_icon(Glyph::Spellbook, 0, 36.0, 40.0))
+                            .child(view().flex_1().child(bold("Spells", 22.0, palette::INK)).child(status))
+                            .child(pill("Close", palette::INK, 0xffffff, true, close)),
+                    )
+                    .child(scroll().flex_1().child(rows)),
+            )
     })
 }
 
 /// An item's card: what it is, what it costs, what it does, and the button
 /// that buys it (or why it cannot be bought now).
 fn item_card(app: AppState) -> impl IntoElement {
-    dynamic(move || {
+    let open = computed(move || app.item_card.with(Option::is_some));
+    let close = move || app.item_card.set(None);
+    sheet(open, close, move || {
         let item = app.item_card.get()?;
         let view_ = app.view.get()?;
         let g = view_.game.as_ref()?;
         let seat = view_.seat;
         let have = g.players[seat.index()].resources;
         let blocker = item_blocker(g, seat, item);
-        let close = move || app.item_card.set(None);
         let lines: Vec<Text> = item.rules().into_iter().map(|l| label(l, 14.0, palette::INK)).collect();
         let buy = pill(item.verb(), palette::GO, 0xffffff, blocker.is_none() && !app.busy.get(), move || {
             app.item_card.set(None);
@@ -1042,38 +1041,44 @@ fn item_card(app: AppState) -> impl IntoElement {
                 Use::Buy(kind) => app.send(Action::BuyCard(kind)),
             }
         });
-        let card = panel()
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(12.0))
-                    .child(glyph_icon(item.glyph(), palette::player(seat), 72.0, 52.0))
-                    .child(view().flex_1().gap(px(2.0)).child(bold(item.title(), 22.0, palette::INK)).child(label(
-                        item.summary(),
-                        13.0,
-                        palette::MUTED,
-                    ))),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(bold("Cost", 13.0, palette::MUTED))
-                    .child(cost_row(&item.cost(), Some(&have), 22.0, 15.0)),
-            )
-            .child(view().gap(px(6.0)).child(lines))
-            .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
-            .child(buy)
-            .child(pill("Close", 0x8a8070, 0xffffff, true, close));
-        Some(sheet(card).on_press(close))
+        Some(
+            view()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(glyph_icon(item.glyph(), palette::player(seat), 72.0, 52.0))
+                        .child(
+                            view().flex_1().gap(px(2.0)).child(bold(item.title(), 22.0, palette::INK)).child(label(
+                                item.summary(),
+                                13.0,
+                                palette::MUTED,
+                            )),
+                        ),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(bold("Cost", 13.0, palette::MUTED))
+                        .child(cost_row(&item.cost(), Some(&have), 22.0, 15.0)),
+                )
+                .child(view().gap(px(6.0)).child(lines))
+                .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
+                .child(buy)
+                .child(pill("Close", 0x8a8070, 0xffffff, true, close)),
+        )
     })
 }
 
 /// An attack the player tapped: what it will do, before it is done.
 fn attack_confirm(app: AppState) -> impl IntoElement {
-    dynamic(move || {
+    let open = computed(move || app.confirm_attack.with(Option::is_some));
+    let cancel = move || app.confirm_attack.set(None);
+    sheet(open, cancel, move || {
         let action = app.confirm_attack.get()?;
         let Action::Attack { unit, target } = action else { return None };
         let view_ = app.view.get()?;
@@ -1084,92 +1089,92 @@ fn attack_confirm(app: AppState) -> impl IntoElement {
             Target::Robber(_) => (Glyph::Robber, 0x2b2b2e),
             Target::Unit(u) => (Glyph::Knight, palette::player(g.unit(u)?.owner)),
         };
-        let cancel = move || app.confirm_attack.set(None);
-        let card = panel()
-            .items_center()
-            .child(bold(title, 22.0, palette::INK))
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(glyph_icon(Glyph::Knight, palette::player(attacker.owner), 64.0, 52.0))
-                    .child(bold("vs", 18.0, palette::DANGER))
-                    .child(glyph_icon(victim, victim_color, 64.0, 52.0)),
-            )
-            .child(label(outcome, 15.0, palette::INK).text_center())
-            .child(
-                pill("Attack", palette::DANGER, 0xffffff, !app.busy.get(), move || {
-                    app.confirm_attack.set(None);
-                    app.mode.set(Mode::Idle);
-                    app.send(action.clone());
-                })
-                .self_stretch(),
-            )
-            .child(pill("Cancel", 0x8a8070, 0xffffff, true, cancel).self_stretch());
-        Some(sheet(card).on_press(cancel))
+        Some(
+            view()
+                .gap(px(12.0))
+                .items_center()
+                .child(bold(title, 22.0, palette::INK))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(glyph_icon(Glyph::Knight, palette::player(attacker.owner), 64.0, 52.0))
+                        .child(bold("vs", 18.0, palette::DANGER))
+                        .child(glyph_icon(victim, victim_color, 64.0, 52.0)),
+                )
+                .child(label(outcome, 15.0, palette::INK).text_center())
+                .child(
+                    pill("Attack", palette::DANGER, 0xffffff, !app.busy.get(), move || {
+                        app.confirm_attack.set(None);
+                        app.mode.set(Mode::Idle);
+                        app.send(action.clone());
+                    })
+                    .self_stretch(),
+                )
+                .child(pill("Cancel", 0x8a8070, 0xffffff, true, cancel).self_stretch()),
+        )
     })
 }
 
 /// Every rule, piece and price, from the home screen or the game menu.
 pub fn rulebook(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        if !app.rules_open.get() {
-            return None;
-        }
-        let color = app.seat().map_or(palette::PLAYERS[0], palette::player);
-        let goal = app.view.with(|v| v.as_ref().map(|v| v.victory_points).filter(|&g| g > 0));
-        let pages: Vec<View> = rules::rulebook(goal)
-            .into_iter()
-            .map(|s| {
-                let lines: Vec<Text> = s.lines.into_iter().map(|l| label(l, 13.5, palette::INK)).collect();
-                view()
-                    .gap(px(6.0))
-                    .pb(px(14.0))
-                    .border_b(px(1.0))
-                    .border_color(hexa(palette::INK, 0.1))
-                    .child(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(10.0))
-                            .child(s.glyph.map(|g| glyph_icon(g, color, 44.0, 32.0)))
-                            .child(bold(s.title, 17.0, palette::INK).flex_1())
-                            .child(s.cost.map(|c| cost_row(&c, None, 18.0, 13.0))),
-                    )
-                    .child(lines)
-            })
-            .collect();
-        Some(
-            view()
-                .absolute()
-                .inset_0()
-                .bg(hexa(0x000000, 0.55))
-                .pt_safe_area_plus(px(16.0))
-                .pb_safe_area_plus(px(16.0))
-                .px(px(12.0))
-                .items_center()
-                .child(
-                    panel()
-                        .flex_1()
-                        .w_full()
-                        .max_w(px(RULEBOOK_WIDTH))
-                        .border_2()
-                        .border_color(hex(palette::GOLD))
-                        .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+    // Made once per opening; the pages update in place, keeping the scroll.
+    when(app.rules_open, move || {
+        let pages = dynamic(move || {
+            let color = app.seat().map_or(palette::PLAYERS[0], palette::player);
+            let goal = app.view.with(|v| v.as_ref().map(|v| v.victory_points).filter(|&g| g > 0));
+            let pages: Vec<View> = rules::rulebook(goal)
+                .into_iter()
+                .map(|s| {
+                    let lines: Vec<Text> = s.lines.into_iter().map(|l| label(l, 13.5, palette::INK)).collect();
+                    view()
+                        .gap(px(6.0))
+                        .pb(px(14.0))
+                        .border_b(px(1.0))
+                        .border_color(hexa(palette::INK, 0.1))
                         .child(
                             view()
                                 .flex_row()
                                 .items_center()
-                                .px(px(16.0))
-                                .pt(px(14.0))
-                                .pb(px(10.0))
-                                .child(bold("How to play", 22.0, palette::INK).flex_1())
-                                .child(pill("Close", palette::INK, 0xffffff, true, move || app.rules_open.set(false))),
+                                .gap(px(10.0))
+                                .child(s.glyph.map(|g| glyph_icon(g, color, 44.0, 32.0)))
+                                .child(bold(s.title, 17.0, palette::INK).flex_1())
+                                .child(s.cost.map(|c| cost_row(&c, None, 18.0, 13.0))),
                         )
-                        .child(scroll().flex_1().child(view().px(px(16.0)).pb(px(16.0)).gap(px(14.0)).child(pages))),
-                ),
-        )
+                        .child(lines)
+                })
+                .collect();
+            Some(view().px(px(16.0)).pb(px(16.0)).gap(px(14.0)).child(pages))
+        });
+        view()
+            .absolute()
+            .inset_0()
+            .bg(hexa(0x000000, 0.55))
+            .pt_safe_area_plus(px(16.0))
+            .pb_safe_area_plus(px(16.0))
+            .px(px(12.0))
+            .items_center()
+            .child(
+                panel()
+                    .flex_1()
+                    .w_full()
+                    .max_w(px(RULEBOOK_WIDTH))
+                    .border_2()
+                    .border_color(hex(palette::GOLD))
+                    .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .px(px(16.0))
+                            .pt(px(14.0))
+                            .pb(px(10.0))
+                            .child(bold("How to play", 22.0, palette::INK).flex_1())
+                            .child(pill("Close", palette::INK, 0xffffff, true, move || app.rules_open.set(false))),
+                    )
+                    .child(scroll().flex_1().child(pages)),
+            )
     })
 }
 
@@ -1233,81 +1238,105 @@ fn big_button(fill: u32, enabled: bool, on: impl Fn() + 'static) -> View {
     if enabled { v.active(|s| s.opacity(0.8).scale(0.97)).on_press(on) } else { v }
 }
 
-/// The open offer: answer it, or watch it as its maker.
-fn trade_offer(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<View> {
-    let offer = g.trade.as_ref()?;
-    let from = name(names, offer.from);
-    let swap = |give: &Resources, want: &Resources| {
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .child(cost_row(give, None, 20.0, 14.0))
-            .child(glyph_icon(Glyph::Trade, 0, 26.0, 20.0))
-            .child(cost_row(want, None, 20.0, 14.0))
+/// The open offer: answer it, or watch it as its maker. Only a new offer
+/// makes the panel again (one to the player bounces in); what changes while
+/// it stands, who declined and what the player can pay, updates in place.
+fn trade_offer(app: AppState) -> impl IntoElement {
+    let shown = computed(move || {
+        app.view.with(|v| {
+            let v = v.as_ref()?;
+            let o = v.game.as_ref()?.trade.as_ref()?;
+            let for_me = o.to.is_none_or(|p| p == v.seat) && !o.declined.contains(&v.seat);
+            (o.from == v.seat || for_me).then_some((o.from == v.seat, o.from, o.give, o.want))
+        })
+    });
+    // The player's resources, tracked by whoever reads them.
+    let have = move || {
+        app.view.with(|v| {
+            v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.players[v.seat.index()].resources)).unwrap_or_default()
+        })
     };
-    if offer.from == seat {
-        return Some(
-            panel()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(12.0))
-                .py(px(8.0))
-                .child(
-                    view()
-                        .flex_1()
-                        .gap(px(4.0))
-                        .child(bold("Your offer", 12.0, palette::MUTED))
-                        .child(swap(&offer.give, &offer.want))
-                        .child(label(
-                            if offer.declined.is_empty() {
-                                "Waiting for answers…".to_owned()
-                            } else {
-                                format!(
-                                    "Declined by {}",
-                                    offer.declined.iter().map(|&p| name(names, p)).collect::<Vec<_>>().join(", ")
-                                )
-                            },
-                            11.0,
-                            palette::MUTED,
-                        )),
-                )
-                .child(pill("Withdraw", 0x8a8070, 0xffffff, true, move || app.send(Action::CancelTrade))),
-        );
-    }
-    let for_me = offer.to.is_none_or(|p| p == seat) && !offer.declined.contains(&seat);
-    if !for_me {
-        return None;
-    }
-    let affordable = g.players[seat.index()].resources.covers(&offer.want);
-    Some(
-        panel()
-            .px(px(12.0))
-            .py(px(10.0))
-            .gap(px(8.0))
-            .border_2()
-            .border_color(hex(palette::GOLD))
-            .bind_motion(&motion().entering(MotionPreset::BounceIn))
-            .child(bold(format!("{from} offers a trade"), 14.0, palette::INK))
-            .child(
-                view()
+    dynamic(move || {
+        let (mine, from, give, want) = shown.get()?;
+        if mine {
+            let answers = dynamic(move || {
+                let text = app.view.with(|v| {
+                    let v = v.as_ref()?;
+                    let o = v.game.as_ref()?.trade.as_ref()?;
+                    Some(if o.declined.is_empty() {
+                        "Waiting for answers…".to_owned()
+                    } else {
+                        let names: Vec<String> = o.declined.iter().map(|&p| name(&v.players, p)).collect();
+                        format!("Declined by {}", names.join(", "))
+                    })
+                })?;
+                Some(label(text, 11.0, palette::MUTED))
+            });
+            return Some(
+                panel()
                     .flex_row()
                     .items_center()
-                    .gap(px(6.0))
-                    .child(label("You get", 12.0, palette::MUTED))
-                    .child(cost_row(&offer.give, None, 22.0, 15.0))
-                    .child(label("for", 12.0, palette::MUTED))
-                    .child(cost_row(&offer.want, Some(&g.players[seat.index()].resources), 22.0, 15.0)),
-            )
-            .child(
-                view()
-                    .flex_row()
                     .gap(px(8.0))
-                    .child(pill("Accept", palette::GO, 0xffffff, affordable, move || app.send(Action::AcceptTrade)))
-                    .child(pill("Decline", 0x8a8070, 0xffffff, true, move || app.send(Action::DeclineTrade))),
-            ),
-    )
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .child(
+                        view()
+                            .flex_1()
+                            .gap(px(4.0))
+                            .child(bold("Your offer", 12.0, palette::MUTED))
+                            .child(
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(cost_row(&give, None, 20.0, 14.0))
+                                    .child(glyph_icon(Glyph::Trade, 0, 26.0, 20.0))
+                                    .child(cost_row(&want, None, 20.0, 14.0)),
+                            )
+                            .child(answers),
+                    )
+                    .child(pill("Withdraw", 0x8a8070, 0xffffff, true, move || app.send(Action::CancelTrade))),
+            );
+        }
+        let from = untracked(move || app.view.with(|v| v.as_ref().map(|v| name(&v.players, from)))).unwrap_or_default();
+        let answer = dynamic(move || {
+            let have = have();
+            Some(
+                view()
+                    .gap(px(8.0))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(label("You get", 12.0, palette::MUTED))
+                            .child(cost_row(&give, None, 22.0, 15.0))
+                            .child(label("for", 12.0, palette::MUTED))
+                            .child(cost_row(&want, Some(&have), 22.0, 15.0)),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .child(pill("Accept", palette::GO, 0xffffff, have.covers(&want), move || {
+                                app.send(Action::AcceptTrade)
+                            }))
+                            .child(pill("Decline", 0x8a8070, 0xffffff, true, move || app.send(Action::DeclineTrade))),
+                    ),
+            )
+        });
+        Some(
+            panel()
+                .px(px(12.0))
+                .py(px(10.0))
+                .gap(px(8.0))
+                .border_2()
+                .border_color(hex(palette::GOLD))
+                .bind_motion(&motion().entering(MotionPreset::BounceIn))
+                .child(bold(format!("{from} offers a trade"), 14.0, palette::INK))
+                .child(answer),
+        )
+    })
 }
 
 /// Trading: four of a kind for one with the bank, or an offer to the other
@@ -1513,15 +1542,15 @@ fn bottom(app: AppState) -> impl IntoElement {
                     .child(bold(t, 13.0, 0xffffff))
             })
         }))
-        .child(view().px(px(8.0)).gap(px(6.0)).pointer_events(PointerEvents::BoxNone).child(trade_composer(app)).child(
-            dynamic(move || {
-                let view_ = app.view.get()?;
-                let g = view_.game.as_ref()?;
-                trade_offer(app, g, view_.seat, &view_.players)
-            }),
-        ))
+        .child(
+            view()
+                .px(px(8.0))
+                .gap(px(6.0))
+                .pointer_events(PointerEvents::BoxNone)
+                .child(trade_composer(app))
+                .child(trade_offer(app)),
+        )
         .child(reaction_picker(app))
-        .child(recenter_button(app))
         .child(view().pointer_events(PointerEvents::BoxNone).child(action_bar(app)).child(dynamic(move || {
             let view_ = app.view.get()?;
             let g = view_.game.as_ref()?;
@@ -1560,70 +1589,84 @@ fn bottom(app: AppState) -> impl IntoElement {
         })))
 }
 
-/// Left, over the action strip, while the board is zoomed in on a tile:
-/// back to the whole island.
+/// Over the action strip on the left while the board is zoomed in on a
+/// tile: back to the whole island. Out of the bottom HUD's flow and under
+/// it, so trading, reactions and the history neither move for it nor are
+/// moved by it: they open over it.
 fn recenter_button(app: AppState) -> impl IntoElement {
+    // How far above the bottom edge it stands, while zoomed in: made again
+    // only when that changes, so tapping tiles leaves it be.
+    let above = computed(move || {
+        app.focus.with(Option::is_some).then(|| {
+            let hud = app.hud.get();
+            hud.strip + hud.dock + 6.0
+        })
+    });
     dynamic(move || {
-        app.focus.get()?;
+        let above = above.get()?;
         Some(
-            pill("Recenter", palette::PAPER, palette::INK, true, move || app.look_at(None))
-                .self_start()
-                .ml(px(8.0))
-                .shadow_md()
-                .bind_motion(&motion().entering(MotionPreset::FadeInUp)),
+            view()
+                .absolute()
+                .left(px(8.0))
+                .bottom(px(above))
+                .child(pill("Recenter", palette::PAPER, palette::INK, true, move || app.look_at(None)).shadow_md()),
         )
     })
 }
 
 fn winner(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let view_ = app.view.get()?;
-        let g = view_.game.as_ref()?;
-        let w = g.winner()?;
-        let me = w == view_.seat;
-        let color = palette::player(w);
-        Some(
-            view().absolute().inset_0().items_center().justify_center().bg(hexa(0x000000, 0.5)).child(
-                panel()
+    let won = computed(move || app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()?.winner()).is_some()));
+    // Made once, so it bounces in once; the scores update in place.
+    when(won, move || {
+        let content = dynamic(move || {
+            let view_ = app.view.get()?;
+            let g = view_.game.as_ref()?;
+            let w = g.winner()?;
+            let me = w == view_.seat;
+            let color = palette::player(w);
+            let scores: Vec<View> = g
+                .players
+                .iter()
+                .map(|p| {
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            view()
+                                .size(px(12.0))
+                                .rounded(px(6.0))
+                                .bg(hex(palette::player(p.id)))
+                                .border_1()
+                                .border_color(hex(palette::INK)),
+                        )
+                        .child(bold(p.name.clone(), 13.0, palette::INK))
+                        .child(star_icon(13.0))
+                        .child(bold(g.points(p.id).to_string(), 13.0, palette::INK))
+                })
+                .collect();
+            Some(
+                view()
                     .items_center()
                     .gap(px(12.0))
-                    .px(px(30.0))
-                    .py(px(26.0))
-                    .border_2()
-                    .border_color(hex(palette::GOLD))
-                    .bind_motion(&motion().entering(MotionPreset::BounceIn))
                     .child(glyph_icon(Glyph::Building(BuildingKind::City), color, 80.0, 60.0))
                     .child(bold(
                         if me { "You win!".to_owned() } else { format!("{} wins!", name(&view_.players, w)) },
                         30.0,
                         palette::INK,
                     ))
-                    .child(
-                        view().flex_row().flex_wrap().justify_center().gap(px(10.0)).child(
-                            g.players
-                                .iter()
-                                .map(|p| {
-                                    view()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(4.0))
-                                        .child(
-                                            view()
-                                                .size(px(12.0))
-                                                .rounded(px(6.0))
-                                                .bg(hex(palette::player(p.id)))
-                                                .border_1()
-                                                .border_color(hex(palette::INK)),
-                                        )
-                                        .child(bold(p.name.clone(), 13.0, palette::INK))
-                                        .child(star_icon(13.0))
-                                        .child(bold(g.points(p.id).to_string(), 13.0, palette::INK))
-                                })
-                                .collect::<Vec<_>>(),
-                        ),
-                    )
+                    .child(view().flex_row().flex_wrap().justify_center().gap(px(10.0)).child(scores))
                     .child(pill("Leave match", palette::INK, 0xffffff, true, move || app.leave())),
-            ),
+            )
+        });
+        view().absolute().inset_0().items_center().justify_center().bg(hexa(0x000000, 0.5)).child(
+            panel()
+                .px(px(30.0))
+                .py(px(26.0))
+                .border_2()
+                .border_color(hex(palette::GOLD))
+                .bind_motion(&motion().entering(MotionPreset::BounceIn))
+                .child(content),
         )
     })
 }
@@ -1751,39 +1794,56 @@ fn reactions_layer(app: AppState) -> impl IntoElement {
         .child(rows)
 }
 
-/// A dimmed screen with a card in the middle. The card swallows its own
-/// taps, so a press handler on the sheet only hears taps outside it.
-fn sheet(card: View) -> View {
-    view().absolute().inset_0().items_center().justify_center().px(px(24.0)).bg(hexa(0x000000, 0.5)).child(
-        card.w_full()
-            .max_w(px(MENU_WIDTH))
-            .px(px(20.0))
-            .py(px(20.0))
-            .gap(px(12.0))
-            .border_2()
-            .border_color(hex(palette::GOLD))
-            .on_press(|| {})
-            .bind_motion(&motion().entering(MotionPreset::ZoomIn)),
-    )
+/// A dimmed screen with a card in the middle while `open`. Made once per
+/// opening, so the card zooms in only then; what it shows (`content`)
+/// updates in place. The card swallows its own taps; `dismiss` hears the
+/// taps outside it.
+fn sheet(
+    open: Memo<bool>,
+    dismiss: impl Fn() + Copy + 'static,
+    content: impl Fn() -> Option<View> + Copy + 'static,
+) -> impl IntoElement {
+    when(open, move || {
+        view()
+            .absolute()
+            .inset_0()
+            .items_center()
+            .justify_center()
+            .px(px(24.0))
+            .bg(hexa(0x000000, 0.5))
+            .on_press(dismiss)
+            .child(
+                panel()
+                    .w_full()
+                    .max_w(px(MENU_WIDTH))
+                    .px(px(20.0))
+                    .py(px(20.0))
+                    .border_2()
+                    .border_color(hex(palette::GOLD))
+                    .on_press(|| {})
+                    .bind_motion(&motion().entering(MotionPreset::ZoomIn))
+                    .child(dynamic(content)),
+            )
+    })
 }
 
 /// Leaving the match, or (for the host) ending it for everyone, each asked
-/// twice.
+/// twice. Going from the menu to a question keeps the card.
 fn menu(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let choice = app.menu.get();
-        if choice == Menu::Closed {
-            return None;
-        }
-        let view_ = app.view.get()?;
-        if view_.ended {
-            return None;
-        }
-        let host = view_.seat == PlayerId(0);
-        let busy = app.busy.get();
-        let back = move || app.menu.set(Menu::Open);
-        let card = match choice {
-            Menu::Open => panel()
+    let open =
+        computed(move || app.menu.get() != Menu::Closed && app.view.with(|v| v.as_ref().is_some_and(|v| !v.ended)));
+    sheet(
+        open,
+        move || app.menu.set(Menu::Closed),
+        move || {
+            let choice = app.menu.get();
+            let view_ = app.view.get()?;
+            let host = view_.seat == PlayerId(0);
+            let busy = app.busy.get();
+            let back = move || app.menu.set(Menu::Open);
+            let card = view().gap(px(12.0));
+            Some(match choice {
+            Menu::Open => card
                 .child(bold(format!("Match {}", view_.code), 20.0, palette::INK).self_center())
                 .child(pill("Resume", palette::GO, 0xffffff, true, move || app.menu.set(Menu::Closed)))
                 .child(pill("How to play", palette::INK, 0xffffff, true, move || {
@@ -1796,7 +1856,7 @@ fn menu(app: AppState) -> impl IntoElement {
                         app.menu.set(Menu::ConfirmEnd)
                     })
                 })),
-            Menu::ConfirmLeave => panel()
+            Menu::ConfirmLeave => card
                 .child(bold("Leave this match?", 20.0, palette::INK))
                 .child(label(
                     if host {
@@ -1809,29 +1869,30 @@ fn menu(app: AppState) -> impl IntoElement {
                 ))
                 .child(pill("Leave", palette::DANGER, 0xffffff, true, move || app.leave()))
                 .child(pill("Back", 0x8a8070, 0xffffff, true, back)),
-            Menu::ConfirmEnd => panel()
+            Menu::ConfirmEnd => card
                 .child(bold("End the match for everyone?", 20.0, palette::INK))
                 .child(label("Every player goes back to the home screen. This can't be undone.", 14.0, palette::MUTED))
                 .child(pill("End match", palette::DANGER, 0xffffff, !busy, move || app.end_match()))
                 .child(pill("Back", 0x8a8070, 0xffffff, true, back)),
             Menu::Closed => return None,
-        };
-        Some(sheet(card).on_press(move || app.menu.set(Menu::Closed)))
-    })
+        })
+        },
+    )
 }
 
 /// The host ended the match: everyone heads home.
 pub fn ended(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let view_ = app.view.get()?;
-        if !view_.ended {
-            return None;
-        }
-        let by_me = view_.seat == PlayerId(0);
-        let host = name(&view_.players, PlayerId(0));
-        Some(
-            sheet(
-                panel()
+    let open = computed(move || app.view.with(|v| v.as_ref().is_some_and(|v| v.ended)));
+    sheet(
+        open,
+        || {},
+        move || {
+            let view_ = app.view.get()?;
+            let by_me = view_.seat == PlayerId(0);
+            let host = name(&view_.players, PlayerId(0));
+            Some(
+                view()
+                    .gap(px(12.0))
                     .items_center()
                     .child(bold("Match ended", 26.0, palette::INK))
                     .child(label(
@@ -1841,9 +1902,8 @@ pub fn ended(app: AppState) -> impl IntoElement {
                     ))
                     .child(pill("Back to home", palette::GO, 0xffffff, true, move || app.leave()).self_stretch()),
             )
-            .on_press(|| {}),
-        )
-    })
+        },
+    )
 }
 
 /// A gold frame that glows around the screen while it is the player's turn.
@@ -1897,6 +1957,7 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .child(board::board_view(app))
         .child(turn_glow(app))
         .child(top(app))
+        .child(recenter_button(app))
         .child(bottom(app))
         .child(winner(app))
         .child(fx::fx_layer(app))
