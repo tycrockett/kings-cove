@@ -64,6 +64,22 @@ pub enum Inspect {
     Edge(kings_cove_engine::EdgeId),
 }
 
+/// How much of the screen the HUD covers, in points, as laid out: the top
+/// bar from the top edge, and the action strip and the dock above the
+/// bottom edge. Zero until measured.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Hud {
+    pub top: f32,
+    pub strip: f32,
+    pub dock: f32,
+}
+
+impl Hud {
+    pub fn measured(&self) -> bool {
+        self.top > 0.0 && self.dock > 0.0
+    }
+}
+
 /// The game menu, and which choice it is asking the player to confirm.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Menu {
@@ -82,6 +98,8 @@ pub struct AppState {
     pub toast: Signal<Option<String>>,
     pub mode: Signal<Mode>,
     pub inspect: Signal<Option<Inspect>>,
+    /// How much of the screen the HUD covers, as laid out.
+    pub hud: Signal<Hud>,
     /// The tile the board is zoomed in on; `None` shows the whole island.
     /// Write it with `look_at`.
     pub focus: Signal<Option<TileId>>,
@@ -143,6 +161,7 @@ impl AppState {
             toast: signal(None),
             mode: signal(Mode::Idle),
             inspect: signal(None),
+            hud: signal(Hud::default()),
             focus: signal(None),
             busy: signal(false),
             connected: signal(true),

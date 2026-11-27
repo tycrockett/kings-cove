@@ -14,7 +14,7 @@ use crate::{
     board, fx,
     palette::{self, hex, hexa},
     rules::{self, Item},
-    state::{AppState, Inspect, Menu, Mode, now_ms},
+    state::{AppState, Hud, Inspect, Menu, Mode, now_ms},
 };
 
 // ----- Small pieces -----
@@ -337,11 +337,21 @@ fn turn_queue(app: AppState) -> impl IntoElement {
             )
         })
     };
-    view().element_ref(&column).gap(px(6.0)).pt(px(6.0)).items_start().pointer_events(PointerEvents::None).child(each(
-        queue,
-        |w: &Waiting| w.id,
-        move |w, _| view().bind_motion(&motion().entering(MotionPreset::FadeInUp)).child(card(w)),
-    ))
+    // Out of the column's flow, like the panel of everyone, so the top bar
+    // stays as tall as its first row and the board fits under that.
+    view()
+        .element_ref(&column)
+        .absolute()
+        .top(px(46.0))
+        .left(px(0.0))
+        .gap(px(6.0))
+        .items_start()
+        .pointer_events(PointerEvents::None)
+        .child(each(
+            queue,
+            |w: &Waiting| w.id,
+            move |w, _| view().bind_motion(&motion().entering(MotionPreset::FadeInUp)).child(card(w)),
+        ))
 }
 
 /// A player's chip: color and initial, name, and their points, resources,
@@ -549,6 +559,7 @@ fn top(app: AppState) -> impl IntoElement {
         .pt_safe_area_plus(px(8.0))
         .px(px(8.0))
         .pointer_events(PointerEvents::BoxNone)
+        .on_layout(move |f: &Bounds<Points>| app.hud.set(Hud { top: f.size.height.0, ..app.hud.get_untracked() }))
         .child(view().flex_row().items_start().gap(px(6.0)).child(players_bar(app)).child(
             view().items_end().gap(px(4.0)).child(dice(app)).child(dynamic(move || {
                 let (round, goal) =
@@ -626,6 +637,9 @@ fn action_bar(app: AppState) -> impl IntoElement {
                     .rounded_tr(px(22.0))
                     .active(|s| s.opacity(0.85))
                     .on_press(move || app.history_open.update(|o| *o = !*o))
+                    .on_layout(move |f: &Bounds<Points>| {
+                        app.hud.set(Hud { strip: f.size.height.0, ..app.hud.get_untracked() })
+                    })
                     .child(
                         view()
                             .flex_1()
@@ -1528,6 +1542,9 @@ fn bottom(app: AppState) -> impl IntoElement {
                     .pt(px(8.0))
                     .pb_safe_area_plus(px(8.0))
                     .gap(px(7.0))
+                    .on_layout(move |f: &Bounds<Points>| {
+                        app.hud.set(Hud { dock: f.size.height.0, ..app.hud.get_untracked() })
+                    })
                     .child(inventory(app, g, seat, before))
                     .child(tray(app, g, seat))
                     .child(

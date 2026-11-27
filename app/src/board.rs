@@ -17,15 +17,18 @@ use nsh_core::{
 use crate::{
     art::{self, circle, ease_out, ease_out_back, hash01, lerp, phase, poly, text_at},
     palette::{self, hex, hexa},
-    state::{AppState, Inspect, Mode, now_ms},
+    state::{AppState, Hud, Inspect, Mode, now_ms},
 };
 
 /// A hex's corner radius, in world units.
 pub const S: f32 = 50.0;
 const HALF_SQRT3: f32 = 0.866_025_4;
-/// Space the HUD covers at the top and bottom, kept clear when fitting.
+/// Space the HUD covers at the top and bottom, kept clear when fitting
+/// before it is measured.
 const FIT_TOP: f32 = 118.0;
 const FIT_BOTTOM: f32 = 218.0;
+/// Room kept between the board's fit and the measured HUD.
+const FIT_MARGIN: f32 = 8.0;
 /// How long the camera takes to fly to a tile or back to the whole island.
 const FLY_MS: f64 = 180.0;
 
@@ -80,14 +83,14 @@ impl Camera {
         ((sx - self.x) / self.scale, (sy - self.y) / self.scale)
     }
 
-    /// Fits the board into a `w` × `h` viewport, clear of the HUD.
-    pub fn fit(g: &Game, w: f32, h: f32) -> Camera {
+    /// Fits the board into a viewport `w` wide, in the band `(top, height)`
+    /// the HUD leaves clear.
+    pub fn fit(g: &Game, w: f32, (top, usable_h): (f32, f32)) -> Camera {
         let pts: Vec<(f32, f32)> = g.board.vertices.iter().map(|v| lattice(v.x, v.y)).collect();
         let min_x = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min) - S * 0.4;
         let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max) + S * 0.4;
         let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min) - S * 0.4;
         let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max) + S * 0.4;
-        let (top, usable_h) = clear_band(h);
         let scale = ((w - 16.0) / (max_x - min_x)).min(usable_h / (max_y - min_y)).max(0.05);
         Camera {
             x: w / 2.0 - (min_x + max_x) / 2.0 * scale,
@@ -97,12 +100,12 @@ impl Camera {
         }
     }
 
-    /// Close on tile `t` in a `w` × `h` viewport, clear of the HUD: the tile
-    /// and two rings of tiles around it fill the view, never smaller than
-    /// the whole island.
-    pub fn focus(g: &Game, t: TileId, w: f32, h: f32) -> Camera {
-        let fit = Camera::fit(g, w, h).fit;
-        let (top, usable_h) = clear_band(h);
+    /// Close on tile `t` in a viewport `w` wide, in the band `(top, height)`
+    /// the HUD leaves clear: the tile and two rings of tiles around it fill
+    /// the band, never smaller than the whole island.
+    pub fn focus(g: &Game, t: TileId, w: f32, band: (f32, f32)) -> Camera {
+        let fit = Camera::fit(g, w, band).fit;
+        let (top, usable_h) = band;
         // Pointy-top hexes: five tiles across, and two rows of 1½ S plus a
         // corner above and below the middle.
         let (half_w, half_h) = (5.0 * HALF_SQRT3 * S + 0.2 * S, 4.2 * S);
@@ -130,10 +133,13 @@ impl Camera {
     }
 }
 
-/// The band of an `h`-tall viewport the HUD leaves clear: its top and height.
-fn clear_band(h: f32) -> (f32, f32) {
-    let usable_h = (h - FIT_TOP - FIT_BOTTOM).max(h * 0.4);
-    let top = if h - FIT_TOP - FIT_BOTTOM >= h * 0.4 { FIT_TOP } else { (h - usable_h) / 2.0 };
+/// The band of an `h`-tall viewport the HUD leaves clear, a little apart
+/// from it: its top and height. Before the HUD is measured, a guess.
+fn clear_band(h: f32, hud: Hud) -> (f32, f32) {
+    let (above, below) =
+        if hud.measured() { (hud.top + FIT_MARGIN, hud.strip + hud.dock + FIT_MARGIN) } else { (FIT_TOP, FIT_BOTTOM) };
+    let usable_h = (h - above - below).max(h * 0.4);
+    let top = if h - above - below >= h * 0.4 { above } else { (h - usable_h) / 2.0 };
     (top, usable_h)
 }
 
@@ -1332,14 +1338,16 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             f.cancel();
         }
     };
+    // The band the HUD leaves clear, as laid out now.
+    let band = move || clear_band(size.get_untracked().1, app.hud.get_untracked());
     // Where the camera belongs: close on the focused tile, else the whole
-    // island.
+    // island, centred in the band.
     let goal = move || {
-        let (w, h) = size.get_untracked();
+        let w = size.get_untracked().0;
         let g = app.game().filter(|_| w > 0.0)?;
         Some(match app.focus.get_untracked() {
-            Some(t) => Camera::focus(&g, t, w, h),
-            None => Camera::fit(&g, w, h),
+            Some(t) => Camera::focus(&g, t, w, band()),
+            None => Camera::fit(&g, w, band()),
         })
     };
 
@@ -1358,14 +1366,20 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             untracked(refit);
         }
     });
+    // Fit again once the HUD is first measured: the first fit guessed it.
+    let measured = stored(false);
+    effect(move || {
+        if app.hud.with(Hud::measured) && !measured.replace(true) && cam.get_untracked().is_some() {
+            untracked(refit);
+        }
+    });
     // Glide there whenever the focus is written, even unchanged: the player
     // may have panned away from it.
     let fly = move || {
         land();
         let (Some(from), Some(to)) = (cam.get_untracked(), goal()) else { return };
-        let (w, h) = size.get_untracked();
-        let (top, usable_h) = clear_band(h);
-        let anchor = (w / 2.0, top + usable_h / 2.0);
+        let (top, usable_h) = band();
+        let anchor = (size.get_untracked().0 / 2.0, top + usable_h / 2.0);
         let start = now_ms();
         let task = owner.run(|| {
             spawn(async move {
