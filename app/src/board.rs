@@ -15,7 +15,7 @@ use nsh_core::{
 };
 
 use crate::{
-    art::{self, circle, ease_out, ease_out_back, hash01, lerp, phase, poly, text_at},
+    art::{self, circle, ease_in_out_sine, ease_out, ease_out_back, hash01, lerp, phase, poly, text_at},
     palette::{self, hex, hexa},
     state::{AppState, Hud, Inspect, Mode, now_ms},
 };
@@ -30,7 +30,7 @@ const FIT_BOTTOM: f32 = 218.0;
 /// Room kept between the board's fit and the measured HUD.
 const FIT_MARGIN: f32 = 8.0;
 /// How long the camera takes to fly to a tile or back to the whole island.
-const FLY_MS: f64 = 180.0;
+const FLY_MS: f64 = 300.0;
 
 // ----- Geometry -----
 
@@ -114,13 +114,19 @@ impl Camera {
         Camera { x: w / 2.0 - cx * scale, y: top + usable_h / 2.0 - cy * scale, scale, fit }
     }
 
-    /// The camera `k` (0..1) of the way to `to`: the world point at the
-    /// screen point `anchor` slides straight while the scale changes evenly.
-    fn toward(self, to: Camera, k: f32, anchor: (f32, f32)) -> Camera {
-        let (a, b) = (self.to_world(anchor.0, anchor.1), to.to_world(anchor.0, anchor.1));
-        let scale = self.scale * (to.scale / self.scale).powf(k);
-        let (wx, wy) = lerp(a, b, k);
-        Camera { x: anchor.0 - wx * scale, y: anchor.1 - wy * scale, scale, fit: to.fit }
+    /// The camera `k` (0..1) of the way to `to`, zooming about the one
+    /// screen point both leave in place, so nothing swings sideways; with
+    /// no change of scale, a straight pan. The scale changes evenly.
+    fn toward(self, to: Camera, k: f32) -> Camera {
+        let r = to.scale / self.scale;
+        let f = r.powf(k);
+        let scale = self.scale * f;
+        if (r - 1.0).abs() < 1e-3 {
+            let (x, y) = lerp((self.x, self.y), (to.x, to.y), k);
+            return Camera { x, y, scale, fit: to.fit };
+        }
+        let still = ((to.x - r * self.x) / (1.0 - r), (to.y - r * self.y) / (1.0 - r));
+        Camera { x: still.0 - (still.0 - self.x) * f, y: still.1 - (still.1 - self.y) * f, scale, fit: to.fit }
     }
 
     /// Zooms by `factor` keeping the screen point `(sx, sy)` still.
@@ -1378,15 +1384,13 @@ pub fn board_view(app: AppState) -> impl IntoElement {
     let fly = move || {
         land();
         let (Some(from), Some(to)) = (cam.get_untracked(), goal()) else { return };
-        let (top, usable_h) = band();
-        let anchor = (size.get_untracked().0 / 2.0, top + usable_h / 2.0);
         let start = now_ms();
         let task = owner.run(|| {
             spawn(async move {
                 loop {
                     next_frame().await;
                     let k = ((now_ms() - start) / FLY_MS).min(1.0) as f32;
-                    cam.set(Some(if k < 1.0 { from.toward(to, ease_out(k), anchor) } else { to }));
+                    cam.set(Some(if k < 1.0 { from.toward(to, ease_in_out_sine(k)) } else { to }));
                     if k >= 1.0 {
                         break;
                     }

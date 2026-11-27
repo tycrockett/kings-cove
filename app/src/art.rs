@@ -27,6 +27,11 @@ pub fn ease_in_out(t: f32) -> f32 {
     if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
 }
 
+/// Starts and ends gently, never fast: a camera gliding.
+pub fn ease_in_out_sine(t: f32) -> f32 {
+    0.5 - 0.5 * (std::f32::consts::PI * t).cos()
+}
+
 /// Overshoots and settles back: things popping into place.
 pub fn ease_out_back(t: f32) -> f32 {
     let (c1, c3) = (1.9, 2.9);

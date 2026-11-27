@@ -324,13 +324,13 @@ impl AppState {
     // ----- Actions -----
 
     /// Sends an action; the server validates it and the answer replaces the view.
-    /// Building something takes the board back to the whole island at once;
-    /// moving a knight does once the knight has arrived.
+    /// Building something or moving a knight takes the board back to the
+    /// whole island, once the new piece has popped in or the knight arrived.
     pub fn send(&self, action: Action) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
-        if matches!(
+        let recenter = matches!(
             action,
             Action::SetupBuilding(_)
                 | Action::SetupRoad(_)
@@ -339,16 +339,14 @@ impl AppState {
                 | Action::UpgradeTown(_)
                 | Action::UpgradeCity(_)
                 | Action::Deploy { .. }
-        ) {
-            self.look_at(None);
-        }
-        let moving = matches!(action, Action::MoveUnit { .. });
+                | Action::MoveUnit { .. }
+        );
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
         self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| {
             this.receive(v);
-            if moving {
-                this.recenter_after_slides();
+            if recenter {
+                this.recenter_when_settled();
             }
         });
     }
@@ -360,19 +358,20 @@ impl AppState {
         self.focus.update(|f| *f = tile);
     }
 
-    /// Back to the whole island once the knights sliding now have arrived,
-    /// unless the player has looked elsewhere meanwhile.
-    fn recenter_after_slides(&self) {
+    /// Back to the whole island once the pieces popping in or knights
+    /// sliding now have settled, so only one thing moves at a time; unless
+    /// the player has looked elsewhere meanwhile.
+    fn recenter_when_settled(&self) {
         let now = now_ms();
-        let arrived = self.anims.with_untracked(|a| {
+        let settled = self.anims.with_untracked(|a| {
             a.iter()
-                .filter(|x| matches!(x.kind, AnimKind::Slide { piece: Piece::Unit(_), .. }))
+                .filter(|x| matches!(x.kind, AnimKind::Pop { .. } | AnimKind::Slide { piece: Piece::Unit(_), .. }))
                 .map(Anim::end)
                 .fold(now, f64::max)
         });
         let (this, focus) = (*self, self.focus.get_untracked());
         self.root.run(|| {
-            set_timeout(Duration::from_millis((arrived - now) as u64), move || {
+            set_timeout(Duration::from_millis((settled - now) as u64), move || {
                 if this.focus.get_untracked() == focus {
                     this.look_at(None);
                 }
