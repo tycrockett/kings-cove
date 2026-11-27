@@ -124,6 +124,15 @@ fn home(app: AppState) -> impl IntoElement {
                                 app.create(name.get_untracked())
                             }))
                         }))
+                        // Development: a match alone against a rival who only passes.
+                        .child(cfg!(debug_assertions).then(|| {
+                            dynamic(move || {
+                                let ok = can_create() && !app.busy.get();
+                                Some(pill("Practice alone (dev)", palette::INK, 0xffffff, ok, move || {
+                                    app.practice(name.get_untracked())
+                                }))
+                            })
+                        }))
                         .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                         .child(label("Join with a room code", 12.0, palette::MUTED))
                         .child(view().flex_row().gap(px(8.0)).child(view().flex_1().child(field("CODE", code))).child(

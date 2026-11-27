@@ -8,14 +8,14 @@ use kings_cove_engine::{
     Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize,
 };
 use kings_cove_protocol::{
-    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, REACTION_COOLDOWN_SECONDS,
-    ReactRequest, Reaction, SentReaction, Session, SessionRequest,
+    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, ReactRequest, Reaction,
+    SentReaction, Session, SessionRequest,
 };
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    board::{self, Anim, AnimKind, Mood},
+    board::{self, Anim, AnimKind, Mood, Piece},
     fx::{self, Fx, FxKind},
     palette,
     rules::Item,
@@ -82,6 +82,9 @@ pub struct AppState {
     pub toast: Signal<Option<String>>,
     pub mode: Signal<Mode>,
     pub inspect: Signal<Option<Inspect>>,
+    /// The tile the board is zoomed in on; `None` shows the whole island.
+    /// Write it with `look_at`.
+    pub focus: Signal<Option<TileId>>,
     pub busy: Signal<bool>,
     pub connected: Signal<bool>,
     pub anims: Signal<Vec<Anim>>,
@@ -103,8 +106,6 @@ pub struct AppState {
     pub players_open: Signal<bool>,
     /// The row of reactions to pick from.
     pub reactions_open: Signal<bool>,
-    /// This seat may react again: false through the cooldown.
-    pub react_ready: Signal<bool>,
     /// Reactions in the middle of the screen right now.
     pub reactions_shown: Signal<Vec<SentReaction>>,
     /// The `seq` of the latest reaction seen; `None` before the first view.
@@ -142,6 +143,7 @@ impl AppState {
             toast: signal(None),
             mode: signal(Mode::Idle),
             inspect: signal(None),
+            focus: signal(None),
             busy: signal(false),
             connected: signal(true),
             anims: signal(Vec::new()),
@@ -155,7 +157,6 @@ impl AppState {
             history_open: signal(false),
             players_open: signal(false),
             reactions_open: signal(false),
-            react_ready: signal(true),
             reactions_shown: signal(Vec::new()),
             last_reaction: stored(None),
             menu: signal(Menu::Closed),
@@ -216,6 +217,15 @@ impl AppState {
         self.request(async move { post::<_, Session>(&base, "/create", &body).await }, move |s| this.enter(s));
     }
 
+    /// A started match against a rival the server plays, set up mid-game:
+    /// for trying the client alone. Debug servers only.
+    pub fn practice(&self, name: String) {
+        self.remember_lobby_inputs(&name);
+        let (this, base) = (*self, self.base());
+        let body = CreateRequest { name };
+        self.request(async move { post::<_, Session>(&base, "/practice", &body).await }, move |s| this.enter(s));
+    }
+
     /// The host changes the match's goal or island in the lobby.
     pub fn configure(&self, victory_points: Option<u32>, map_size: Option<MapSize>) {
         let Some(s) = self.session.get_untracked() else {
@@ -265,6 +275,7 @@ impl AppState {
         self.view.set(None);
         self.mode.set(Mode::Idle);
         self.inspect.set(None);
+        self.focus.set(None);
         self.trade_open.set(false);
         self.history_open.set(false);
         self.players_open.set(false);
@@ -294,43 +305,76 @@ impl AppState {
     // ----- Actions -----
 
     /// Sends an action; the server validates it and the answer replaces the view.
+    /// Building something takes the board back to the whole island at once;
+    /// moving a knight does once the knight has arrived.
     pub fn send(&self, action: Action) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
+        if matches!(
+            action,
+            Action::SetupBuilding(_)
+                | Action::SetupRoad(_)
+                | Action::BuildRoad(_)
+                | Action::BuildOutpost(_)
+                | Action::UpgradeTown(_)
+                | Action::UpgradeCity(_)
+                | Action::Deploy { .. }
+        ) {
+            self.look_at(None);
+        }
+        let moving = matches!(action, Action::MoveUnit { .. });
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
-        self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| this.receive(v));
+        self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| {
+            this.receive(v);
+            if moving {
+                this.recenter_after_slides();
+            }
+        });
+    }
+
+    /// Points the board at `tile`, or at the whole island. The camera flies
+    /// there even when it is already the focus, as the player may have
+    /// panned away.
+    pub fn look_at(&self, tile: Option<TileId>) {
+        self.focus.update(|f| *f = tile);
+    }
+
+    /// Back to the whole island once the knights sliding now have arrived,
+    /// unless the player has looked elsewhere meanwhile.
+    fn recenter_after_slides(&self) {
+        let now = now_ms();
+        let arrived = self.anims.with_untracked(|a| {
+            a.iter()
+                .filter(|x| matches!(x.kind, AnimKind::Slide { piece: Piece::Unit(_), .. }))
+                .map(Anim::end)
+                .fold(now, f64::max)
+        });
+        let (this, focus) = (*self, self.focus.get_untracked());
+        self.root.run(|| {
+            set_timeout(Duration::from_millis((arrived - now) as u64), move || {
+                if this.focus.get_untracked() == focus {
+                    this.look_at(None);
+                }
+            })
+        });
     }
 
     /// Sends a reaction everyone sees. Neither held back by an action in
-    /// flight nor holding one back. The button rests until the server's
-    /// cooldown, counted from when it took the reaction, is surely over.
+    /// flight nor holding one back.
     pub fn react(&self, reaction: Reaction) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
-        if !self.react_ready.get_untracked() {
-            return;
-        }
-        self.react_ready.set(false);
         self.reactions_open.set(false);
         let (this, base) = (*self, self.base());
         let body = ReactRequest { code: s.code, token: s.token, reaction };
         self.root.run(|| {
             spawn(async move {
                 match post::<_, MatchView>(&base, "/react", &body).await {
-                    Ok(v) => {
-                        this.receive(v);
-                        let ready = this.react_ready;
-                        this.root.run(|| {
-                            set_timeout(Duration::from_secs(REACTION_COOLDOWN_SECONDS), move || ready.set(true))
-                        });
-                    }
-                    Err(e) => {
-                        this.react_ready.set(true);
-                        this.show_error(e);
-                    }
+                    Ok(v) => this.receive(v),
+                    Err(e) => this.show_error(e),
                 }
             })
         });

@@ -7,7 +7,7 @@ use kings_cove_engine::{
     UnitKind, balance,
 };
 use kings_cove_protocol::{Reaction, SentReaction};
-use nsh_core::prelude::*;
+use nsh_core::{LayoutCurve, LayoutTransition, prelude::*};
 
 use crate::{
     art::{self, Glyph},
@@ -268,12 +268,87 @@ fn dice(app: AppState) -> impl IntoElement {
     }))
 }
 
+/// A player's avatar: their initial on their color, ringed in gold while it
+/// is their turn.
+fn avatar(id: PlayerId, name: &str, size: f32, active: bool) -> View {
+    let color = palette::player(id);
+    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    view()
+        .size(px(size))
+        .rounded(px(size / 2.0))
+        .items_center()
+        .justify_center()
+        .bg(hex(color))
+        .border_2()
+        .border_color(hex(if active { palette::GOLD } else { 0xffffff }))
+        .child(bold(initial, size * 0.46, palette::ink_on(color)))
+}
+
+/// A player waiting for their turn, as the queue shows them.
+#[derive(Clone, PartialEq)]
+struct Waiting {
+    id: PlayerId,
+    name: String,
+    points: u32,
+}
+
+/// Under the active player's chip: the players whose turns come next, in
+/// order, each avatar over their points on a dark translucent card. As the
+/// turn passes they move up, and the player who just went joins the end.
+fn turn_queue(app: AppState) -> impl IntoElement {
+    let queue = computed(move || {
+        app.view.with(|v| {
+            let Some(g) = v.as_ref().and_then(|v| v.game.as_ref()) else { return Vec::new() };
+            let n = g.players.len();
+            (1..n)
+                .map(|k| &g.players[(g.current.index() + k) % n])
+                .map(|p| Waiting { id: p.id, name: p.name.clone(), points: g.points(p.id) })
+                .collect()
+        })
+    });
+    let column = element_ref();
+    let turn = stored(None::<PlayerId>);
+    effect(move || {
+        let current = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).map(|g| g.current));
+        let before = turn.replace(current);
+        if before.is_some() && before != current {
+            column.animate_layout(LayoutTransition::new(LayoutCurve::EaseInEaseOut, 350.0));
+        }
+    });
+    let card = |w: ReadSignal<Waiting>| {
+        dynamic(move || {
+            let w = w.get();
+            let points = view().flex_row().items_center().gap(px(2.0)).child(star_icon(10.0)).child(bold(
+                w.points.to_string(),
+                10.0,
+                0xffffff,
+            ));
+            Some(
+                view()
+                    .items_center()
+                    .gap(px(2.0))
+                    .px(px(4.0))
+                    .pt(px(4.0))
+                    .pb(px(2.0))
+                    .rounded(px(12.0))
+                    .bg(hexa(0x000000, 0.45))
+                    .child(avatar(w.id, &w.name, 24.0, false))
+                    .child(points),
+            )
+        })
+    };
+    view().element_ref(&column).gap(px(6.0)).pt(px(6.0)).items_start().pointer_events(PointerEvents::None).child(each(
+        queue,
+        |w: &Waiting| w.id,
+        move |w, _| view().bind_motion(&motion().entering(MotionPreset::FadeInUp)).child(card(w)),
+    ))
+}
+
 /// A player's chip: color and initial, name, and their points, resources,
 /// knight tokens and mana.
 fn player_chip(g: &Game, p: &kings_cove_engine::Player, me: bool, active: bool) -> View {
-    let color = palette::player(p.id);
     let cards = p.cards.knights;
-    let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    let color = palette::player(p.id);
     let stats = view()
         .flex_row()
         .items_center()
@@ -311,17 +386,7 @@ fn player_chip(g: &Game, p: &kings_cove_engine::Player, me: bool, active: bool) 
         .bg(hexa(palette::PAPER, if active { 1.0 } else { 0.8 }))
         .border_2()
         .border_color(hex(if active { palette::GOLD } else { palette::PAPER_DIM }))
-        .child(
-            view()
-                .size(px(28.0))
-                .rounded(px(14.0))
-                .items_center()
-                .justify_center()
-                .bg(hex(color))
-                .border_2()
-                .border_color(hex(if active { palette::GOLD } else { 0xffffff }))
-                .child(bold(initial, 13.0, palette::ink_on(color))),
-        )
+        .child(avatar(p.id, &p.name, 28.0, active))
         .child(
             view()
                 .gap(px(1.0))
@@ -359,6 +424,7 @@ fn players_bar(app: AppState) -> impl IntoElement {
                     .on_press(move || app.players_open.update(|o| *o = !*o)),
             )
         }))
+        .child(turn_queue(app))
         // Out of the column's flow, so opening it moves nothing else; made
         // once per opening, so it slides in only then.
         .child(when(app.players_open, move || {
@@ -1441,6 +1507,7 @@ fn bottom(app: AppState) -> impl IntoElement {
             }),
         ))
         .child(reaction_picker(app))
+        .child(recenter_button(app))
         .child(view().pointer_events(PointerEvents::BoxNone).child(action_bar(app)).child(dynamic(move || {
             let view_ = app.view.get()?;
             let g = view_.game.as_ref()?;
@@ -1474,6 +1541,21 @@ fn bottom(app: AppState) -> impl IntoElement {
                     ),
             )
         })))
+}
+
+/// Left, over the action strip, while the board is zoomed in on a tile:
+/// back to the whole island.
+fn recenter_button(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        app.focus.get()?;
+        Some(
+            pill("Recenter", palette::PAPER, palette::INK, true, move || app.look_at(None))
+                .self_start()
+                .ml(px(8.0))
+                .shadow_md()
+                .bind_motion(&motion().entering(MotionPreset::FadeInUp)),
+        )
+    })
 }
 
 fn winner(app: AppState) -> impl IntoElement {
@@ -1552,12 +1634,12 @@ fn menu_button(app: AppState) -> View {
             .fill()
     })
     .size(px(28.0));
-    round_button(true, move || app.menu.set(Menu::Open)).child(gear)
+    round_button(move || app.menu.set(Menu::Open)).child(gear)
 }
 
 /// A round button the main button's height, on either side of it.
-fn round_button(enabled: bool, on: impl Fn() + 'static) -> View {
-    let v = view()
+fn round_button(on: impl Fn() + 'static) -> View {
+    view()
         .size(px(52.0))
         .rounded(px(26.0))
         .items_center()
@@ -1566,26 +1648,20 @@ fn round_button(enabled: bool, on: impl Fn() + 'static) -> View {
         .border_2()
         .border_color(hex(palette::PAPER_DIM))
         .shadow_md()
-        .opacity(if enabled { 1.0 } else { 0.4 });
-    if enabled { v.active(|s| s.opacity(0.7).scale(0.94)).on_press(on) } else { v }
+        .active(|s| s.opacity(0.7).scale(0.94))
+        .on_press(on)
 }
 
-/// The round button across from the menu: it opens the reactions, and rests
-/// through the cooldown after one is sent.
-fn reaction_button(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let ready = app.react_ready.get();
-        Some(
-            round_button(ready, move || app.reactions_open.update(|o| *o = !*o))
-                .child(text(Reaction::Laugh.emoji()).text_size(px(24.0))),
-        )
-    })
+/// The round button across from the menu: it opens the reactions.
+fn reaction_button(app: AppState) -> View {
+    round_button(move || app.reactions_open.update(|o| *o = !*o))
+        .child(text(Reaction::Laugh.emoji()).text_size(px(24.0)))
 }
 
 /// The reactions to pick from, over the dock.
 fn reaction_picker(app: AppState) -> impl IntoElement {
     dynamic(move || {
-        if !app.reactions_open.get() || !app.react_ready.get() {
+        if !app.reactions_open.get() {
             return None;
         }
         let choices: Vec<View> = Reaction::ALL
@@ -1626,16 +1702,25 @@ fn reactions_layer(app: AppState) -> impl IntoElement {
             let r = r.get_untracked();
             let color = palette::player(r.seat);
             let who = app.view.with_untracked(|v| v.as_ref().map(|v| name(&v.players, r.seat))).unwrap_or_default();
+            // A card in the sender's color pops in; the emoji in it does a
+            // little dance and keeps bobbing while it shows.
+            let emoji = view().bind_motion(&motion().entering(MotionPreset::Float)).child(
+                text(r.reaction.emoji()).text_size(px(56.0)).bind_motion(&motion().entering(MotionPreset::Tada)),
+            );
             view()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(4.0))
+                .px(px(18.0))
+                .pt(px(12.0))
+                .pb(px(10.0))
+                .rounded(px(24.0))
+                .bg(hex(color))
+                .border_2()
+                .border_color(hex(0xffffff))
+                .shadow_lg()
                 .bind_motion(&motion().entering(MotionPreset::PopIn))
-                .child(text(r.reaction.emoji()).text_size(px(64.0)))
-                .child(view().px(px(10.0)).py(px(3.0)).rounded(px(10.0)).bg(hex(color)).child(bold(
-                    who,
-                    13.0,
-                    palette::ink_on(color),
-                )))
+                .child(emoji)
+                .child(bold(who, 13.0, palette::ink_on(color)))
         },
     );
     view()

@@ -3,6 +3,7 @@
 //! | Request | Body | Answer |
 //! |---|---|---|
 //! | `POST /create` | [`CreateRequest`] | [`Session`] |
+//! | `POST /practice` (debug servers only) | [`CreateRequest`] | [`Session`] of a started match against a rival the server plays |
 //! | `POST /join` | [`JoinRequest`] | [`Session`] |
 //! | `POST /configure` | [`ConfigureRequest`] (the host's, in the lobby) | [`MatchView`] |
 //! | `POST /start` | [`SessionRequest`] | [`MatchView`] |
@@ -18,8 +19,6 @@ use serde::{Deserialize, Serialize};
 
 /// How long `/poll` holds a request open with no change, in seconds.
 pub const POLL_SECONDS: u64 = 20;
-/// How long a seat waits between reactions, in seconds.
-pub const REACTION_COOLDOWN_SECONDS: u64 = 10;
 /// How many recent reactions a [`MatchView`] carries.
 pub const RECENT_REACTIONS: usize = 8;
 
@@ -71,7 +70,7 @@ impl Reaction {
     }
 }
 
-/// A seat reacts, at most once every [`REACTION_COOLDOWN_SECONDS`].
+/// A seat reacts.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReactRequest {
     pub code: String,

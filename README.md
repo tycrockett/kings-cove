@@ -34,6 +34,13 @@ In a match, **Menu** opens *How to play* (every rule and piece; also on the home
 gives up its seat; the match goes on) and, for the host, *End match for everyone*. Tapping an item in the build tray
 shows what it does and its price before buying it, and tapping an attack target shows the outcome before it is made.
 
+To try the client alone, run a debug server and a debug client (`cargo run` builds both that way) and tap **Practice
+alone (dev)** on the home screen. It starts a match against *Rival*, whom the server plays: it declines trades, and on
+its turns it only rolls and passes, so play comes straight back to you. The match starts on your first turn. Setup is
+already done, your first town is a castle, you have 12 of each resource and 2 knight tokens, and each side has two
+knights on the board, one of Rival's next to one of yours. Release builds have neither the button nor the server's
+`/practice` endpoint.
+
 Server settings: `KC_ADDR` (listen address), `KC_DATA` (data file). Client build setting: `KC_SERVER_URL`, the server a
 fresh install talks to (default `http://127.0.0.1:8787`). On a desktop, `KC_DATA_DIR=<dir>` gives a window its own
 storage, so several local windows each take their own seat.
@@ -133,9 +140,11 @@ Costs (all in `engine/src/balance.rs`):
 - Tap one of your ready units (gold dot) to see gold moves and red attacks.
 - Tap any tile, building or road to inspect it. The dark strip over the dock shows what to do, or the latest action,
   and your points; tap it for the event history.
+- Tapping a tile or a unit zooms in on it and the two rings of tiles around it; **Recenter**, at the left over the dark
+  strip, zooms back out. Tapping that tile again, the sea, building something or moving a knight zooms back out too.
 - The chip at the top left is the player whose turn it is; tap it to see everyone's points, resources, knight tokens
   and mana.
-- The smiley left of the main button sends a reaction everyone sees in the middle of the screen, once every 10 seconds.
+- The smiley left of the main button sends a reaction everyone sees in the middle of the screen.
 
 ## Test
 

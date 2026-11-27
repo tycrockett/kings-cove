@@ -2,10 +2,12 @@
 //! Every client request comes through [`Store`], which checks the seat's
 //! token and lets the engine validate the action.
 
+pub mod practice;
+
 use std::collections::BTreeMap;
 
 use kings_cove_engine::{Action, Game, PlayerId, Rng, balance, balance::MapSize};
-use kings_cove_protocol::{MatchView, REACTION_COOLDOWN_SECONDS, RECENT_REACTIONS, Reaction, SentReaction, Session};
+use kings_cove_protocol::{MatchView, RECENT_REACTIONS, Reaction, SentReaction, Session};
 use serde::{Deserialize, Serialize};
 
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -17,6 +19,9 @@ const MAX_NAME: usize = 16;
 pub struct Seat {
     pub name: String,
     pub token: String,
+    /// The server plays this seat: a practice match's rival.
+    #[serde(default)]
+    pub bot: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,9 +49,6 @@ pub struct Match {
     /// still tell the next reaction from ones they saw.
     #[serde(default)]
     reaction_seq: u64,
-    /// When each seat last reacted (server milliseconds), for the cooldown.
-    #[serde(skip)]
-    last_reaction: BTreeMap<u8, u64>,
 }
 
 /// The goal of matches saved before goals could be chosen.
@@ -80,6 +82,15 @@ impl Match {
             reactions: self.reactions.clone(),
         }
     }
+
+    /// The seats the server plays take their turns.
+    fn play_bots(&mut self) {
+        let bots: Vec<PlayerId> =
+            self.seats.iter().enumerate().filter(|(_, s)| s.bot).map(|(i, _)| PlayerId(i as u8)).collect();
+        if let Some(game) = self.game.as_mut().filter(|_| !bots.is_empty()) {
+            practice::play_rivals(game, &bots, &mut self.rng);
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,15 +120,37 @@ impl Store {
 
     pub fn create(&mut self, name: &str) -> Result<Session, String> {
         let name = clean_name(name)?;
-        let code = self.new_code();
         let token = self.token();
-        let rng = Rng::new(self.rng.next_u64());
+        let code = self.open(vec![Seat { name, token: token.clone(), bot: false }], None);
+        Ok(Session { code, token, seat: PlayerId(0) })
+    }
+
+    /// A started match against [`practice::RIVAL`], whom the server plays,
+    /// dealt into the middle of a game: for trying the client alone.
+    pub fn practice(&mut self, name: &str) -> Result<Session, String> {
+        let name = clean_name(name)?;
+        let token = self.token();
+        let mut rng = Rng::new(self.rng.next_u64());
+        let game = practice::game(&name, &mut rng);
+        let rival = Seat { name: practice::RIVAL.to_owned(), token: self.token(), bot: true };
+        let code = self.open(vec![Seat { name, token: token.clone(), bot: false }, rival], Some((game, rng)));
+        Ok(Session { code, token, seat: PlayerId(0) })
+    }
+
+    /// A new match of `seats` under a fresh code, its game already dealt
+    /// with the randomness it goes on with, or still in the lobby.
+    fn open(&mut self, seats: Vec<Seat>, started: Option<(Game, Rng)>) -> String {
+        let code = self.new_code();
+        let (game, rng) = match started {
+            Some((game, rng)) => (Some(game), rng),
+            None => (None, Rng::new(self.rng.next_u64())),
+        };
         self.matches.insert(
             code.clone(),
             Match {
                 code: code.clone(),
-                seats: vec![Seat { name, token: token.clone() }],
-                game: None,
+                seats,
+                game,
                 rng,
                 version: 1,
                 ended: false,
@@ -125,10 +158,9 @@ impl Store {
                 map_size: MapSize::default(),
                 reactions: Vec::new(),
                 reaction_seq: 0,
-                last_reaction: BTreeMap::new(),
             },
         );
-        Ok(Session { code, token, seat: PlayerId(0) })
+        code
     }
 
     pub fn join(&mut self, code: &str, name: &str) -> Result<Session, String> {
@@ -148,7 +180,7 @@ impl Store {
         if m.seats.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
             return Err("That name is taken in this match".to_owned());
         }
-        m.seats.push(Seat { name, token: token.clone() });
+        m.seats.push(Seat { name, token: token.clone(), bot: false });
         m.version += 1;
         Ok(Session { code, token, seat: PlayerId(m.seats.len() as u8 - 1) })
     }
@@ -182,6 +214,7 @@ impl Store {
         }
         let game = m.game.as_mut().ok_or("The match has not started")?;
         game.apply(seat, action, &mut m.rng).map_err(|e| e.to_string())?;
+        m.play_bots();
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -218,18 +251,13 @@ impl Store {
         Ok(m.view(seat))
     }
 
-    /// A seat sends a quick reaction, lobby or game, at most one per cooldown.
-    pub fn react(&mut self, code: &str, token: &str, reaction: Reaction, now_ms: u64) -> Result<MatchView, String> {
+    /// A seat sends a quick reaction, lobby or game.
+    pub fn react(&mut self, code: &str, token: &str, reaction: Reaction) -> Result<MatchView, String> {
         let m = self.matches.get_mut(code).ok_or("No match with that code")?;
         let seat = m.seat_of(token)?;
         if m.ended {
             return Err(ENDED.to_owned());
         }
-        let cooldown_ms = REACTION_COOLDOWN_SECONDS * 1000;
-        if m.last_reaction.get(&seat.0).is_some_and(|&at| now_ms.saturating_sub(at) < cooldown_ms) {
-            return Err("Wait a moment before reacting again".to_owned());
-        }
-        m.last_reaction.insert(seat.0, now_ms);
         m.reaction_seq += 1;
         m.reactions.push(SentReaction { seq: m.reaction_seq, seat, reaction });
         if m.reactions.len() > RECENT_REACTIONS {
@@ -353,36 +381,31 @@ mod tests {
     }
 
     #[test]
-    fn reactions_are_rate_limited_numbered_and_trimmed() {
+    fn reactions_are_numbered_and_trimmed() {
         let mut store = Store::new(9);
         let host = store.create("Ada").unwrap();
         let guest = store.join(&host.code, "Bo").unwrap();
-        let cooldown = REACTION_COOLDOWN_SECONDS * 1000;
-        let first = store.react(&host.code, &host.token, Reaction::ALL[0], 1_000).unwrap();
+        let first = store.react(&host.code, &host.token, Reaction::ALL[0]).unwrap();
         assert_eq!(first.reactions, vec![SentReaction { seq: 1, seat: PlayerId(0), reaction: Reaction::ALL[0] }]);
-        assert!(store.react(&host.code, &host.token, Reaction::ALL[1], 1_000 + cooldown - 1).is_err(), "cooling down");
-        assert!(store.react(&host.code, "forged", Reaction::ALL[1], 1_000).is_err());
-        // Another seat has its own cooldown, and sees the first reaction.
+        assert!(store.react(&host.code, "forged", Reaction::ALL[1]).is_err());
         let before = store.version(&host.code).unwrap();
-        let seen = store.react(&host.code, &guest.token, Reaction::ALL[1], 1_001).unwrap();
+        let seen = store.react(&host.code, &guest.token, Reaction::ALL[1]).unwrap();
         assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
         assert_eq!(
             seen.reactions.iter().map(|r| (r.seq, r.seat)).collect::<Vec<_>>(),
             [(1, PlayerId(0)), (2, PlayerId(1))]
         );
         assert_eq!(store.view(&host.code, &host.token).unwrap().reactions, seen.reactions);
-        // Past the cooldown the host may react again; only the latest are kept.
-        let mut now = 1_000;
+        // A seat may react again at once; only the latest are kept.
         for _ in 0..RECENT_REACTIONS + 2 {
-            now += cooldown;
-            store.react(&host.code, &host.token, Reaction::ALL[2], now).unwrap();
+            store.react(&host.code, &host.token, Reaction::ALL[2]).unwrap();
         }
         let kept = store.view(&host.code, &guest.token).unwrap().reactions;
         assert_eq!(kept.len(), RECENT_REACTIONS);
         assert_eq!(kept.last().unwrap().seq, RECENT_REACTIONS as u64 + 4);
         assert!(kept.windows(2).all(|w| w[1].seq == w[0].seq + 1), "oldest first");
         store.end(&host.code, &host.token).unwrap();
-        assert!(store.react(&host.code, &guest.token, Reaction::ALL[0], now + cooldown).is_err(), "not once ended");
+        assert!(store.react(&host.code, &guest.token, Reaction::ALL[0]).is_err(), "not once ended");
     }
 
     #[test]
@@ -395,5 +418,28 @@ mod tests {
         let saved = serde_json::to_string(&store).unwrap();
         let restored: Store = serde_json::from_str(&saved).unwrap();
         assert_eq!(restored.view(&host.code, &host.token).unwrap(), store.view(&host.code, &host.token).unwrap());
+    }
+
+    #[test]
+    fn a_practice_match_starts_mid_game_and_its_rival_passes_straight_back() {
+        for seed in 0..20 {
+            let mut store = Store::new(seed);
+            let me = store.practice("Ada").unwrap();
+            let game = store.view(&me.code, &me.token).unwrap().game.unwrap();
+            assert_eq!((game.phase, game.current, game.dice), (Phase::Playing, PlayerId(0), None));
+            assert!(game.has_city(PlayerId(0)));
+            for p in [PlayerId(0), PlayerId(1)] {
+                let knights: Vec<_> = game.units.iter().filter(|u| u.owner == p).collect();
+                assert_eq!(knights.len(), 2, "seed {seed}");
+                assert!(knights.iter().all(|u| u.ready == (p == PlayerId(0))));
+            }
+            let mine = game.units.iter().find(|u| u.owner == PlayerId(0)).unwrap().tile;
+            let theirs = game.units.iter().find(|u| u.owner == PlayerId(1)).unwrap().tile;
+            assert!(game.board.are_adjacent(mine, theirs), "seed {seed}: a rival knight to attack");
+
+            store.act(&me.code, &me.token, Action::Roll).unwrap();
+            let passed = store.act(&me.code, &me.token, Action::EndTurn).unwrap().game.unwrap();
+            assert_eq!((passed.current, passed.round, passed.dice), (PlayerId(0), 2, None), "seed {seed}");
+        }
     }
 }

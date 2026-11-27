@@ -26,6 +26,8 @@ const HALF_SQRT3: f32 = 0.866_025_4;
 /// Space the HUD covers at the top and bottom, kept clear when fitting.
 const FIT_TOP: f32 = 118.0;
 const FIT_BOTTOM: f32 = 218.0;
+/// How long the camera takes to fly to a tile or back to the whole island.
+const FLY_MS: f64 = 180.0;
 
 // ----- Geometry -----
 
@@ -85,15 +87,37 @@ impl Camera {
         let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max) + S * 0.4;
         let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min) - S * 0.4;
         let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max) + S * 0.4;
-        let usable_h = (h - FIT_TOP - FIT_BOTTOM).max(h * 0.4);
+        let (top, usable_h) = clear_band(h);
         let scale = ((w - 16.0) / (max_x - min_x)).min(usable_h / (max_y - min_y)).max(0.05);
-        let top = if h - FIT_TOP - FIT_BOTTOM >= h * 0.4 { FIT_TOP } else { (h - usable_h) / 2.0 };
         Camera {
             x: w / 2.0 - (min_x + max_x) / 2.0 * scale,
             y: top + usable_h / 2.0 - (min_y + max_y) / 2.0 * scale,
             scale,
             fit: scale,
         }
+    }
+
+    /// Close on tile `t` in a `w` × `h` viewport, clear of the HUD: the tile
+    /// and two rings of tiles around it fill the view, never smaller than
+    /// the whole island.
+    pub fn focus(g: &Game, t: TileId, w: f32, h: f32) -> Camera {
+        let fit = Camera::fit(g, w, h).fit;
+        let (top, usable_h) = clear_band(h);
+        // Pointy-top hexes: five tiles across, and two rows of 1½ S plus a
+        // corner above and below the middle.
+        let (half_w, half_h) = (5.0 * HALF_SQRT3 * S + 0.2 * S, 4.2 * S);
+        let scale = ((w - 16.0) / (2.0 * half_w)).min(usable_h / (2.0 * half_h)).clamp(fit, fit * 4.0);
+        let (cx, cy) = tile_pos(g, t);
+        Camera { x: w / 2.0 - cx * scale, y: top + usable_h / 2.0 - cy * scale, scale, fit }
+    }
+
+    /// The camera `k` (0..1) of the way to `to`: the world point at the
+    /// screen point `anchor` slides straight while the scale changes evenly.
+    fn toward(self, to: Camera, k: f32, anchor: (f32, f32)) -> Camera {
+        let (a, b) = (self.to_world(anchor.0, anchor.1), to.to_world(anchor.0, anchor.1));
+        let scale = self.scale * (to.scale / self.scale).powf(k);
+        let (wx, wy) = lerp(a, b, k);
+        Camera { x: anchor.0 - wx * scale, y: anchor.1 - wy * scale, scale, fit: to.fit }
     }
 
     /// Zooms by `factor` keeping the screen point `(sx, sy)` still.
@@ -104,6 +128,23 @@ impl Camera {
         self.y = sy - (sy - self.y) * f;
         self.scale = next;
     }
+}
+
+/// The band of an `h`-tall viewport the HUD leaves clear: its top and height.
+fn clear_band(h: f32) -> (f32, f32) {
+    let usable_h = (h - FIT_TOP - FIT_BOTTOM).max(h * 0.4);
+    let top = if h - FIT_TOP - FIT_BOTTOM >= h * 0.4 { FIT_TOP } else { (h - usable_h) / 2.0 };
+    (top, usable_h)
+}
+
+/// The tile under the world point `p`, if it is on the island.
+fn tile_under(g: &Game, p: (f32, f32)) -> Option<TileId> {
+    g.board
+        .tile_ids()
+        .map(|t| (dist(tile_pos(g, t), p), t))
+        .filter(|(d, _)| *d <= S)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, t)| t)
 }
 
 // ----- What a tap can do -----
@@ -619,6 +660,19 @@ pub fn draw_pieces(s: &Scene) -> Painter {
         }
     }
 
+    // Tile outlines: the tile looked at, and a two-tile spell's first pick.
+    // Under the roads and buildings, and set out past the roads on the
+    // tile's sides so they stay in sight.
+    let outline = |t: TileId| hex_points(tile_pos(g, t), S * 1.14);
+    if let Mode::Cast(spell, Some(t)) = s.mode {
+        let (_, _, glow) = art::spell_colors(spell);
+        p = poly(p, &outline(t)).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
+        p = poly(p, &outline(t)).stroke_color(hex(0xffffff)).line_width(2.0 * px1).stroke();
+    }
+    if let Some(Inspect::Tile(t)) = s.inspect {
+        p = poly(p, &outline(t)).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
+    }
+
     // Roads.
     for (i, owner) in g.roads.iter().enumerate() {
         if let Some(owner) = owner {
@@ -728,23 +782,15 @@ pub fn draw_pieces(s: &Scene) -> Painter {
             p = art::bandit(p.global_alpha(0.45), piece_pos(g, t), 0.22 * S, 1.6 * px1).global_alpha(1.0);
         }
     }
-    // A two-tile spell's first pick.
-    if let Mode::Cast(spell, Some(t)) = s.mode {
-        let (_, _, glow) = art::spell_colors(spell);
-        p = poly(p, &hex_points(tile_pos(g, t), S * 0.9)).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
-        p = poly(p, &hex_points(tile_pos(g, t), S * 0.9)).stroke_color(hex(0xffffff)).line_width(2.0 * px1).stroke();
-    }
 
-    // What the player is looking at.
-    if let Some(i) = s.inspect {
-        p = match i {
-            Inspect::Tile(t) => poly(p, &hex_points(tile_pos(g, t), S * 0.95)),
-            Inspect::Vertex(v) => circle(p, vertex_pos(g, v), 0.4 * S),
-            Inspect::Edge(e) => circle(p, edge_mid(g, e), 0.26 * S),
-        }
-        .stroke_color(hex(0xffffff))
-        .line_width(3.0 * px1)
-        .stroke();
+    // The building or road looked at.
+    let ring = match s.inspect {
+        Some(Inspect::Vertex(v)) => Some((vertex_pos(g, v), 0.4 * S)),
+        Some(Inspect::Edge(e)) => Some((edge_mid(g, e), 0.26 * S)),
+        Some(Inspect::Tile(_)) | None => None,
+    };
+    if let Some((at, r)) = ring {
+        p = circle(p, at, r).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
     }
 
     // Effects, at screen size whatever the zoom.
@@ -1278,14 +1324,31 @@ pub fn board_view(app: AppState) -> impl IntoElement {
     let size = signal((0.0_f32, 0.0_f32));
     let cam = signal(None::<Camera>);
     let gesture = stored(Gesture::default());
-
-    // Fit the board when the viewport first knows its size or changes it.
-    let refit = move || {
+    let owner = Owner::current();
+    // The camera's flight to where it belongs, while it lasts.
+    let flight = stored(None::<Spawned<()>>);
+    let land = move || {
+        if let Some(f) = flight.replace(None) {
+            f.cancel();
+        }
+    };
+    // Where the camera belongs: close on the focused tile, else the whole
+    // island.
+    let goal = move || {
         let (w, h) = size.get_untracked();
-        if w > 0.0
-            && let Some(g) = app.game()
-        {
-            cam.set(Some(Camera::fit(&g, w, h)));
+        let g = app.game().filter(|_| w > 0.0)?;
+        Some(match app.focus.get_untracked() {
+            Some(t) => Camera::focus(&g, t, w, h),
+            None => Camera::fit(&g, w, h),
+        })
+    };
+
+    // Put the camera where it belongs when the viewport first knows its
+    // size or changes it.
+    let refit = move || {
+        land();
+        if let Some(c) = goal() {
+            cam.set(Some(c));
         }
     };
     // Fit once the first game state arrives.
@@ -1295,12 +1358,43 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             untracked(refit);
         }
     });
+    // Glide there whenever the focus is written, even unchanged: the player
+    // may have panned away from it.
+    let fly = move || {
+        land();
+        let (Some(from), Some(to)) = (cam.get_untracked(), goal()) else { return };
+        let (w, h) = size.get_untracked();
+        let (top, usable_h) = clear_band(h);
+        let anchor = (w / 2.0, top + usable_h / 2.0);
+        let start = now_ms();
+        let task = owner.run(|| {
+            spawn(async move {
+                loop {
+                    next_frame().await;
+                    let k = ((now_ms() - start) / FLY_MS).min(1.0) as f32;
+                    cam.set(Some(if k < 1.0 { from.toward(to, ease_out(k), anchor) } else { to }));
+                    if k >= 1.0 {
+                        break;
+                    }
+                }
+            })
+        });
+        flight.replace(Some(task));
+    };
+    let first = stored(true);
+    effect(move || {
+        app.focus.with(|_| ());
+        if !first.replace(false) {
+            untracked(fly);
+        }
+    });
 
     let tap = move |sx: f32, sy: f32| {
         let (Some(g), Some(seat), Some(c)) = (app.game(), app.seat(), cam.get_untracked()) else {
             return;
         };
-        match resolve_tap(&g, seat, app.mode.get_untracked(), c.to_world(sx, sy)) {
+        let p = c.to_world(sx, sy);
+        match resolve_tap(&g, seat, app.mode.get_untracked(), p) {
             Tap::Act(action, next) => {
                 app.inspect.set(None);
                 app.mode.set(next);
@@ -1309,6 +1403,8 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             Tap::Select(mode) => {
                 app.inspect.set(None);
                 app.mode.set(mode);
+                // Tapping the selected knight again lets it go: back out.
+                app.look_at(if mode == Mode::Idle { None } else { tile_under(&g, p) });
             }
             Tap::Confirm(action) => {
                 app.inspect.set(None);
@@ -1326,12 +1422,27 @@ pub fn board_view(app: AppState) -> impl IntoElement {
                 ) {
                     app.mode.set(Mode::Idle);
                 }
-                app.inspect.set(if app.inspect.get_untracked() == i { None } else { i });
+                // Tapping the tile looked at or zoomed in on again lets it
+                // go and shows the whole island.
+                let again = match i {
+                    Some(Inspect::Tile(t)) => app.inspect.get_untracked() == i || app.focus.get_untracked() == Some(t),
+                    _ => false,
+                };
+                if again {
+                    app.inspect.set(None);
+                    app.look_at(None);
+                } else {
+                    app.inspect.set(if app.inspect.get_untracked() == i { None } else { i });
+                    app.look_at(tile_under(&g, p));
+                }
             }
         }
     };
 
     let on_touch = move |e: &TouchEvent| {
+        if e.phase == TouchPhase::Start {
+            land();
+        }
         let ended = matches!(e.phase, TouchPhase::End | TouchPhase::Cancel);
         let now: Vec<(u32, (f32, f32))> = e
             .points
@@ -1441,6 +1552,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         }
     })
     .on_wheel(move |e: &WheelEvent| {
+        land();
         let (sx, sy) = (e.position.x.0, e.position.y.0);
         cam.update(|c| {
             let Some(c) = c else { return };
@@ -1455,6 +1567,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         });
     })
     .on_pinch(move |e: &PinchEvent| {
+        land();
         let (sx, sy) = (e.position.x.0, e.position.y.0);
         cam.update(|c| {
             if let Some(c) = c {
