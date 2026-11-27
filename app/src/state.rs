@@ -22,8 +22,14 @@ use crate::{
 };
 use nsh_core::platform::Lifecycle;
 
-/// How far behind the game queued effects may fall before they are dropped.
-const MAX_BACKLOG_MS: f64 = 4000.0;
+/// How far behind the game queued effects may fall before they are dropped:
+/// room for a turn passing, played move by move, and the next one's banner.
+const MAX_BACKLOG_MS: f64 = 10_000.0;
+/// The longest one of another player's moves (or a bandit's, as the round
+/// ends) holds the board before the next one plays (ms).
+const MOVE_STEP_MS: f64 = 450.0;
+/// The pause between the board settling and the next turn's banner (ms).
+const SETTLE_MS: f64 = 250.0;
 /// The clock's period while something animates: every display frame, up to
 /// 60 a second (a 120 Hz screen gets every other one).
 const FRAME_MS: u64 = 16;
@@ -497,8 +503,9 @@ impl AppState {
         }
     }
 
-    /// Schedules what `events` show, one beat after another: a turn's
-    /// banner, then the dice, then the tiles they hit and what they yield.
+    /// Schedules what `events` show, one beat after another: the dice, the
+    /// tiles they hit and what they yield, each move on the board, and only
+    /// once the board has settled, the next turn's banner.
     fn animate(&self, before: Option<&Game>, after: &Game, seat: PlayerId, names: &[String], events: &[Event]) {
         let now = now_ms();
         // Catching up on several turns at once, only the latest is worth showing.
@@ -539,6 +546,15 @@ impl AppState {
             self.dice_until.replace(now);
             cursor = now;
         }
+        // The player's own moves show at once. Anyone else's, and what the
+        // round's end does (bandits wander, items come and go), play one
+        // after another so each can be followed.
+        let own = before.is_some_and(|b| b.current == seat)
+            && after.current == seat
+            && !events.iter().any(|e| matches!(e, Event::TurnStarted { .. }));
+        // A turn's banner waits for the board to settle, so it hides none of it.
+        let queued = self.anims.with_untracked(|a| a.iter().map(Anim::end).fold(0.0, f64::max));
+        let calm = |anims: &[Anim]| anims.iter().map(Anim::end).fold(queued, f64::max) + SETTLE_MS;
         // When this batch's tiles light up, and how many badges each has had.
         let mut harvest = cursor;
         let mut badges: Vec<(TileId, u32)> = Vec::new();
@@ -607,7 +623,7 @@ impl AppState {
                     }
                 }
                 Event::TurnStarted { player, round } => {
-                    let b = banner(player, round, cursor);
+                    let b = banner(player, round, cursor.max(calm(&anims)));
                     cursor = b.end() - 300.0;
                     effects.push(b);
                 }
@@ -652,12 +668,18 @@ impl AppState {
                     let kind = AnimKind::Gain { tile, resource, amount, color, mine: player == seat, slot: 0, of: 1 };
                     anims.push(Anim { start: cursor, dur: board::GAIN_MS, kind });
                 }
-                _ => anims.extend(board::anims_for(after, event, cursor)),
+                _ => {
+                    let shown = board::anims_for(after, event, cursor);
+                    if !own && let Some(lead) = shown.first() {
+                        cursor += lead.dur.min(MOVE_STEP_MS);
+                    }
+                    anims.extend(shown);
+                }
             }
         }
         // Setup turns pass without a TurnStarted.
         if matches!(after.phase, Phase::Setup { .. }) && before.is_none_or(|b| b.current != after.current) {
-            let b = banner(after.current, 0, cursor + 250.0);
+            let b = banner(after.current, 0, (cursor + 250.0).max(calm(&anims)));
             cursor = b.end() - 300.0;
             effects.push(b);
         }
