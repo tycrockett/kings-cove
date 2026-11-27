@@ -2,18 +2,20 @@
 //!
 //! `KC_ADDR` (default `0.0.0.0:8787`) is where it listens; `KC_DATA`
 //! (default `kings-cove-data.json`) is where matches are saved after every
-//! change, so a restarted server resumes them.
+//! change, so a restarted server resumes them. Once a second it withdraws
+//! bot trade offers nobody answered in time.
 
 use std::{
     collections::hash_map::RandomState,
     hash::{BuildHasher, Hasher},
     io::Read,
     sync::{Arc, Condvar, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use kings_cove_protocol::{
-    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, POLL_SECONDS, ReactRequest, SessionRequest,
+    ActionRequest, AddBotRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, POLL_SECONDS, ReactRequest,
+    SessionRequest,
 };
 use kings_cove_server::Store;
 use serde::{Serialize, de::DeserializeOwned};
@@ -33,6 +35,19 @@ fn main() {
         Err(_) => Store::new(random_seed()),
     };
     let shared = Arc::new(Shared { store: Mutex::new(store), changed: Condvar::new(), data_path });
+    let ticker = shared.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+            let mut store = ticker.store.lock().expect("store lock");
+            if store.expire_bot_offers(now) {
+                save(&ticker, &store);
+                drop(store);
+                ticker.changed.notify_all();
+            }
+        }
+    });
     let server = Server::http(&addr).unwrap_or_else(|e| panic!("listen on {addr}: {e}"));
     println!("King's Cove server listening on http://{addr}");
     for request in server.incoming_requests() {
@@ -44,7 +59,7 @@ fn main() {
 /// Server entropy: never from a client.
 fn random_seed() -> u64 {
     let mut h = RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u128(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
     h.finish()
 }
 
@@ -74,6 +89,9 @@ fn handle(shared: &Shared, mut request: Request) {
         (Method::Post, "/join") => with_body(&body, |r: JoinRequest| mutate(shared, |s| s.join(&r.code, &r.name))),
         (Method::Post, "/start") => {
             with_body(&body, |r: SessionRequest| mutate(shared, |s| s.start(&r.code, &r.token)))
+        }
+        (Method::Post, "/add-bot") => {
+            with_body(&body, |r: AddBotRequest| mutate(shared, |s| s.add_bot(&r.code, &r.token, r.style)))
         }
         (Method::Post, "/action") => {
             with_body(&body, |r: ActionRequest| mutate(shared, |s| s.act(&r.code, &r.token, r.action)))
@@ -115,8 +133,16 @@ fn with_body<T: DeserializeOwned>(body: &str, f: impl FnOnce(T) -> Answer) -> An
 fn mutate<T: Serialize>(shared: &Shared, f: impl FnOnce(&mut Store) -> Result<T, String>) -> Answer {
     let mut store = shared.store.lock().expect("store lock");
     let value = f(&mut store).map_err(|e| (409, e))?;
-    match serde_json::to_string(&*store) {
-        // Written aside, then renamed: a crash mid-write never leaves a torn file.
+    save(shared, &store);
+    drop(store);
+    shared.changed.notify_all();
+    Ok(serde_json::to_string(&value).expect("json"))
+}
+
+/// Writes the store aside, then renames it over the data file: a crash
+/// mid-write never leaves a torn file.
+fn save(shared: &Shared, store: &Store) {
+    match serde_json::to_string(store) {
         Ok(saved) => {
             let tmp = format!("{}.tmp", shared.data_path);
             if let Err(e) = std::fs::write(&tmp, saved).and_then(|()| std::fs::rename(&tmp, &shared.data_path)) {
@@ -125,9 +151,6 @@ fn mutate<T: Serialize>(shared: &Shared, f: impl FnOnce(&mut Store) -> Result<T,
         }
         Err(e) => eprintln!("serialize store: {e}"),
     }
-    drop(store);
-    shared.changed.notify_all();
-    Ok(serde_json::to_string(&value).expect("json"))
 }
 
 fn poll(shared: &Shared, query: &str) -> Answer {

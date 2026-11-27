@@ -6,6 +6,7 @@
 //! | `POST /practice` (debug servers only) | [`CreateRequest`] | [`Session`] of a started match against a rival the server plays |
 //! | `POST /join` | [`JoinRequest`] | [`Session`] |
 //! | `POST /configure` | [`ConfigureRequest`] (the host's, in the lobby) | [`MatchView`] |
+//! | `POST /add-bot` | [`AddBotRequest`] (the host's, in the lobby) | [`MatchView`], a bot the server plays seated |
 //! | `POST /start` | [`SessionRequest`] | [`MatchView`] |
 //! | `POST /action` | [`ActionRequest`] | [`MatchView`] |
 //! | `POST /react` | [`ReactRequest`] | [`MatchView`] |
@@ -14,7 +15,7 @@
 //!
 //! Failures answer a 4xx status with an [`ErrorBody`].
 
-use kings_cove_engine::{Action, Game, PlayerId, balance::MapSize};
+use kings_cove_engine::{Action, Game, PlayerId, balance::MapSize, bot::Style};
 use serde::{Deserialize, Serialize};
 
 /// How long `/poll` holds a request open with no change, in seconds.
@@ -40,6 +41,15 @@ pub struct ConfigureRequest {
     pub victory_points: Option<u32>,
     #[serde(default)]
     pub map_size: Option<MapSize>,
+}
+
+/// The host seats a bot of `style` before starting the match.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddBotRequest {
+    pub code: String,
+    pub token: String,
+    #[serde(default)]
+    pub style: Style,
 }
 
 /// The fixed set of reactions a player may send.

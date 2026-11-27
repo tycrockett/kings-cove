@@ -6,7 +6,11 @@ pub mod practice;
 
 use std::collections::BTreeMap;
 
-use kings_cove_engine::{Action, Game, PlayerId, Rng, balance, balance::MapSize};
+use kings_cove_engine::{
+    Action, Event, Game, PlayerId, Rng, balance,
+    balance::MapSize,
+    bot::{self, Style},
+};
 use kings_cove_protocol::{MatchView, RECENT_REACTIONS, Reaction, SentReaction, Session};
 use serde::{Deserialize, Serialize};
 
@@ -14,14 +18,30 @@ const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
 const ENDED: &str = "The host ended this match";
 const CODE_LEN: usize = 5;
 const MAX_NAME: usize = 16;
+/// How long a bot waits on a person to answer its trade offer before it
+/// withdraws it and plays on.
+pub const BOT_OFFER_MS: u64 = 30_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Seat {
     pub name: String,
     pub token: String,
-    /// The server plays this seat: a practice match's rival.
+    /// The server plays this seat: a bot the host added, or a practice
+    /// match's rival.
     #[serde(default)]
     pub bot: bool,
+    /// A practice rival: it only rolls and passes.
+    #[serde(default)]
+    pub passive: bool,
+    /// How a bot plays.
+    #[serde(default)]
+    pub style: Style,
+}
+
+impl Seat {
+    fn person(name: String, token: String) -> Seat {
+        Seat { name, token, bot: false, passive: false, style: Style::default() }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,6 +69,11 @@ pub struct Match {
     /// still tell the next reaction from ones they saw.
     #[serde(default)]
     reaction_seq: u64,
+    /// The bot trade offer waiting on a person: the `seq` of its proposal
+    /// and when the server first saw it, in Unix milliseconds. Not saved: a
+    /// restarted server gives the offer its full time again.
+    #[serde(skip)]
+    bot_offer: Option<(u64, u64)>,
 }
 
 /// The goal of matches saved before goals could be chosen.
@@ -83,13 +108,48 @@ impl Match {
         }
     }
 
-    /// The seats the server plays take their turns.
+    /// The seats the server plays answer the open trade offer, then take
+    /// their turns, until it is a person's turn, a person is to answer the
+    /// offer of the bot whose turn it is, or the game is over.
     fn play_bots(&mut self) {
-        let bots: Vec<PlayerId> =
-            self.seats.iter().enumerate().filter(|(_, s)| s.bot).map(|(i, _)| PlayerId(i as u8)).collect();
-        if let Some(game) = self.game.as_mut().filter(|_| !bots.is_empty()) {
-            practice::play_rivals(game, &bots, &mut self.rng);
+        let Match { seats, game, rng, .. } = self;
+        let Some(game) = game.as_mut() else {
+            return;
+        };
+        loop {
+            for (i, seat) in seats.iter().enumerate().filter(|(_, s)| s.bot) {
+                let p = PlayerId(i as u8);
+                if seat.passive {
+                    let _ = game.apply(p, Action::DeclineTrade, rng);
+                } else {
+                    bot::answer_trade(game, p, seat.style, rng);
+                }
+            }
+            let p = game.current;
+            let Some(seat) = seats.get(p.index()).filter(|s| s.bot) else {
+                break;
+            };
+            if game.winner().is_some() || game.trade.as_ref().is_some_and(|t| t.from == p) {
+                break;
+            }
+            let played = if seat.passive {
+                practice::pass_turn(game, p, rng)
+            } else {
+                bot::play_turn(game, p, seat.style, rng).map(|_| ())
+            };
+            if played.is_err() {
+                break;
+            }
         }
+    }
+
+    /// The open trade offer of a bot, and the `seq` of its proposal.
+    fn open_bot_offer(&self) -> Option<(PlayerId, u64)> {
+        let game = self.game.as_ref().filter(|_| !self.ended)?;
+        let from = game.trade.as_ref()?.from;
+        self.seats.get(from.index()).filter(|s| s.bot)?;
+        let proposed = game.events.iter().rev().find(|e| matches!(e.event, Event::TradeProposed { .. }))?;
+        Some((from, proposed.seq))
     }
 }
 
@@ -121,7 +181,7 @@ impl Store {
     pub fn create(&mut self, name: &str) -> Result<Session, String> {
         let name = clean_name(name)?;
         let token = self.token();
-        let code = self.open(vec![Seat { name, token: token.clone(), bot: false }], None);
+        let code = self.open(vec![Seat::person(name, token.clone())], None);
         Ok(Session { code, token, seat: PlayerId(0) })
     }
 
@@ -132,8 +192,15 @@ impl Store {
         let token = self.token();
         let mut rng = Rng::new(self.rng.next_u64());
         let game = practice::game(&name, &mut rng);
-        let rival = Seat { name: practice::RIVAL.to_owned(), token: self.token(), bot: true };
-        let code = self.open(vec![Seat { name, token: token.clone(), bot: false }, rival], Some((game, rng)));
+        let rival = Seat {
+            name: practice::RIVAL.to_owned(),
+            token: self.token(),
+            bot: true,
+            passive: true,
+            style: Style::default(),
+        };
+        let me = Seat::person(name, token.clone());
+        let code = self.open(vec![me, rival], Some((game, rng)));
         Ok(Session { code, token, seat: PlayerId(0) })
     }
 
@@ -158,6 +225,7 @@ impl Store {
                 map_size: MapSize::default(),
                 reactions: Vec::new(),
                 reaction_seq: 0,
+                bot_offer: None,
             },
         );
         code
@@ -180,9 +248,42 @@ impl Store {
         if m.seats.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
             return Err("That name is taken in this match".to_owned());
         }
-        m.seats.push(Seat { name, token: token.clone(), bot: false });
+        m.seats.push(Seat::person(name, token.clone()));
         m.version += 1;
         Ok(Session { code, token, seat: PlayerId(m.seats.len() as u8 - 1) })
+    }
+
+    /// The host seats a bot the server plays, of `style`, before the match
+    /// starts. Bots are named by their style and numbered (`Bot 1`,
+    /// `Friendly Bot 2`, …), by the first free name.
+    pub fn add_bot(&mut self, code: &str, token: &str, style: Style) -> Result<MatchView, String> {
+        let bot_token = self.token();
+        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
+        let seat = m.seat_of(token)?;
+        if seat != PlayerId(0) {
+            return Err("Only the host can add a bot".to_owned());
+        }
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
+        if m.game.is_some() {
+            return Err("The match has already started".to_owned());
+        }
+        if m.seats.len() >= balance::MAX_PLAYERS {
+            return Err("The match is full".to_owned());
+        }
+        let kind = match style {
+            Style::Friendly => "Friendly Bot",
+            Style::Balanced => "Bot",
+            Style::Ruthless => "Ruthless Bot",
+        };
+        let name = (1..)
+            .map(|i| format!("{kind} {i}"))
+            .find(|n| !m.seats.iter().any(|s| s.name.eq_ignore_ascii_case(n)))
+            .expect("a free name among more names than seats");
+        m.seats.push(Seat { name, token: bot_token, bot: true, passive: false, style });
+        m.version += 1;
+        Ok(m.view(seat))
     }
 
     pub fn start(&mut self, code: &str, token: &str) -> Result<MatchView, String> {
@@ -281,6 +382,34 @@ impl Store {
         Ok(m.view(seat))
     }
 
+    /// Withdraws bot trade offers left unanswered for [`BOT_OFFER_MS`],
+    /// and lets those bots play on. `now_ms` is Unix time in milliseconds;
+    /// true when a match changed.
+    pub fn expire_bot_offers(&mut self, now_ms: u64) -> bool {
+        let mut changed = false;
+        for m in self.matches.values_mut() {
+            let Some((from, seq)) = m.open_bot_offer() else {
+                m.bot_offer = None;
+                continue;
+            };
+            match m.bot_offer {
+                Some((seen, since)) if seen == seq => {
+                    if now_ms.saturating_sub(since) < BOT_OFFER_MS {
+                        continue;
+                    }
+                    let game = m.game.as_mut().expect("an open offer is in a game");
+                    let _ = game.apply(from, Action::CancelTrade, &mut m.rng);
+                    m.bot_offer = None;
+                    m.play_bots();
+                    m.version += 1;
+                    changed = true;
+                }
+                _ => m.bot_offer = Some((seq, now_ms)),
+            }
+        }
+        changed
+    }
+
     pub fn view(&self, code: &str, token: &str) -> Result<MatchView, String> {
         let m = self.matches.get(code).ok_or("No match with that code")?;
         Ok(m.view(m.seat_of(token)?))
@@ -299,7 +428,7 @@ fn clean_name(name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kings_cove_engine::{Phase, VertexId};
+    use kings_cove_engine::{Phase, SetupPlacing, VertexId};
 
     #[test]
     fn saved_island_sizes_keep_their_tiles_across_the_rename() {
@@ -418,6 +547,84 @@ mod tests {
         let saved = serde_json::to_string(&store).unwrap();
         let restored: Store = serde_json::from_str(&saved).unwrap();
         assert_eq!(restored.view(&host.code, &host.token).unwrap(), store.view(&host.code, &host.token).unwrap());
+    }
+
+    #[test]
+    fn the_host_adds_bots_of_any_style_that_play_their_own_setup() {
+        let mut store = Store::new(11);
+        let host = store.create("Ada").unwrap();
+        let guest = store.join(&host.code, "Bot 1").unwrap();
+        assert!(store.add_bot(&host.code, &guest.token, Style::Balanced).is_err(), "only the host");
+        let before = store.version(&host.code).unwrap();
+        let view = store.add_bot(&host.code, &host.token, Style::Balanced).unwrap();
+        assert_eq!(view.players, ["Ada", "Bot 1", "Bot 2"], "the first free name");
+        assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
+        let view = store.add_bot(&host.code, &host.token, Style::Ruthless).unwrap();
+        assert_eq!(view.players[3], "Ruthless Bot 1");
+        assert!(store.add_bot(&host.code, &host.token, Style::Friendly).is_err(), "no more than four seats");
+
+        let other = store.create("Cy").unwrap();
+        store.add_bot(&other.code, &other.token, Style::Friendly).unwrap();
+        let setup = store.start(&other.code, &other.token).unwrap().game.unwrap();
+        let v = setup.setup_vertices(PlayerId(0))[0];
+        store.act(&other.code, &other.token, Action::SetupBuilding(v)).unwrap();
+        let e = setup.board.vertex(v).edges[0];
+        let after = store.act(&other.code, &other.token, Action::SetupRoad(e)).unwrap().game.unwrap();
+        // Snake order 0, 1, 1, 0: the bot placed both its buildings at once.
+        assert_eq!(after.phase, Phase::Setup { step: 3, placing: SetupPlacing::Building });
+        assert_eq!(after.current, PlayerId(0));
+        assert_eq!(after.buildings.iter().flatten().filter(|b| b.owner == PlayerId(1)).count(), 2);
+        assert!(store.add_bot(&other.code, &other.token, Style::Balanced).is_err(), "not after the start");
+    }
+
+    /// A match of a person and a bot, set up, on the bot's turn, rolled:
+    /// the bot has only wood, short of everything it would build, and has
+    /// just offered the person some for what it lacks.
+    fn bot_offers_the_host(seed: u64) -> (Store, Session) {
+        let mut store = Store::new(seed);
+        let host = store.create("Ada").unwrap();
+        store.add_bot(&host.code, &host.token, Style::Balanced).unwrap();
+        let mut game = store.start(&host.code, &host.token).unwrap().game.unwrap();
+        while matches!(game.phase, Phase::Setup { .. }) {
+            let v = game.setup_vertices(PlayerId(0))[0];
+            game = store.act(&host.code, &host.token, Action::SetupBuilding(v)).unwrap().game.unwrap();
+            let e = game.setup_edges(PlayerId(0))[0];
+            game = store.act(&host.code, &host.token, Action::SetupRoad(e)).unwrap().game.unwrap();
+        }
+        let m = store.matches.get_mut(&host.code).unwrap();
+        let g = m.game.as_mut().unwrap();
+        g.current = PlayerId(1);
+        g.dice = Some((1, 2));
+        g.players[0].resources = balance::res(5, 5, 5, 5);
+        g.players[1].resources = balance::res(3, 0, 0, 0);
+        m.play_bots();
+        let offer = m.game.as_ref().unwrap().trade.clone().expect("the bot offers a trade");
+        assert_eq!((offer.from, offer.to), (PlayerId(1), Some(PlayerId(0))));
+        (store, host)
+    }
+
+    #[test]
+    fn a_bot_waits_on_its_offer_and_plays_on_once_it_is_answered() {
+        let (mut store, host) = bot_offers_the_host(4);
+        assert_eq!(store.view(&host.code, &host.token).unwrap().game.unwrap().current, PlayerId(1), "it waits");
+        let after = store.act(&host.code, &host.token, Action::AcceptTrade).unwrap().game.unwrap();
+        assert!(after.events.iter().any(|e| matches!(e.event, Event::Traded { from: PlayerId(1), .. })), "traded");
+        assert_eq!((after.current, after.trade), (PlayerId(0), None), "the bot finished its turn");
+    }
+
+    #[test]
+    fn a_bot_withdraws_an_offer_left_unanswered_and_plays_on() {
+        let (mut store, host) = bot_offers_the_host(4);
+        let before = store.version(&host.code).unwrap();
+        assert!(!store.expire_bot_offers(1_000), "the server first sees the offer");
+        assert!(!store.expire_bot_offers(1_000 + BOT_OFFER_MS - 1));
+        assert_eq!(store.version(&host.code).unwrap(), before);
+        assert!(store.expire_bot_offers(1_000 + BOT_OFFER_MS));
+        assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
+        let after = store.view(&host.code, &host.token).unwrap().game.unwrap();
+        assert_eq!((after.current, after.trade), (PlayerId(0), None), "withdrawn, and the bot finished its turn");
+        assert_eq!(after.players[1].resources.wood, 3);
+        assert!(!store.expire_bot_offers(10 * BOT_OFFER_MS), "nothing left to withdraw");
     }
 
     #[test]

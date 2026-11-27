@@ -4,8 +4,8 @@
 //! from the first turn.
 
 use kings_cove_engine::{
-    Action, Building, BuildingKind, Game, Phase, PlayerId, Rng, TileId, Unit, UnitId, UnitKind, VertexId, balance,
-    balance::MapSize,
+    Action, Building, BuildingKind, Game, Phase, PlayerId, Rng, RuleError, TileId, Unit, UnitId, UnitKind, VertexId,
+    balance, balance::MapSize,
 };
 
 /// The rival's name.
@@ -93,21 +93,10 @@ fn deploy(g: &mut Game, owner: PlayerId, tiles: &[TileId], rng: &mut Rng) {
     g.units.push(Unit { id, owner, kind: UnitKind::Knight, tile, ready, relics: 0, blockade: None });
 }
 
-/// The rival's turns: it declines any open offer and, on its turn, rolls
-/// and passes, until it is a person's turn again.
-pub fn play_rivals(g: &mut Game, rivals: &[PlayerId], rng: &mut Rng) {
-    for &p in rivals {
-        if g.trade.as_ref().is_some_and(|t| t.from != p) {
-            let _ = g.apply(p, Action::DeclineTrade, rng);
-        }
+/// The rival's turn: it rolls and passes.
+pub fn pass_turn(g: &mut Game, rival: PlayerId, rng: &mut Rng) -> Result<(), RuleError> {
+    if g.dice.is_none() {
+        g.apply(rival, Action::Roll, rng)?;
     }
-    while g.phase == Phase::Playing && rivals.contains(&g.current) {
-        let p = g.current;
-        if g.dice.is_none() {
-            let _ = g.apply(p, Action::Roll, rng);
-        }
-        if g.apply(p, Action::EndTurn, rng).is_err() {
-            break;
-        }
-    }
+    g.apply(rival, Action::EndTurn, rng)
 }

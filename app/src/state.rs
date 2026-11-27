@@ -5,11 +5,11 @@
 use std::time::Duration;
 
 use kings_cove_engine::{
-    Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize,
+    Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize, bot::Style,
 };
 use kings_cove_protocol::{
-    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, ReactRequest, Reaction,
-    SentReaction, Session, SessionRequest,
+    ActionRequest, AddBotRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, ReactRequest,
+    Reaction, SentReaction, Session, SessionRequest,
 };
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
@@ -271,6 +271,16 @@ impl AppState {
         let (this, base) = (*self, self.base());
         let body = SessionRequest { code: s.code, token: s.token };
         self.request(async move { post::<_, MatchView>(&base, "/start", &body).await }, move |v| this.receive(v));
+    }
+
+    /// The host seats a bot of `style` the server plays.
+    pub fn add_bot(&self, style: Style) {
+        let Some(s) = self.session.get_untracked() else {
+            return;
+        };
+        let (this, base) = (*self, self.base());
+        let body = AddBotRequest { code: s.code, token: s.token, style };
+        self.request(async move { post::<_, MatchView>(&base, "/add-bot", &body).await }, move |v| this.receive(v));
     }
 
     /// The host ends the match for every player.

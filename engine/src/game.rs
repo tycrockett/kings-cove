@@ -1469,7 +1469,7 @@ impl Game {
     }
 
     /// The open offer `player` may answer.
-    fn trade_for(&self, player: PlayerId) -> Result<&TradeOffer, RuleError> {
+    pub(crate) fn trade_for(&self, player: PlayerId) -> Result<&TradeOffer, RuleError> {
         if matches!(self.phase, Phase::Finished { .. }) {
             return Err(RuleError::GameOver);
         }

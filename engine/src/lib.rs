@@ -2,6 +2,7 @@
 
 pub mod balance;
 pub mod board;
+pub mod bot;
 pub mod game;
 pub mod rng;
 pub mod types;

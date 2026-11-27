@@ -24,8 +24,23 @@ cd app && nsh run                     # --target ios | android | macos | linux |
 ```
 
 Open the client on 2–4 devices. One player taps **Create match** and shares the room code; the others **Join** with it.
-In the room, the host picks the goal and island size; everyone sees the choice. The home screen shows the client's
-version and the commit it was built from.
+In the room, the host picks the goal and island size; everyone sees the choice. Under *Add a bot* the host can also seat
+bots the server plays, alone or alongside other players, each of a style:
+
+| Style | Name | Trades | Works against |
+|---|---|---|---|
+| Friendly | `Friendly Bot 1` | takes offers worth at least 80% of what it gives | only a player a point from winning |
+| Balanced | `Bot 1` | takes offers it gains from | whoever leads it or is 3 points from winning |
+| Ruthless | `Ruthless Bot 1` | takes offers worth 150% of what it gives, only from players not ahead of it | everyone, leaders most |
+
+A bot takes its starting corners by how often their numbers come up. On its turns it rolls, sends a bandit where it
+hurts those it works against after a 7 (or just off its own tiles), sends its knights for items and against bandits
+on its tiles, attacks knights and blockades tiles of those it works against, builds a castle, a town, an outpost or a
+road, offers a player one of what it has most for one of what it lacks (once a turn), trades 4:1 with the bank, keeps
+one knight (a ruthless bot two) and casts a spell when a castle or a scroll makes it free, or when it is worth its
+price. Its turns happen as soon as the turn passes to it; an offer it makes to a person waits up to 30 seconds for an
+answer, then the bot withdraws it and plays on. A bot never reads what a hidden item is. The home screen shows the
+client's version and the commit it was built from.
 On a phone, open *Server settings* on the home screen and enter the server's LAN address (`http://192.168.x.y:8787`).
 A client that closes or loses its connection resumes its seat on the next launch (the seat token is kept in the app's
 storage); a restarted server resumes its matches from the data file.

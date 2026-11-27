@@ -9,7 +9,7 @@ mod palette;
 mod rules;
 mod state;
 
-use kings_cove_engine::{PlayerId, balance, balance::MapSize};
+use kings_cove_engine::{PlayerId, balance, balance::MapSize, bot::Style};
 use nsh_core::prelude::*;
 
 use crate::{
@@ -306,6 +306,18 @@ fn lobby(app: AppState) -> impl IntoElement {
                     }))
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                     .child(players)
+                    .child((host && count < balance::MAX_PLAYERS).then(|| {
+                        // A press adds one: no chip stays picked.
+                        let styles = Style::ALL.map(Some);
+                        choice(
+                            "Add a bot",
+                            &styles,
+                            None,
+                            !app.busy.get(),
+                            |style| style.map_or_else(String::new, |s| s.label().to_owned()),
+                            move |style| app.add_bot(style.unwrap_or_default()),
+                        )
+                    }))
                     .child(if host {
                         pill(
                             if count < balance::MIN_PLAYERS {
