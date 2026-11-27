@@ -20,9 +20,15 @@ use crate::{
     palette,
     rules::Item,
 };
+use nsh_core::platform::Lifecycle;
 
 /// How far behind the game queued effects may fall before they are dropped.
 const MAX_BACKLOG_MS: f64 = 4000.0;
+/// The clock's period while something animates: about 60 frames a second.
+const FRAME_MS: u64 = 16;
+/// Its period while only spells shimmer on the board: 8 frames a second
+/// keep the shimmer alive without working a phone hard.
+const SHIMMER_MS: u64 = 125;
 /// How long a reaction stays in the middle of the screen.
 const REACTION_SHOW_MS: u64 = 2600;
 const SERVER_KEY: &str = "server";
@@ -114,7 +120,8 @@ pub struct AppState {
     pub code_copied: Signal<bool>,
     last_seq: Stored<Option<u64>>,
     poll_generation: Stored<u64>,
-    ticker: Stored<Option<Spawned<()>>>,
+    /// The interval ticking `clock`, with its period (ms).
+    ticker: Stored<Option<(u64, Spawned<()>)>>,
     /// The app's own scope: requests, polls and timers live as long as the
     /// app, not as long as the button that started them.
     root: Owner,
@@ -448,7 +455,7 @@ impl AppState {
         self.view.set(Some(view));
         // Spells on the board shimmer for as long as they last.
         if enchanted {
-            self.run_clock();
+            self.shimmer();
         }
     }
 
@@ -627,41 +634,82 @@ impl AppState {
 
     /// Ticks `clock` every frame while anything animates.
     fn run_clock(&self) {
-        if self.ticker.with(|t| t.is_some()) {
+        self.tick_every(FRAME_MS);
+    }
+
+    /// Ticks `clock` slowly for spells on the board, unless it already ticks.
+    fn shimmer(&self) {
+        if self.ticker.with(|t| t.is_none()) {
+            self.tick_every(SHIMMER_MS);
+        }
+    }
+
+    /// Ticks every `ms`, unless the clock already ticks at least as often.
+    fn tick_every(&self, ms: u64) {
+        if self.ticker.with(|t| t.as_ref().is_some_and(|(period, _)| *period <= ms)) {
             return;
         }
+        self.stop_clock();
         let this = *self;
-        let task = self.root.run(|| {
-            set_interval(Duration::from_millis(16), move || {
-                let now = now_ms();
-                let dice_until = this.dice_until.get();
-                if dice_until <= now && this.dice_hidden.get_untracked() {
-                    this.dice_hidden.set(false);
-                }
-                let busy = this.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
-                    || this.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
-                    || dice_until > now;
-                let ambient = this.view.with_untracked(|v| {
-                    v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board)
-                });
-                // Spells alone shimmer at about 30 frames a second.
-                if busy || now - this.clock.get_untracked() >= 30.0 {
-                    this.clock.set(now);
-                }
-                if !busy {
-                    if this.anims.with_untracked(|a| !a.is_empty()) {
-                        this.anims.set(Vec::new());
-                    }
-                    if this.fx.with_untracked(|f| !f.is_empty()) {
-                        this.fx.set(Vec::new());
-                    }
-                    if !ambient && let Some(t) = this.ticker.replace(None) {
-                        t.cancel();
-                    }
-                }
-            })
-        });
-        self.ticker.replace(Some(task));
+        let task = self.root.run(|| set_interval(Duration::from_millis(ms), move || this.tick(ms)));
+        self.ticker.replace(Some((ms, task)));
+    }
+
+    fn stop_clock(&self) {
+        if let Some((_, task)) = self.ticker.replace(None) {
+            task.cancel();
+        }
+    }
+
+    /// Starts the clock again, back in the foreground, if anything moves.
+    pub fn resume_clock(&self) {
+        let now = now_ms();
+        let pending = self.anims.with_untracked(|a| !a.is_empty())
+            || self.fx.with_untracked(|f| !f.is_empty())
+            || self.dice_until.get() > now;
+        if pending {
+            self.run_clock();
+        } else if self
+            .view
+            .with_untracked(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board))
+        {
+            self.shimmer();
+        }
+    }
+
+    fn tick(&self, period: u64) {
+        // Nothing is seen in the background: rest until the app is back.
+        if lifecycle() == Lifecycle::Background {
+            self.stop_clock();
+            return;
+        }
+        let now = now_ms();
+        let dice_until = self.dice_until.get();
+        if dice_until <= now && self.dice_hidden.get_untracked() {
+            self.dice_hidden.set(false);
+        }
+        let busy = self.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
+            || self.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
+            || dice_until > now;
+        self.clock.set(now);
+        if busy {
+            return;
+        }
+        if self.anims.with_untracked(|a| !a.is_empty()) {
+            self.anims.set(Vec::new());
+        }
+        if self.fx.with_untracked(|f| !f.is_empty()) {
+            self.fx.set(Vec::new());
+        }
+        let ambient =
+            self.view.with_untracked(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board));
+        // Spells alone shimmer at a few frames a second.
+        if !ambient {
+            self.stop_clock();
+        } else if period != SHIMMER_MS {
+            self.stop_clock();
+            self.tick_every(SHIMMER_MS);
+        }
     }
 }
 

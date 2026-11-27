@@ -476,6 +476,13 @@ pub struct Scene<'a> {
     pub now: f64,
 }
 
+impl<'a> Scene<'a> {
+    /// The board alone: nothing highlighted, chosen or animating.
+    fn bare(game: &'a Game, seat: PlayerId, cam: Camera, size: (f32, f32)) -> Scene<'a> {
+        Scene { game, seat, cam, size, opts: &[], mode: Mode::Idle, inspect: None, anims: &[], now: 0.0 }
+    }
+}
+
 fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
     (0..6)
         .map(|i| {
@@ -487,7 +494,45 @@ fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
 
 const SAND: u32 = 0xdcc893;
 
-pub fn draw(s: &Scene) -> Painter {
+/// Tiles smaller on screen than this radius (points) draw simpler scenery.
+const DETAIL_RADIUS: f32 = 30.0;
+
+/// Whether the world point `at` is within `margin` world units of the screen.
+fn on_screen(s: &Scene, at: (f32, f32), margin: f32) -> bool {
+    let (w, h) = s.size;
+    let (x, y) = (s.cam.x + at.0 * s.cam.scale, s.cam.y + at.1 * s.cam.scale);
+    let m = margin * s.cam.scale;
+    x > -m && x < w + m && y > -m && y < h + m
+}
+
+/// `p` moved into world space.
+fn world(s: &Scene, p: Painter) -> Painter {
+    p.save()
+        .translate(s.cam.x, s.cam.y)
+        .scale(s.cam.scale, s.cam.scale)
+        .line_join(LineJoin::Round)
+        .line_cap(LineCap::Round)
+}
+
+/// The tiles some animation wobbles, now or soon: the spells layer draws
+/// them, the ground leaves them out.
+pub fn jelly_tiles(anims: &[Anim]) -> Vec<TileId> {
+    let mut tiles: Vec<TileId> = anims
+        .iter()
+        .filter_map(|a| match a.kind {
+            AnimKind::Jelly { tile, .. } => Some(tile),
+            _ => None,
+        })
+        .collect();
+    tiles.sort_unstable_by_key(|t| t.0);
+    tiles.dedup();
+    tiles
+}
+
+/// The bottom layer, which changes only with the game and the camera: the
+/// sea, the beach and every tile but those in `skip`. Off-screen tiles are
+/// left out, and small ones get simpler scenery.
+pub fn draw_ground(s: &Scene, skip: &[TileId]) -> Painter {
     let g = s.game;
     let (w, h) = s.size;
     let px1 = 1.0 / s.cam.scale; // one screen point in world units
@@ -498,37 +543,43 @@ pub fn draw(s: &Scene) -> Painter {
         .add_color_stop(percentage(0.0), hex(0x3c8597))
         .add_color_stop(percentage(0.5), hex(0x2a6475))
         .add_color_stop(percentage(1.0), hex(0x163845));
-    let mut p = Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w, h);
-    p = p.save().translate(s.cam.x, s.cam.y).scale(s.cam.scale, s.cam.scale);
-    p = p.line_join(LineJoin::Round).line_cap(LineCap::Round);
+    let mut p = world(s, Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w, h));
     let rings = g.board.tiles.iter().map(|t| t.q.abs().max(t.r.abs()).max((t.q + t.r).abs())).max().unwrap_or(2);
     p = waves(p, px1, rings as f32);
 
     // Shallows and the beach.
-    for t in &g.board.tiles {
-        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.34)).fill_color(hexa(0x8fd3d0, 0.22)).fill();
+    let visible: Vec<TileId> = g.board.tile_ids().filter(|&t| on_screen(s, tile_pos(g, t), 1.4 * S)).collect();
+    for &t in &visible {
+        p = poly(p, &hex_points(tile_pos(g, t), S * 1.34)).fill_color(hexa(0x8fd3d0, 0.22)).fill();
     }
-    for t in &g.board.tiles {
-        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.14)).fill_color(hex(SAND)).fill();
+    for &t in &visible {
+        p = poly(p, &hex_points(tile_pos(g, t), S * 1.14)).fill_color(hex(SAND)).fill();
     }
-    for t in &g.board.tiles {
-        p = poly(p, &hex_points(tile_pos(g, t.id), S * 1.04)).fill_color(hex(0xc9b47e)).fill();
+    for &t in &visible {
+        p = poly(p, &hex_points(tile_pos(g, t), S * 1.04)).fill_color(hex(0xc9b47e)).fill();
     }
+    let detail = S * s.cam.scale >= DETAIL_RADIUS;
+    for &t in visible.iter().filter(|t| !skip.contains(t)) {
+        p = tile_art(p, g, t, px1, detail);
+    }
+    p.restore()
+}
 
-    // Tiles; those whose number just came up wobble on top of the rest.
-    let jelly = |t: TileId| {
-        s.anims.iter().filter(|a| a.running(s.now)).find_map(|a| match a.kind {
+/// The middle layer, the only one that moves on its own: tiles whose number
+/// came up wobble, and spells shimmer on their tiles.
+pub fn draw_spells(s: &Scene) -> Painter {
+    let g = s.game;
+    let px1 = 1.0 / s.cam.scale;
+    let mut p = world(s, Painter::new());
+    for t in jelly_tiles(s.anims) {
+        let running = s.anims.iter().filter(|a| a.running(s.now)).find_map(|a| match a.kind {
             AnimKind::Jelly { tile, mood } if tile == t => Some((a.t(s.now), mood)),
             _ => None,
-        })
-    };
-    for t in g.board.tile_ids().filter(|&t| jelly(t).is_none()) {
-        p = tile_art(p, g, t, px1);
-    }
-    for t in g.board.tile_ids() {
-        if let Some((k, mood)) = jelly(t) {
-            p = wobbling_tile(p, g, t, k, mood, px1);
-        }
+        });
+        p = match running {
+            Some((k, mood)) => wobbling_tile(p, g, t, k, mood, px1),
+            None => tile_art(p, g, t, px1, true),
+        };
     }
 
     // Spells: their look on the tile (both tiles of a swap) and a seal
@@ -543,6 +594,16 @@ pub fn draw(s: &Scene) -> Painter {
     if let Some(t) = g.luck {
         p = lucky_tile(p, g, t, s.now, px1);
     }
+    p.restore()
+}
+
+/// The top layer: highlights, roads, buildings, pieces and the effects of
+/// events. It redraws with the player's choices, and every frame only while
+/// something animates.
+pub fn draw_pieces(s: &Scene) -> Painter {
+    let g = s.game;
+    let px1 = 1.0 / s.cam.scale;
+    let mut p = world(s, Painter::new());
 
     // Tile highlights.
     for o in s.opts {
@@ -792,8 +853,9 @@ fn waves(mut p: Painter, px1: f32, rings: f32) -> Painter {
 const SPOTS: [(f32, f32); 8] =
     [(-0.5, -0.42), (0.5, -0.42), (-0.2, -0.62), (0.22, -0.6), (-0.64, 0.1), (0.64, 0.1), (-0.44, 0.5), (0.44, 0.5)];
 
-/// One tile: terrain, its scenery and its number token.
-fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32) -> Painter {
+/// One tile: terrain, its scenery (simpler without `detail`) and its number
+/// token.
+fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32, detail: bool) -> Painter {
     let tile = g.board.tile(t);
     let c = tile_pos(g, t);
     let base = palette::resource(tile.resource);
@@ -802,7 +864,7 @@ fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32) -> Painter {
         .fill_style(art::vgrad(c.1 - S, c.1 + S, palette::lighten(base, 0.2), palette::shade(base, 0.8)))
         .fill();
     p = poly(p.save(), &outline).clip();
-    p = scenery(p, tile.resource, c, t.0 as u32, base, px1).restore();
+    p = scenery(p, tile.resource, c, t.0 as u32, base, px1, detail).restore();
     p = poly(p, &hex_points(c, S * 0.9)).stroke_color(hexa(0xffffff, 0.2)).line_width(2.0 * px1).stroke();
     p = poly(p, &outline).stroke_color(hex(palette::shade(base, 0.6))).line_width(1.5 * px1).stroke();
     let robbed = g.robber_at(t).is_some();
@@ -838,7 +900,7 @@ fn wobbling_tile(p: Painter, g: &Game, t: TileId, k: f32, mood: Mood, px1: f32) 
     p = art::shadow(p, 0.45 * fade, 14.0, 4.0);
     p = poly(p, &hex_points(c, S * 0.96)).fill_color(hex(SAND)).fill();
     p = art::no_shadow(p);
-    p = tile_art(p, g, t, px1);
+    p = tile_art(p, g, t, px1, true);
     p = poly(p, &hex_points(c, S * 0.96))
         .fill_color(hexa(tint, 0.35 * fade))
         .fill()
@@ -1034,12 +1096,14 @@ fn spell_seal(p: Painter, g: &Game, e: &Enchantment, tile: TileId, px1: f32) -> 
     p.restore()
 }
 
-/// Trees, peaks, fields or ore hills, placed the same way every frame.
-fn scenery(mut p: Painter, r: Resource, c: (f32, f32), seed: u32, base: u32, px1: f32) -> Painter {
+/// Trees, peaks, fields or ore hills, placed the same way every frame;
+/// without `detail` (a tile small on screen) only a few.
+fn scenery(mut p: Painter, r: Resource, c: (f32, f32), seed: u32, base: u32, px1: f32, detail: bool) -> Painter {
     let spots = SPOTS
         .iter()
         .enumerate()
         .filter(|&(i, _)| hash01(seed * 8 + i as u32) > 0.18)
+        .take(if detail { SPOTS.len() } else { 3 })
         .map(|(i, &(x, y))| ((c.0 + x * S, c.1 + y * S), 0.85 + hash01(seed * 8 + i as u32 + 50) * 0.35));
     match r {
         Resource::Wood => {
@@ -1077,7 +1141,8 @@ fn scenery(mut p: Painter, r: Resource, c: (f32, f32), seed: u32, base: u32, px1
         }
         Resource::Food => {
             p = p.line_width(0.075 * S);
-            for i in -9..=9 {
+            // Furrows; small tiles keep only the light ones.
+            for i in (-9..=9).filter(|i| detail || i % 2 == 0) {
                 let x = c.0 + i as f32 * 0.15 * S;
                 let tone = if i % 2 == 0 { palette::lighten(base, 0.16) } else { palette::shade(base, 0.9) };
                 p = p
@@ -1304,34 +1369,62 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         });
     };
 
-    canvas(move || {
+    // Three layers, each redrawn only for what it shows. The ground (most of
+    // the drawing) follows the game and the camera; the spells layer the
+    // shimmer of spells and wobbling tiles; the pieces the player's choices,
+    // and every frame only while an animation runs.
+    let ground = canvas(move || {
         let (w, h) = size.get();
+        let skip = app.anims.with(|a| jelly_tiles(a));
+        app.view
+            .with(|v| {
+                let v = v.as_ref()?;
+                Some(draw_ground(&Scene::bare(v.game.as_ref()?, v.seat, cam.get()?, (w, h)), &skip))
+            })
+            .unwrap_or_else(|| Painter::new().fill_color(hex(palette::TABLE)).fill_rect(0.0, 0.0, w, h))
+    })
+    .absolute()
+    .inset_0()
+    .pointer_events(PointerEvents::None);
+    let spells = canvas(move || {
+        let size = size.get();
         let anims = app.anims.get();
-        // Spells on the board move continuously; otherwise only animations do.
-        let enchanted = app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).is_some_and(Game::spells_on_board));
-        let now = if anims.is_empty() && !enchanted { now_ms() } else { app.clock.get() };
-        let Some(view) = app.view.get() else {
-            return Painter::new();
-        };
-        let Some(g) = view.game.as_ref() else {
-            return Painter::new();
-        };
-        let Some(c) = cam.get() else {
-            return Painter::new().fill_color(hex(palette::TABLE)).fill_rect(0.0, 0.0, w, h);
-        };
+        let wobbling = anims.iter().any(|a| matches!(a.kind, AnimKind::Jelly { .. }));
+        app.view
+            .with(|v| {
+                let v = v.as_ref()?;
+                let g = v.game.as_ref()?;
+                if !wobbling && !g.spells_on_board() {
+                    return None;
+                }
+                let now = app.clock.get();
+                Some(draw_spells(&Scene { anims: &anims, now, ..Scene::bare(g, v.seat, cam.get()?, size) }))
+            })
+            .unwrap_or_default()
+    })
+    .absolute()
+    .inset_0()
+    .pointer_events(PointerEvents::None);
+    // The highlighted places, worked out again only when the game or the
+    // player's mode changes.
+    let opts = computed(move || {
         let mode = app.mode.get();
-        let opts = options(g, view.seat, mode);
-        draw(&Scene {
-            game: g,
-            seat: view.seat,
-            cam: c,
-            size: (w, h),
-            opts: &opts,
-            mode,
-            inspect: app.inspect.get(),
-            anims: &anims,
-            now,
+        app.view.with(|v| v.as_ref().and_then(|v| Some(options(v.game.as_ref()?, v.seat, mode)))).unwrap_or_default()
+    });
+    let pieces = canvas(move || {
+        let size = size.get();
+        let anims = app.anims.get();
+        let now = if anims.is_empty() { now_ms() } else { app.clock.get() };
+        let mode = app.mode.get();
+        let inspect = app.inspect.get();
+        opts.with(|opts| {
+            app.view.with(|v| {
+                let v = v.as_ref()?;
+                let base = Scene::bare(v.game.as_ref()?, v.seat, cam.get()?, size);
+                Some(draw_pieces(&Scene { opts, mode, inspect, anims: &anims, now, ..base }))
+            })
         })
+        .unwrap_or_default()
     })
     .absolute()
     .inset_0()
@@ -1368,5 +1461,6 @@ pub fn board_view(app: AppState) -> impl IntoElement {
                 c.zoom(1.0 + e.delta.0, sx, sy);
             }
         });
-    })
+    });
+    view().absolute().inset_0().child(ground).child(spells).child(pieces)
 }

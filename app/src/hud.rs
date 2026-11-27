@@ -1743,6 +1743,12 @@ fn turn_glow(app: AppState) -> impl IntoElement {
 
 /// The game screen: the board, the turn frame, the HUD, the celebrations.
 pub fn game_screen(app: AppState) -> impl IntoElement {
+    // The clock rests in the background; coming back, it picks up again.
+    effect(move || {
+        if lifecycle() != nsh_core::platform::Lifecycle::Background {
+            untracked(move || app.resume_clock());
+        }
+    });
     // Leave a selection that no longer applies (the unit died, the 7 passed).
     effect(move || {
         let Some(view_) = app.view.get() else { return };
