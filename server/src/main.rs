@@ -12,7 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kings_cove_protocol::{ActionRequest, CreateRequest, ErrorBody, JoinRequest, POLL_SECONDS, SessionRequest};
+use kings_cove_protocol::{
+    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, POLL_SECONDS, ReactRequest, SessionRequest,
+};
 use kings_cove_server::Store;
 use serde::{Serialize, de::DeserializeOwned};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -21,6 +23,8 @@ struct Shared {
     store: Mutex<Store>,
     changed: Condvar,
     data_path: String,
+    /// When the process started: the clock reaction cooldowns run on.
+    started: Instant,
 }
 
 fn main() {
@@ -30,7 +34,8 @@ fn main() {
         Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| panic!("{data_path}: {e}")),
         Err(_) => Store::new(random_seed()),
     };
-    let shared = Arc::new(Shared { store: Mutex::new(store), changed: Condvar::new(), data_path });
+    let shared =
+        Arc::new(Shared { store: Mutex::new(store), changed: Condvar::new(), data_path, started: Instant::now() });
     let server = Server::http(&addr).unwrap_or_else(|e| panic!("listen on {addr}: {e}"));
     println!("King's Cove server listening on http://{addr}");
     for request in server.incoming_requests() {
@@ -58,9 +63,14 @@ fn handle(shared: &Shared, mut request: Request) {
         return;
     }
     let result = match (request.method(), path) {
-        (Method::Post, "/create") => {
-            with_body(&body, |r: CreateRequest| mutate(shared, |s| s.create(&r.name, r.victory_points, r.map_size)))
-        }
+        (Method::Post, "/create") => with_body(&body, |r: CreateRequest| mutate(shared, |s| s.create(&r.name))),
+        (Method::Post, "/configure") => with_body(&body, |r: ConfigureRequest| {
+            mutate(shared, |s| s.configure(&r.code, &r.token, r.victory_points, r.map_size))
+        }),
+        (Method::Post, "/react") => with_body(&body, |r: ReactRequest| {
+            let now_ms = shared.started.elapsed().as_millis() as u64;
+            mutate(shared, |s| s.react(&r.code, &r.token, r.reaction, now_ms))
+        }),
         (Method::Post, "/join") => with_body(&body, |r: JoinRequest| mutate(shared, |s| s.join(&r.code, &r.name))),
         (Method::Post, "/start") => {
             with_body(&body, |r: SessionRequest| mutate(shared, |s| s.start(&r.code, &r.token)))

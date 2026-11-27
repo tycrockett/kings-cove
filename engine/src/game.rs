@@ -473,7 +473,7 @@ impl fmt::Display for RuleError {
             RuleError::TileOccupied => "That tile is occupied",
             RuleError::NotConnected => "Must connect to your road network",
             RuleError::NotUpgradable => "Only your own outposts and towns can be upgraded",
-            RuleError::NoCard => "You have no such unit card",
+            RuleError::NoCard => "You have no such unit token",
             RuleError::NotNextToYourTown => "Units deploy next to your towns or castles",
             RuleError::NoSuchUnit => "No such unit",
             RuleError::NotYourUnit => "That unit is not yours",
@@ -768,7 +768,7 @@ impl Game {
                 id: PlayerId(i as u8),
                 name: name.clone(),
                 resources: balance::STARTING_RESOURCES,
-                cards: Cards::default(),
+                cards: Cards { knights: balance::STARTING_KNIGHTS },
                 mana_ready_round: 0,
                 windfall: false,
                 scrolls: Vec::new(),
@@ -869,12 +869,9 @@ impl Game {
         self.items.iter().find(|i| i.tile == tile)
     }
 
-    /// An item may appear here: a free tile without one, touching no town
-    /// or city, so a knight has to travel to it.
+    /// An item may appear here: a tile with no unit, robber or item.
     pub fn item_may_appear(&self, tile: TileId) -> bool {
-        !self.occupied(tile)
-            && self.item_at(tile).is_none()
-            && self.board.tile(tile).vertices.iter().all(|&v| !self.building(v).is_some_and(|b| b.kind.is_settlement()))
+        !self.occupied(tile) && self.item_at(tile).is_none()
     }
 
     /// What players may see: items not yet found keep what they are secret.
@@ -897,8 +894,11 @@ impl Game {
         self.buildings.iter().flatten().filter(|b| b.kind.is_settlement()).count() as u32
     }
 
+    /// Robbers the island may hold: one per `SETTLEMENTS_PER_ROBBER` towns
+    /// and castles, and one more per `TILES_PER_EXTRA_ROBBER` tiles.
     pub fn robber_capacity(&self) -> u32 {
         self.total_settlements() / balance::SETTLEMENTS_PER_ROBBER
+            + self.board.tiles.len() as u32 / balance::TILES_PER_EXTRA_ROBBER
     }
 
     pub fn winner(&self) -> Option<PlayerId> {
@@ -1316,7 +1316,7 @@ impl Game {
         }
         match action {
             Action::SetupBuilding(v) => self.setup_building(player, v),
-            Action::SetupRoad(e) => self.setup_road(player, e),
+            Action::SetupRoad(e) => self.setup_road(player, e, rng),
             Action::Roll => self.roll(player, rng),
             Action::BuildRoad(e) => {
                 self.can_build_road(player, e)?;
@@ -1500,7 +1500,7 @@ impl Game {
         Ok(())
     }
 
-    fn setup_road(&mut self, player: PlayerId, e: EdgeId) -> Result<(), RuleError> {
+    fn setup_road(&mut self, player: PlayerId, e: EdgeId, rng: &mut Rng) -> Result<(), RuleError> {
         let Phase::Setup { step, placing } = self.phase else {
             return Err(RuleError::NotSetup);
         };
@@ -1527,6 +1527,9 @@ impl Game {
             self.phase = Phase::Setup { step: next, placing: SetupPlacing::Building };
             self.current = order[next];
         } else {
+            // Before round 1 starts, so they last `ITEM_ROUNDS` rounds like
+            // those left at the end of a round.
+            self.top_up_items(0, rng);
             self.phase = Phase::Playing;
             self.round = 1;
             self.begin_turn(PlayerId(0));
@@ -1788,8 +1791,8 @@ impl Game {
     }
 
     /// Robbers wander, then one may spawn if the board is below capacity;
-    /// knights packing up long enough are free; old items vanish, then a new
-    /// one may appear.
+    /// knights packing up long enough are free; old items vanish, then the
+    /// island is topped up with hidden items (at least one new one).
     pub fn end_round(&mut self, rng: &mut Rng) {
         let round = self.round;
         for i in 0..self.robbers.len() {
@@ -1813,8 +1816,17 @@ impl Game {
         let spawn = round >= self.robbers_quiet_until
             && (count < balance::MIN_ROBBERS || (count < self.robber_capacity() && rng.chance(num, den)));
         if spawn {
-            let free: Vec<TileId> = self.board.tile_ids().filter(|&t| self.robber_may_enter(t)).collect();
-            if let Some(tile) = rng.pick(&free) {
+            // Far from the other robbers: weighted by the square of the
+            // distance to the nearest one.
+            let robbers: Vec<TileId> = self.robbers.iter().map(|r| r.tile).collect();
+            let distances = self.tile_distances(&robbers);
+            let spots: Vec<(TileId, usize)> = self
+                .board
+                .tile_ids()
+                .filter(|&t| self.robber_may_enter(t))
+                .map(|t| (t, if robbers.is_empty() { 1 } else { distances[t.index()].pow(2) }))
+                .collect();
+            if let Some(tile) = pick_weighted(&spots, rng) {
                 let id = RobberId(self.next_id());
                 self.robbers.push(Robber { id, tile, frozen_through_round: 0 });
                 self.log(Event::RobberSpawned { robber: id, tile });
@@ -1836,18 +1848,79 @@ impl Game {
         for item in gone {
             self.log(Event::ItemVanished { tile: item.tile });
         }
-        // Something turns up away from the towns, for a knight to fetch.
-        let (num, den) = balance::ITEM_SPAWN_CHANCE;
-        if rng.chance(num, den) {
-            let spots: Vec<TileId> = self.board.tile_ids().filter(|&t| self.item_may_appear(t)).collect();
-            if let Some(tile) = rng.pick(&spots) {
-                let kind = draw_item(rng);
-                let last_round = round + balance::ITEM_ROUNDS;
-                self.items.push(Item { tile, kind: Some(kind), revealed: false, count: 1, last_round });
-                self.log(Event::ItemAppeared { tile });
+        // At least one item turns up every round, up to the per-player target.
+        self.top_up_items(1, rng);
+        self.log(Event::RoundEnded { round });
+    }
+
+    /// Hidden items on the island: found and dropped ones do not count.
+    fn hidden_items(&self) -> u32 {
+        self.items.iter().filter(|i| !i.revealed).count() as u32
+    }
+
+    /// Spawns hidden items up to `ITEMS_PER_PLAYER` per player, but at least
+    /// `at_least`, each on a distinct eligible tile; stops when none are left.
+    /// A tile that is the last one a knight token's holder could deploy
+    /// onto stays clear.
+    fn top_up_items(&mut self, at_least: u32, rng: &mut Rng) {
+        let target = balance::ITEMS_PER_PLAYER * self.players.len() as u32;
+        let spawn = target.saturating_sub(self.hidden_items()).max(at_least);
+        let weights = self.item_weights();
+        for _ in 0..spawn {
+            let last_deploy_spots: Vec<TileId> = self
+                .players
+                .iter()
+                .filter(|p| p.cards.knights > 0)
+                .filter_map(|p| match self.deploy_tiles(p.id)[..] {
+                    [only] => Some(only),
+                    _ => None,
+                })
+                .collect();
+            let spots: Vec<(TileId, usize)> = self
+                .board
+                .tile_ids()
+                .filter(|&t| self.item_may_appear(t) && !last_deploy_spots.contains(&t))
+                .map(|t| (t, weights[t.index()]))
+                .collect();
+            let Some(tile) = pick_weighted(&spots, rng) else { break };
+            let kind = draw_item(rng);
+            let last_round = self.round + balance::ITEM_ROUNDS;
+            self.items.push(Item { tile, kind: Some(kind), revealed: false, count: 1, last_round });
+            self.log(Event::ItemAppeared { tile });
+        }
+    }
+
+    /// Per tile, the item placement weight: the distance in tiles to the
+    /// nearest knight of any owner, capped at `ITEM_ROUNDS` (every tile
+    /// weighs 1 when no knights stand on the island).
+    fn item_weights(&self) -> Vec<usize> {
+        if self.units.is_empty() {
+            return vec![1; self.board.tiles.len()];
+        }
+        let knights: Vec<TileId> = self.units.iter().map(|u| u.tile).collect();
+        let cap = balance::ITEM_ROUNDS as usize;
+        self.tile_distances(&knights).into_iter().map(|d| d.min(cap)).collect()
+    }
+
+    /// Per tile, the distance in tiles to the nearest of `sources`.
+    fn tile_distances(&self, sources: &[TileId]) -> Vec<usize> {
+        let mut dist = vec![usize::MAX; self.board.tiles.len()];
+        let mut queue = std::collections::VecDeque::new();
+        for &t in sources {
+            if dist[t.index()] == usize::MAX {
+                dist[t.index()] = 0;
+                queue.push_back(t);
             }
         }
-        self.log(Event::RoundEnded { round });
+        while let Some(t) = queue.pop_front() {
+            for &nb in &self.board.tile(t).neighbors {
+                if dist[nb.index()] == usize::MAX {
+                    dist[nb.index()] = dist[t.index()] + 1;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        dist
     }
 
     fn check_victory(&mut self, player: PlayerId) {
@@ -1881,7 +1954,7 @@ impl Game {
 
 /// The goal of games saved before goals could be chosen.
 fn classic_goal() -> u32 {
-    balance::VICTORY_POINT_GOALS[0]
+    10
 }
 
 /// An item kind, as often as `balance::ITEM_WEIGHTS` says.
@@ -1891,6 +1964,23 @@ fn draw_item(rng: &mut Rng) -> ItemKind {
     for (kind, weight) in balance::ITEM_WEIGHTS {
         if n < weight {
             return kind;
+        }
+        n -= weight;
+    }
+    unreachable!("drawn below the total weight")
+}
+
+/// A tile drawn with chance proportional to its weight; `None` when every
+/// weight is 0 or there are no tiles.
+fn pick_weighted(spots: &[(TileId, usize)], rng: &mut Rng) -> Option<TileId> {
+    let total: usize = spots.iter().map(|&(_, w)| w).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut n = rng.below(total);
+    for &(tile, weight) in spots {
+        if n < weight {
+            return Some(tile);
         }
         n -= weight;
     }

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use kings_cove_engine::{Action, Game, PlayerId, Rng, balance, balance::MapSize};
-use kings_cove_protocol::{MatchView, Session};
+use kings_cove_protocol::{MatchView, REACTION_COOLDOWN_SECONDS, RECENT_REACTIONS, Reaction, SentReaction, Session};
 use serde::{Deserialize, Serialize};
 
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -36,11 +36,22 @@ pub struct Match {
     /// The size of the island its game is played on.
     #[serde(default)]
     pub map_size: MapSize,
+    /// The latest reactions, oldest first: not saved.
+    #[serde(skip)]
+    reactions: Vec<SentReaction>,
+    /// The `seq` of the latest reaction; 0 before the first. Saved, unlike
+    /// the reactions, so a restarted server keeps counting up and clients
+    /// still tell the next reaction from ones they saw.
+    #[serde(default)]
+    reaction_seq: u64,
+    /// When each seat last reacted (server milliseconds), for the cooldown.
+    #[serde(skip)]
+    last_reaction: BTreeMap<u8, u64>,
 }
 
 /// The goal of matches saved before goals could be chosen.
 fn classic_goal() -> u32 {
-    balance::VICTORY_POINT_GOALS[0]
+    10
 }
 
 impl Match {
@@ -66,6 +77,7 @@ impl Match {
             ended: self.ended,
             victory_points: self.victory_points,
             map_size: self.map_size,
+            reactions: self.reactions.clone(),
         }
     }
 }
@@ -95,17 +107,8 @@ impl Store {
         }
     }
 
-    pub fn create(
-        &mut self,
-        name: &str,
-        victory_points: Option<u32>,
-        map_size: Option<MapSize>,
-    ) -> Result<Session, String> {
+    pub fn create(&mut self, name: &str) -> Result<Session, String> {
         let name = clean_name(name)?;
-        let victory_points = victory_points.unwrap_or(balance::DEFAULT_VICTORY_POINTS);
-        if !balance::VICTORY_POINT_GOALS.contains(&victory_points) {
-            return Err(format!("Play to one of {:?} victory points", balance::VICTORY_POINT_GOALS));
-        }
         let code = self.new_code();
         let token = self.token();
         let rng = Rng::new(self.rng.next_u64());
@@ -118,8 +121,11 @@ impl Store {
                 rng,
                 version: 1,
                 ended: false,
-                victory_points,
-                map_size: map_size.unwrap_or_default(),
+                victory_points: balance::DEFAULT_VICTORY_POINTS,
+                map_size: MapSize::default(),
+                reactions: Vec::new(),
+                reaction_seq: 0,
+                last_reaction: BTreeMap::new(),
             },
         );
         Ok(Session { code, token, seat: PlayerId(0) })
@@ -180,6 +186,59 @@ impl Store {
         Ok(m.view(seat))
     }
 
+    /// The host changes the goal and island size before the game starts; absent fields stay.
+    pub fn configure(
+        &mut self,
+        code: &str,
+        token: &str,
+        victory_points: Option<u32>,
+        map_size: Option<MapSize>,
+    ) -> Result<MatchView, String> {
+        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
+        let seat = m.seat_of(token)?;
+        if seat != PlayerId(0) {
+            return Err("Only the host can change the settings".to_owned());
+        }
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
+        if m.game.is_some() {
+            return Err("The match has already started".to_owned());
+        }
+        if let Some(goal) = victory_points {
+            if !balance::VICTORY_POINT_GOALS.contains(&goal) {
+                return Err(format!("Play to one of {:?} victory points", balance::VICTORY_POINT_GOALS));
+            }
+            m.victory_points = goal;
+        }
+        if let Some(size) = map_size {
+            m.map_size = size;
+        }
+        m.version += 1;
+        Ok(m.view(seat))
+    }
+
+    /// A seat sends a quick reaction, lobby or game, at most one per cooldown.
+    pub fn react(&mut self, code: &str, token: &str, reaction: Reaction, now_ms: u64) -> Result<MatchView, String> {
+        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
+        let seat = m.seat_of(token)?;
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
+        let cooldown_ms = REACTION_COOLDOWN_SECONDS * 1000;
+        if m.last_reaction.get(&seat.0).is_some_and(|&at| now_ms.saturating_sub(at) < cooldown_ms) {
+            return Err("Wait a moment before reacting again".to_owned());
+        }
+        m.last_reaction.insert(seat.0, now_ms);
+        m.reaction_seq += 1;
+        m.reactions.push(SentReaction { seq: m.reaction_seq, seat, reaction });
+        if m.reactions.len() > RECENT_REACTIONS {
+            m.reactions.remove(0);
+        }
+        m.version += 1;
+        Ok(m.view(seat))
+    }
+
     /// The host ends the match for everyone, in the lobby or mid-game.
     pub fn end(&mut self, code: &str, token: &str) -> Result<MatchView, String> {
         let m = self.matches.get_mut(code).ok_or("No match with that code")?;
@@ -215,10 +274,19 @@ mod tests {
     use kings_cove_engine::{Phase, VertexId};
 
     #[test]
+    fn saved_island_sizes_keep_their_tiles_across_the_rename() {
+        let read = |tag: &str| serde_json::from_str::<MapSize>(&format!("\"{tag}\"")).unwrap();
+        let old: Vec<usize> = ["small", "medium", "large"].map(|t| read(t).tiles()).into();
+        assert_eq!(old, [19, 37, 61], "names saved before the rename");
+        for size in MapSize::ALL {
+            assert_eq!(read(serde_json::to_string(&size).unwrap().trim_matches('"')), size);
+        }
+    }
+
+    #[test]
     fn create_join_start_and_act_with_seat_tokens() {
         let mut store = Store::new(7);
-        assert!(store.create("Ada", Some(15), None).is_err(), "only the offered goals");
-        let host = store.create("Ada", None, None).unwrap();
+        let host = store.create("Ada").unwrap();
         let lobby = store.view(&host.code, &host.token).unwrap();
         assert_eq!((lobby.victory_points, lobby.map_size), (balance::DEFAULT_VICTORY_POINTS, MapSize::default()));
         let guest = store.join(&host.code.to_lowercase(), "Bo").unwrap();
@@ -248,7 +316,7 @@ mod tests {
     #[test]
     fn only_the_host_ends_a_match_and_it_stays_ended() {
         let mut store = Store::new(3);
-        let host = store.create("Ada", Some(10), None).unwrap();
+        let host = store.create("Ada").unwrap();
         let guest = store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         assert!(store.end(&host.code, &guest.token).is_err(), "only the host ends it");
@@ -261,9 +329,67 @@ mod tests {
     }
 
     #[test]
+    fn only_the_host_configures_an_unstarted_match() {
+        let mut store = Store::new(5);
+        let host = store.create("Ada").unwrap();
+        let guest = store.join(&host.code, "Bo").unwrap();
+        assert!(store.configure(&host.code, &guest.token, Some(30), None).is_err(), "only the host");
+        assert!(store.configure(&host.code, &host.token, Some(12), None).is_err(), "only the offered goals");
+        let before = store.version(&host.code).unwrap();
+        let view = store.configure(&host.code, &host.token, Some(30), None).unwrap();
+        assert_eq!((view.victory_points, view.map_size), (30, MapSize::default()), "absent fields stay");
+        assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
+        let view = store.configure(&host.code, &host.token, None, Some(MapSize::Large)).unwrap();
+        assert_eq!((view.victory_points, view.map_size), (30, MapSize::Large));
+        let seen = store.view(&host.code, &guest.token).unwrap();
+        assert_eq!((seen.victory_points, seen.map_size), (30, MapSize::Large));
+        let started = store.start(&host.code, &host.token).unwrap().game.unwrap();
+        assert_eq!((started.victory_points, started.board.tiles.len()), (30, MapSize::Large.tiles()));
+        assert!(store.configure(&host.code, &host.token, Some(10), None).is_err(), "not after the start");
+
+        let other = store.create("Cy").unwrap();
+        store.end(&other.code, &other.token).unwrap();
+        assert!(store.configure(&other.code, &other.token, Some(10), None).is_err(), "not once ended");
+    }
+
+    #[test]
+    fn reactions_are_rate_limited_numbered_and_trimmed() {
+        let mut store = Store::new(9);
+        let host = store.create("Ada").unwrap();
+        let guest = store.join(&host.code, "Bo").unwrap();
+        let cooldown = REACTION_COOLDOWN_SECONDS * 1000;
+        let first = store.react(&host.code, &host.token, Reaction::ALL[0], 1_000).unwrap();
+        assert_eq!(first.reactions, vec![SentReaction { seq: 1, seat: PlayerId(0), reaction: Reaction::ALL[0] }]);
+        assert!(store.react(&host.code, &host.token, Reaction::ALL[1], 1_000 + cooldown - 1).is_err(), "cooling down");
+        assert!(store.react(&host.code, "forged", Reaction::ALL[1], 1_000).is_err());
+        // Another seat has its own cooldown, and sees the first reaction.
+        let before = store.version(&host.code).unwrap();
+        let seen = store.react(&host.code, &guest.token, Reaction::ALL[1], 1_001).unwrap();
+        assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
+        assert_eq!(
+            seen.reactions.iter().map(|r| (r.seq, r.seat)).collect::<Vec<_>>(),
+            [(1, PlayerId(0)), (2, PlayerId(1))]
+        );
+        assert_eq!(store.view(&host.code, &host.token).unwrap().reactions, seen.reactions);
+        // Past the cooldown the host may react again; only the latest are kept.
+        let mut now = 1_000;
+        for _ in 0..RECENT_REACTIONS + 2 {
+            now += cooldown;
+            store.react(&host.code, &host.token, Reaction::ALL[2], now).unwrap();
+        }
+        let kept = store.view(&host.code, &guest.token).unwrap().reactions;
+        assert_eq!(kept.len(), RECENT_REACTIONS);
+        assert_eq!(kept.last().unwrap().seq, RECENT_REACTIONS as u64 + 4);
+        assert!(kept.windows(2).all(|w| w[1].seq == w[0].seq + 1), "oldest first");
+        store.end(&host.code, &host.token).unwrap();
+        assert!(store.react(&host.code, &guest.token, Reaction::ALL[0], now + cooldown).is_err(), "not once ended");
+    }
+
+    #[test]
     fn store_round_trips_through_json() {
         let mut store = Store::new(1);
-        let host = store.create("Ada", Some(30), Some(MapSize::Small)).unwrap();
+        let host = store.create("Ada").unwrap();
+        store.configure(&host.code, &host.token, Some(30), Some(MapSize::Small)).unwrap();
         store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         let saved = serde_json::to_string(&store).unwrap();

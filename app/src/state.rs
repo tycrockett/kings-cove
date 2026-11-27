@@ -7,7 +7,10 @@ use std::time::Duration;
 use kings_cove_engine::{
     Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize,
 };
-use kings_cove_protocol::{ActionRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, Session, SessionRequest};
+use kings_cove_protocol::{
+    ActionRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, REACTION_COOLDOWN_SECONDS,
+    ReactRequest, Reaction, SentReaction, Session, SessionRequest,
+};
 use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -20,6 +23,8 @@ use crate::{
 
 /// How far behind the game queued effects may fall before they are dropped.
 const MAX_BACKLOG_MS: f64 = 4000.0;
+/// How long a reaction stays in the middle of the screen.
+const REACTION_SHOW_MS: u64 = 2600;
 const SERVER_KEY: &str = "server";
 const SESSION_KEY: &str = "session";
 const NAME_KEY: &str = "name";
@@ -66,10 +71,6 @@ pub enum Menu {
 pub struct AppState {
     pub server: Signal<String>,
     pub name: Signal<String>,
-    /// The victory points a match created here is played to.
-    pub goal: Signal<u32>,
-    /// The island size a match created here is played on.
-    pub map_size: Signal<MapSize>,
     pub session: Signal<Option<Session>>,
     pub view: Signal<Option<MatchView>>,
     pub toast: Signal<Option<String>>,
@@ -92,6 +93,16 @@ pub struct AppState {
     pub gains_at: Stored<f64>,
     pub trade_open: Signal<bool>,
     pub history_open: Signal<bool>,
+    /// Everyone's chips, dropped below the active player's.
+    pub players_open: Signal<bool>,
+    /// The row of reactions to pick from.
+    pub reactions_open: Signal<bool>,
+    /// This seat may react again: false through the cooldown.
+    pub react_ready: Signal<bool>,
+    /// Reactions in the middle of the screen right now.
+    pub reactions_shown: Signal<Vec<SentReaction>>,
+    /// The `seq` of the latest reaction seen; `None` before the first view.
+    last_reaction: Stored<Option<u64>>,
     pub menu: Signal<Menu>,
     /// The build tray item whose card is open.
     pub item_card: Signal<Option<Item>>,
@@ -119,8 +130,6 @@ impl AppState {
         let state = AppState {
             server: signal(Storage::get_item(SERVER_KEY).unwrap_or_else(|| DEFAULT_SERVER.to_owned())),
             name: signal(Storage::get_item(NAME_KEY).unwrap_or_default()),
-            goal: signal(kings_cove_engine::balance::DEFAULT_VICTORY_POINTS),
-            map_size: signal(MapSize::default()),
             session: signal(session.clone()),
             view: signal(None),
             toast: signal(None),
@@ -137,6 +146,11 @@ impl AppState {
             gains_at: stored(0.0),
             trade_open: signal(false),
             history_open: signal(false),
+            players_open: signal(false),
+            reactions_open: signal(false),
+            react_ready: signal(true),
+            reactions_shown: signal(Vec::new()),
+            last_reaction: stored(None),
             menu: signal(Menu::Closed),
             item_card: signal(None),
             rules_open: signal(false),
@@ -188,11 +202,21 @@ impl AppState {
 
     // ----- Session -----
 
-    pub fn create(&self, name: String, victory_points: u32, map_size: MapSize) {
+    pub fn create(&self, name: String) {
         self.remember_lobby_inputs(&name);
         let (this, base) = (*self, self.base());
-        let body = CreateRequest { name, victory_points: Some(victory_points), map_size: Some(map_size) };
+        let body = CreateRequest { name };
         self.request(async move { post::<_, Session>(&base, "/create", &body).await }, move |s| this.enter(s));
+    }
+
+    /// The host changes the match's goal or island in the lobby.
+    pub fn configure(&self, victory_points: Option<u32>, map_size: Option<MapSize>) {
+        let Some(s) = self.session.get_untracked() else {
+            return;
+        };
+        let (this, base) = (*self, self.base());
+        let body = ConfigureRequest { code: s.code, token: s.token, victory_points, map_size };
+        self.request(async move { post::<_, MatchView>(&base, "/configure", &body).await }, move |v| this.receive(v));
     }
 
     pub fn join(&self, code: String, name: String) {
@@ -236,6 +260,10 @@ impl AppState {
         self.inspect.set(None);
         self.trade_open.set(false);
         self.history_open.set(false);
+        self.players_open.set(false);
+        self.reactions_open.set(false);
+        self.reactions_shown.set(Vec::new());
+        self.last_reaction.replace(None);
         self.menu.set(Menu::Closed);
         self.item_card.set(None);
         self.confirm_attack.set(None);
@@ -266,6 +294,59 @@ impl AppState {
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
         self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| this.receive(v));
+    }
+
+    /// Sends a reaction everyone sees. Neither held back by an action in
+    /// flight nor holding one back. The button rests until the server's
+    /// cooldown, counted from when it took the reaction, is surely over.
+    pub fn react(&self, reaction: Reaction) {
+        let Some(s) = self.session.get_untracked() else {
+            return;
+        };
+        if !self.react_ready.get_untracked() {
+            return;
+        }
+        self.react_ready.set(false);
+        self.reactions_open.set(false);
+        let (this, base) = (*self, self.base());
+        let body = ReactRequest { code: s.code, token: s.token, reaction };
+        self.root.run(|| {
+            spawn(async move {
+                match post::<_, MatchView>(&base, "/react", &body).await {
+                    Ok(v) => {
+                        this.receive(v);
+                        let ready = this.react_ready;
+                        this.root.run(|| {
+                            set_timeout(Duration::from_secs(REACTION_COOLDOWN_SECONDS), move || ready.set(true))
+                        });
+                    }
+                    Err(e) => {
+                        this.react_ready.set(true);
+                        this.show_error(e);
+                    }
+                }
+            })
+        });
+    }
+
+    /// Puts reactions newer than the last seen in the middle of the screen
+    /// for a moment; ones sent before this device arrived are not replayed.
+    fn show_reactions(&self, reactions: &[SentReaction]) {
+        let latest = reactions.last().map_or(0, |r| r.seq);
+        let Some(seen) = self.last_reaction.replace(Some(latest)) else {
+            return;
+        };
+        let fresh: Vec<SentReaction> = reactions.iter().filter(|r| r.seq > seen).copied().collect();
+        if fresh.is_empty() {
+            return;
+        }
+        self.reactions_shown.update(|shown| shown.extend(fresh.iter().copied()));
+        let shown = self.reactions_shown;
+        self.root.run(|| {
+            set_timeout(Duration::from_millis(REACTION_SHOW_MS), move || {
+                shown.update(|s| s.retain(|r| !fresh.iter().any(|f| f.seq == r.seq)))
+            })
+        });
     }
 
     fn request<T: 'static>(
@@ -363,6 +444,7 @@ impl AppState {
             }
         }
         let enchanted = view.game.as_ref().is_some_and(Game::spells_on_board);
+        self.show_reactions(&view.reactions);
         self.view.set(Some(view));
         // Spells on the board shimmer for as long as they last.
         if enchanted {

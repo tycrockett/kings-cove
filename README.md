@@ -24,6 +24,8 @@ cd app && nsh run                     # --target ios | android | macos | linux |
 ```
 
 Open the client on 2–4 devices. One player taps **Create match** and shares the room code; the others **Join** with it.
+In the room, the host picks the goal and island size; everyone sees the choice. The home screen shows the client's
+version and the commit it was built from.
 On a phone, open *Server settings* on the home screen and enter the server's LAN address (`http://192.168.x.y:8787`).
 A client that closes or loses its connection resumes its seat on the next launch (the seat token is kept in the app's
 storage); a restarted server resumes its matches from the data file.
@@ -58,8 +60,9 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 ## Rules
 
 - **Board**: hex tiles of Wood, Stone, Food and Iron, numbered 2–12 without 7; the 6s and 8s never touch and no two
-  neighbours share a number. A match is played to 10, 20 or 30 victory points (default 20) on a small, medium or large
-  island of 19, 37 or 61 tiles (default medium), both chosen when it is created.
+  neighbours share a number. A match is played to 5, 10, 15, 20, 30, 40 or 50 victory points (default 20) on an extra
+  small, small, medium, large or extra large island of 19, 37, 61, 91 or 127 tiles (default medium), both chosen by the
+  host in the room before the match starts.
 - **Buildings** sit on tile corners and are upgraded in place: **Outpost → Town → Castle**. Every new building starts as
   an outpost on the owner's roads. Towns and castles never stand on neighbouring corners: an outpost next to a town or
   castle can't be upgraded, and starting towns keep the same distance.
@@ -74,11 +77,11 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   sides of a tile and whose buildings stand on all six of its corners has *ringed* it: it pays them 1 of its resource at
   the start of each of their turns, unless a bandit or a blockade stands on it.
 - **Setup**: in snake order each player places a starting town with a road, then an outpost with a road, and starts
-  with a small stock of resources.
+  with a small stock of resources and one knight token.
 - **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a bandit or a blockade
-  stands there. Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight cards, cast
-  a spell, deploy, and move, attack or blockade with knights, and end the turn.
-- **Knights**: a Knight card deploys onto a free tile next to the owner's town or castle (not an outpost). Knights move
+  stands there. Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight tokens,
+  cast a spell, deploy, and move, attack or blockade with knights, and end the turn.
+- **Knights**: a knight token deploys onto a free tile next to the owner's town or castle (not an outpost). Knights move
   one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a bandit or an enemy
   knight falls with it. One knight or bandit per tile. Instead of acting, a knight can *blockade* its tile: the tile
   produces nothing for anyone and the knight can neither move nor attack. Lifting the blockade is an order too; the
@@ -90,17 +93,21 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   of coming up as a chosen tile's number. Tile spells affect everyone on the tile, and a new one on a tile replaces the
   old.
 - **Bandits** block production on their tile. The island always has at least one, from the start. At the end of each
-  round they wander to a free neighbouring tile; then, while there are fewer than `floor(towns and castles / 4)`, another
-  appears on a free tile with a 50% chance. After a knight removes a bandit none appear for two full rounds; then one
-  appears if the island has none. Rolling 7 produces nothing and lets the roller move one bandit anywhere free, or place
-  a new one when the island has none; it then stays put through the next complete round.
-- **Items**: at the end of each round, with a 75% chance, an item appears on a free tile touching no town or castle. It
-  stays hidden until a knight walks onto its tile (knights can't deploy onto it), vanishes after 5 rounds, and is taken
-  by any bandit landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one random resource; a *mana crystal* refills
-  the finder's mana; a *spell scroll* one free cast of a random spell (no price, castle or mana needed); a *recruit* a
-  knight card; a *relic* is carried by the knight for 1 VP and dropped where it falls; a *trap* fells the knight; a
-  *bandit's hoard* gives 2 of each resource but brings a bandit next to it.
-- **Victory**: the first player to reach the match's goal (10, 20 or 30 victory points, relics included) wins.
+  round they wander to a free neighbouring tile; then, while there are fewer than
+  `floor(towns and castles / 4) + floor(tiles / 40)` (so 0, 0, 1, 2 or 3 more on the five island sizes), another
+  appears with a 50% chance on a free tile, more likely the farther it is from the other bandits. After a knight removes
+  a bandit none appear for two full rounds; then one appears if the island has none. Rolling 7 produces nothing and lets
+  the roller move one bandit anywhere free, or place a new one when the island has none; it then stays put through the
+  next complete round.
+- **Items**: when setup ends, 2 items per player appear; at the end of every round at least one more appears, and more
+  until there are 2 per player again (found and dropped ones don't count). They land on free tiles, more often the
+  farther they are from any knight, but never on the last tile a player holding a knight token could deploy onto. An
+  item stays hidden until a knight walks onto its tile (knights can't deploy onto
+  it), vanishes after 4 rounds, and is taken by any bandit landing on it. *Iron ore* gives 2 iron; *supplies* 2 of one
+  random resource; a *mana crystal* refills the finder's mana; a *spell scroll* one free cast of a random spell (no
+  price, castle or mana needed); a *recruit* a knight token; a *relic* is carried by the knight for 1 VP and dropped
+  where it falls; a *trap* fells the knight; a *bandit's hoard* gives 2 of each resource but brings a bandit next to it.
+- **Victory**: the first player to reach the match's goal (relics included) wins.
 
 Costs (all in `engine/src/balance.rs`):
 
@@ -110,7 +117,7 @@ Costs (all in `engine/src/balance.rs`):
 | Outpost | 2 wood, 1 stone |
 | Town upgrade | 1 stone, 2 food, 1 iron |
 | Castle upgrade | 3 stone, 2 food, 2 iron |
-| Knight card | 1 food, 1 iron |
+| Knight token | 1 food, 1 iron |
 | Frost spell | 1 stone, 3 iron |
 | Bounty spell | 1 wood, 1 food, 3 iron |
 | Lure spell | 1 food, 3 iron |
@@ -121,9 +128,13 @@ Costs (all in `engine/src/balance.rs`):
 ## Playing on a phone
 
 - Drag to pan, pinch to zoom (trackpad pinch, scroll and Ctrl+scroll on desktops).
-- Tap a tray action (Road, Outpost, Town ↑, Castle ↑) or a unit card in your hand: legal spots glow; tap one to build.
+- Tap a tray action (Road, Outpost, Town ↑, Castle ↑) or a unit token in your hand: legal spots glow; tap one to build.
 - Tap one of your ready units (gold dot) to see gold moves and red attacks.
-- Tap any tile, building or road to inspect it; tap the status line for the event history.
+- Tap any tile, building or road to inspect it. The dark strip over the dock shows what to do, or the latest action,
+  and your points; tap it for the event history.
+- The chip at the top left is the player whose turn it is; tap it to see everyone's points, resources, knight tokens
+  and mana.
+- The smiley left of the main button sends a reaction everyone sees in the middle of the screen, once every 10 seconds.
 
 ## Test
 

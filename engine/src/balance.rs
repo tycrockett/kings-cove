@@ -7,8 +7,8 @@ use crate::{
     types::{Resource, Resources},
 };
 
-/// The victory points a match may be played to, chosen when it is created.
-pub const VICTORY_POINT_GOALS: [u32; 3] = [10, 20, 30];
+/// The victory points a match may be played to, chosen in the lobby.
+pub const VICTORY_POINT_GOALS: [u32; 7] = [5, 10, 15, 20, 30, 40, 50];
 pub const DEFAULT_VICTORY_POINTS: u32 = 20;
 /// Victory points of a town.
 pub const TOWN_POINTS: u32 = 1;
@@ -18,28 +18,41 @@ pub const CITY_POINTS: u32 = 2;
 pub const MIN_PLAYERS: usize = 2;
 pub const MAX_PLAYERS: usize = 4;
 
-/// The island a match is played on, chosen when it is created.
+/// The island a match is played on, chosen in the lobby. Saved before the
+/// sizes were renamed, "small", "medium" and "large" meant 19, 37 and 61
+/// tiles: they still read as those.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum MapSize {
     /// The classic 19 tiles.
-    Small,
+    #[serde(rename = "xs", alias = "small")]
+    ExtraSmall,
     /// 37 tiles.
-    #[default]
-    Medium,
+    #[serde(rename = "s", alias = "medium")]
+    Small,
     /// 61 tiles.
+    #[default]
+    #[serde(rename = "m", alias = "large")]
+    Medium,
+    /// 91 tiles.
+    #[serde(rename = "l")]
     Large,
+    /// 127 tiles.
+    #[serde(rename = "xl")]
+    ExtraLarge,
 }
 
 impl MapSize {
-    pub const ALL: [MapSize; 3] = [MapSize::Small, MapSize::Medium, MapSize::Large];
+    pub const ALL: [MapSize; 5] =
+        [MapSize::ExtraSmall, MapSize::Small, MapSize::Medium, MapSize::Large, MapSize::ExtraLarge];
 
     /// Rings of tiles around the centre tile.
     pub const fn radius(self) -> i32 {
         match self {
-            MapSize::Small => 2,
-            MapSize::Medium => 3,
-            MapSize::Large => 4,
+            MapSize::ExtraSmall => 2,
+            MapSize::Small => 3,
+            MapSize::Medium => 4,
+            MapSize::Large => 5,
+            MapSize::ExtraLarge => 6,
         }
     }
 
@@ -50,9 +63,22 @@ impl MapSize {
 
     pub const fn label(self) -> &'static str {
         match self {
+            MapSize::ExtraSmall => "Extra small",
             MapSize::Small => "Small",
             MapSize::Medium => "Medium",
             MapSize::Large => "Large",
+            MapSize::ExtraLarge => "Extra large",
+        }
+    }
+
+    /// For a row of choices too narrow for [`MapSize::label`].
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            MapSize::ExtraSmall => "XS",
+            MapSize::Small => "S",
+            MapSize::Medium => "M",
+            MapSize::Large => "L",
+            MapSize::ExtraLarge => "XL",
         }
     }
 }
@@ -75,8 +101,12 @@ pub const ROBBER_ROLL: u8 = 7;
 /// The island always has at least this many robbers: one stands from the
 /// start, and a removed one comes back (see `ROBBER_RESPAWN_ROUNDS`).
 pub const MIN_ROBBERS: u32 = 1;
-/// Above the minimum, up to `total_settlements / SETTLEMENTS_PER_ROBBER`.
+/// Above the minimum, up to `total_settlements / SETTLEMENTS_PER_ROBBER`
+/// plus `tiles / TILES_PER_EXTRA_ROBBER`.
 pub const SETTLEMENTS_PER_ROBBER: u32 = 4;
+/// Bigger islands hold a few more robbers: one more per this many tiles
+/// (none extra on 19 or 37 tiles, 1 on 61, 2 on 91, 3 on 127).
+pub const TILES_PER_EXTRA_ROBBER: u32 = 40;
 /// Chance (numerator / denominator) an extra robber appears at the end of a
 /// round while below capacity.
 pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 2);
@@ -110,10 +140,10 @@ pub const MANA_RECHARGE_ROUNDS: u32 = 4;
 
 // Items turn up on the island for knights to walk onto.
 
-/// Chance (numerator / denominator) an item appears at the end of a round.
-pub const ITEM_SPAWN_CHANCE: (u64, u64) = (3, 4);
+/// The island is topped up to this many hidden items per player.
+pub const ITEMS_PER_PLAYER: u32 = 2;
 /// Rounds an item lies unclaimed before it vanishes.
-pub const ITEM_ROUNDS: u32 = 5;
+pub const ITEM_ROUNDS: u32 = 4;
 /// How often each item turns up, against the others.
 pub const ITEM_WEIGHTS: [(ItemKind, u32); 8] = [
     (ItemKind::IronOre, 3),
@@ -148,6 +178,8 @@ pub const fn res(wood: u32, stone: u32, food: u32, iron: u32) -> Resources {
 }
 
 pub const STARTING_RESOURCES: Resources = res(2, 2, 2, 1);
+/// Unit tokens of knights every player starts with.
+pub const STARTING_KNIGHTS: u32 = 1;
 
 /// Resources a building collects per matching adjacent tile.
 pub const OUTPOST_YIELD: u32 = 1;

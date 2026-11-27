@@ -1148,7 +1148,8 @@ fn token(mut p: Painter, (x, y): (f32, f32), number: u8, robbed: bool, px1: f32)
     p
 }
 
-/// A collected-resources badge: the resource's icon and `+amount`, drawn in
+/// A collected-resources badge in the collector's color: the resource's
+/// icon, ringed so it stands out on any color, and `+amount`, drawn in
 /// badge points of `unit` world units each.
 #[allow(clippy::too_many_arguments)]
 fn gain_badge(
@@ -1166,12 +1167,11 @@ fn gain_badge(
         p = art::rrect(p, (0.0, 0.0), 104.0, 56.0, 28.0).fill_color(hexa(palette::GOLD, 0.55)).fill();
     }
     p = art::shadow(p, 0.4, 10.0, 4.0);
-    p = art::rrect(p, (0.0, 0.0), 94.0, 46.0, 23.0).fill_color(hex(0xfffaf0)).fill();
+    p = art::rrect(p, (0.0, 0.0), 94.0, 46.0, 23.0).fill_color(hex(color)).fill();
     p = art::no_shadow(p);
-    p = art::rrect(p, (0.0, 0.0), 94.0, 46.0, 23.0).stroke_color(hex(palette::INK)).line_width(1.5).stroke();
-    p = art::rrect(p, (0.0, 0.0), 89.0, 41.0, 20.5).stroke_color(hex(color)).line_width(3.5).stroke();
+    p = art::rrect(p, (-23.0, 0.0), 38.0, 38.0, 11.0).fill_color(hex(0xfffaf0)).fill();
     p = art::resource_icon(p, r, (-23.0, 0.0), 32.0, 1.2);
-    p = text_at(p, &format!("+{amount}"), (19.0, 1.0), 28.0, palette::INK, 900, px1 / unit);
+    p = text_at(p, &format!("+{amount}"), (19.0, 1.0), 28.0, palette::ink_on(color), 900, px1 / unit);
     p.restore()
 }
 

@@ -56,7 +56,7 @@ impl Item {
             Item::Outpost => "Build an outpost",
             Item::Town => "Upgrade to a town",
             Item::City => "Upgrade to a castle",
-            Item::Knight => "Buy a knight card",
+            Item::Knight => "Buy a knight token",
         }
     }
 
@@ -121,7 +121,7 @@ impl Item {
                 "Your first castle unlocks spells.".to_owned(),
             ],
             Item::Knight => vec![
-                "Buying gives you a card. Deploy it from your hand onto a free tile touching your town or castle (not an outpost).".to_owned(),
+                "Buying gives you a token. Deploy it onto a free tile touching your town or castle (not an outpost).".to_owned(),
                 "Each turn it either moves to a free neighbouring tile or attacks; it rests the turn it arrives.".to_owned(),
                 "Attacks a neighbouring bandit or enemy knight:".to_owned(),
                 "• Bandit: the bandit and your knight both fall.".to_owned(),
@@ -237,7 +237,7 @@ pub fn item_rule(kind: ItemKind) -> String {
         ItemKind::Scroll => {
             "One free cast of a random spell: no price, no castle needed, and your mana stays as it is.".to_owned()
         }
-        ItemKind::Recruit => "A knight card.".to_owned(),
+        ItemKind::Recruit => "A knight token.".to_owned(),
         ItemKind::Relic => format!(
             "The knight carries it, worth {} VP to you. If the knight falls, the relic drops where it fell.",
             balance::RELIC_POINTS
@@ -253,7 +253,7 @@ pub fn item_found(kind: ItemKind, count: u32, gained: &Resources, scroll: Option
         ItemKind::IronOre | ItemKind::Supplies | ItemKind::Hoard => format!("{}: {gained}", item_title(kind)),
         ItemKind::ManaCrystal => "Mana crystal: mana refilled".to_owned(),
         ItemKind::Scroll => format!("Scroll: a free {}", scroll.map_or("spell", Spell::name)),
-        ItemKind::Recruit => "Recruit: a knight card".to_owned(),
+        ItemKind::Recruit => "Recruit: a knight token".to_owned(),
         ItemKind::Relic => format!("Relic: +{} VP", count * balance::RELIC_POINTS),
         ItemKind::Trap => "A trap! The knight fell".to_owned(),
     }
@@ -289,7 +289,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 match goal {
                     Some(goal) => format!("The first player to {goal} victory points wins."),
                     None => format!(
-                        "The first player to the match's goal wins: {} victory points, chosen when it is created along with the island's size: {}.",
+                        "The first player to the match's goal wins: {} victory points, chosen by the host in the lobby along with the island's size: {}.",
                         goals_text(),
                         balance::MapSize::ALL
                             .iter()
@@ -310,7 +310,11 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             None,
             vec![
                 "In turn order and then back again, each player places a starting town with a road, then an outpost with a road.".to_owned(),
-                format!("Everyone starts with {start}."),
+                format!(
+                    "Everyone starts with {start} and {} knight token{}.",
+                    balance::STARTING_KNIGHTS,
+                    if balance::STARTING_KNIGHTS == 1 { "" } else { "s" }
+                ),
             ],
         ),
         page(
@@ -318,7 +322,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             None,
             vec![
                 "Roll the dice. Every building touching a tile with that number collects its resource: yours and everyone else's.".to_owned(),
-                "Then build, buy knight cards, cast a spell, trade, deploy and command your knights, in any order.".to_owned(),
+                "Then build, buy knight tokens, cast a spell, trade, deploy and command your knights, in any order.".to_owned(),
                 "End your turn when you are done.".to_owned(),
             ],
         ),
@@ -335,12 +339,13 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
         cost: Some(spell.cost()),
         lines: std::iter::once(spell_summary(spell).to_owned()).chain(spell_rules(spell)).collect(),
     }));
-    let (item_num, item_den) = balance::ITEM_SPAWN_CHANCE;
     let mut items = vec![
         format!(
-            "At the end of each round, an item appears with a {}% chance on a free tile touching no town or castle.",
-            item_num * 100 / item_den
+            "Items are scattered over the island once it is set up, {} per player. At the end of every round at least one more appears, and more until there are {} per player again.",
+            balance::ITEMS_PER_PLAYER,
+            balance::ITEMS_PER_PLAYER
         ),
+        "They turn up on free tiles, most often far from any knight.".to_owned(),
         format!(
             "Nobody knows what it is until a knight walks onto its tile; knights can't deploy onto it. It vanishes after {} rounds, and a bandit landing on it takes it.",
             balance::ITEM_ROUNDS
@@ -369,8 +374,9 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 ),
                 "At the end of every round each bandit wanders to a free neighbouring tile.".to_owned(),
                 format!(
-                    "While there are fewer bandits than one per {} towns and castles on the island, another may appear at the end of a round ({}% chance).",
+                    "While there are fewer bandits than one per {} towns and castles, plus one per {} tiles of island, another may appear at the end of a round ({}% chance), as far from the others as it can.",
                     balance::SETTLEMENTS_PER_ROBBER,
+                    balance::TILES_PER_EXTRA_ROBBER,
                     spawn_num * 100 / spawn_den
                 ),
                 format!(

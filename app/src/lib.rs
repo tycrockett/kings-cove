@@ -65,21 +65,29 @@ fn card() -> View {
     view().bg(hex(palette::PAPER)).rounded(px(18.0)).p(px(18.0)).gap(px(12.0)).shadow_lg()
 }
 
-/// A titled row of chips, one per option; pressing one picks it into `pick`.
-fn choice<T: Copy + PartialEq + 'static>(title: &str, options: &[T], pick: Signal<T>, text: fn(T) -> String) -> View {
-    let current = pick.get();
+/// A titled row of chips, one per option, `current` picked; pressing another
+/// calls `pick` with it, unless the row is not `enabled`.
+fn choice<T: Copy + PartialEq + 'static>(
+    title: &str,
+    options: &[T],
+    current: T,
+    enabled: bool,
+    text: fn(T) -> String,
+    pick: impl Fn(T) + Copy + 'static,
+) -> View {
     let chips: Vec<View> = options
         .iter()
         .map(|&option| {
             let on = option == current;
-            view()
+            let chip = view()
                 .flex_1()
                 .items_center()
                 .py(px(8.0))
                 .rounded(px(12.0))
                 .bg(hex(if on { palette::INK } else { palette::PAPER_DIM }))
-                .on_press(move || pick.set(option))
-                .child(bold(text(option), 14.0, if on { 0xffffff } else { palette::INK }))
+                .opacity(if on || enabled { 1.0 } else { 0.5 })
+                .child(bold(text(option), 14.0, if on { 0xffffff } else { palette::INK }));
+            if on || !enabled { chip } else { chip.active(|s| s.opacity(0.7)).on_press(move || pick(option)) }
         })
         .collect();
     view().gap(px(6.0)).child(label(title, 12.0, palette::MUTED)).child(view().flex_row().gap(px(6.0)).child(chips))
@@ -103,23 +111,16 @@ fn home(app: AppState) -> impl IntoElement {
                     .gap(px(4.0))
                     .pt(px(24.0))
                     .child(bold("King's Cove", 34.0, palette::PAPER))
-                    .child(label("Build, trade and defend an island", 14.0, 0xc9d3cf)),
+                    .child(label("Build, trade and defend an island", 14.0, 0xc9d3cf))
+                    .child(label(format!("v{} · {}", env!("CARGO_PKG_VERSION"), env!("KC_BUILD")), 11.0, 0x8fa39c)),
             )
             .child(
                 card()
                     .child(label("Your name", 12.0, palette::MUTED))
                     .child(field("Name", name))
                     .child(dynamic(move || {
-                        Some(choice("Play to", &balance::VICTORY_POINT_GOALS, app.goal, |goal| format!("{goal} VP")))
-                    }))
-                    .child(dynamic(move || {
-                        Some(choice("Island size", &MapSize::ALL, app.map_size, |size| size.label().to_owned()))
-                    }))
-                    .child(dynamic(move || {
                         let ok = can_create() && !app.busy.get();
-                        Some(pill("Create match", palette::GO, 0xffffff, ok, move || {
-                            app.create(name.get_untracked(), app.goal.get_untracked(), app.map_size.get_untracked())
-                        }))
+                        Some(pill("Create match", palette::GO, 0xffffff, ok, move || app.create(name.get_untracked())))
                     }))
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                     .child(label("Join with a room code", 12.0, palette::MUTED))
@@ -243,15 +244,37 @@ fn lobby(app: AppState) -> impl IntoElement {
                     .child(
                         label(
                             format!(
-                                "Share it: 2–4 players · first to {} victory points · {} island",
+                                "Share it: 2–4 players · first to {} victory points · {} island ({} tiles)",
                                 view_.victory_points,
-                                view_.map_size.label().to_lowercase()
+                                view_.map_size.label().to_lowercase(),
+                                view_.map_size.tiles()
                             ),
                             12.0,
                             palette::MUTED,
                         )
                         .self_center(),
                     )
+                    .child(host.then(|| {
+                        let idle = !app.busy.get();
+                        view()
+                            .gap(px(10.0))
+                            .child(choice(
+                                "Victory points",
+                                &balance::VICTORY_POINT_GOALS,
+                                view_.victory_points,
+                                idle,
+                                |goal| goal.to_string(),
+                                move |goal| app.configure(Some(goal), None),
+                            ))
+                            .child(choice(
+                                "Island size",
+                                &MapSize::ALL,
+                                view_.map_size,
+                                idle,
+                                |size| size.short_label().to_owned(),
+                                move |size| app.configure(None, Some(size)),
+                            ))
+                    }))
                     .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                     .child(players)
                     .child(if host {

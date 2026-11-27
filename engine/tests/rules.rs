@@ -103,7 +103,13 @@ fn ids_are_stable_and_generation_is_seeded_and_balanced() {
 
 #[test]
 fn each_map_size_plays_on_its_own_balanced_island() {
-    for (size, tiles) in [(balance::MapSize::Small, 19), (balance::MapSize::Medium, 37), (balance::MapSize::Large, 61)] {
+    for (size, tiles) in [
+        (balance::MapSize::ExtraSmall, 19),
+        (balance::MapSize::Small, 37),
+        (balance::MapSize::Medium, 61),
+        (balance::MapSize::Large, 91),
+        (balance::MapSize::ExtraLarge, 127),
+    ] {
         for seed in 0..5 {
             let g = Game::new(&names(3), 10, size, &mut Rng::new(seed));
             assert_eq!(g.board.tiles.len(), tiles);
@@ -184,6 +190,13 @@ fn setup_runs_in_snake_order_with_a_town_then_an_outpost_each() {
         assert_eq!(p.resources, balance::STARTING_RESOURCES);
         assert_eq!(g.points(p.id), balance::TOWN_POINTS);
     }
+    // The island is topped up right away, on distinct tiles.
+    let hidden: Vec<_> = g.items.iter().filter(|i| !i.revealed).collect();
+    assert_eq!(hidden.len() as u32, balance::ITEMS_PER_PLAYER * 3);
+    let mut tiles: Vec<_> = hidden.iter().map(|i| i.tile).collect();
+    tiles.sort();
+    tiles.dedup();
+    assert_eq!(tiles.len(), hidden.len());
 }
 
 #[test]
@@ -374,6 +387,7 @@ fn cards_deploy_only_next_to_own_towns_and_cities() {
     let mut r = rng();
     let t = centre(&g);
     let vs = g.board.tile(t).vertices;
+    g.players[0].cards.knights = 0;
     assert_eq!(g.apply(P0, Action::Deploy { kind: UnitKind::Knight, tile: t }, &mut r), Err(RuleError::NoCard));
     g.players[0].resources = balance::KNIGHT_CARD_COST;
     g.apply(P0, Action::BuyCard(UnitKind::Knight), &mut r).unwrap();
@@ -633,26 +647,104 @@ fn item(g: &mut Game, tile: TileId, kind: ItemKind, last_round: u32) {
 }
 
 #[test]
-fn items_appear_half_the_rounds_away_from_towns_and_vanish_after_three() {
+fn every_round_at_least_one_item_appears_even_at_the_target() {
+    let mut g = playing(2);
+    g.robbers_quiet_until = 99;
+    let target = (balance::ITEMS_PER_PLAYER * 2) as usize;
+    let far = |g: &Game| g.board.tile_ids().filter(|&t| g.item_may_appear(t)).take(target).collect::<Vec<_>>();
+    for t in far(&g) {
+        item(&mut g, t, ItemKind::IronOre, 99);
+    }
+    // A found relic lying around does not count towards the target.
+    let spot = g.board.tile_ids().find(|&t| g.item_may_appear(t)).unwrap();
+    g.items.push(Item { tile: spot, kind: Some(ItemKind::Relic), revealed: true, count: 1, last_round: 99 });
+    for s in 0..20 {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        let hidden = copy.items.iter().filter(|i| !i.revealed).count();
+        assert_eq!(hidden, target + 1);
+        assert!(copy.events.iter().any(|e| matches!(e.event, Event::ItemAppeared { .. })));
+    }
+    // Below the target, it is topped up in one go.
+    let mut g = playing(2);
+    g.robbers_quiet_until = 99;
+    g.end_round(&mut rng());
+    assert_eq!(g.items.iter().filter(|i| !i.revealed).count(), target);
+}
+
+#[test]
+fn items_may_appear_next_to_towns_but_never_on_occupied_or_item_tiles() {
+    let mut g = playing(2);
+    let c = centre(&g);
+    let town = g.board.tile(c).vertices[0];
+    put(&mut g, town, P0, BuildingKind::Town);
+    // No token to deploy, so the town's last free tile isn't held clear.
+    g.players[0].cards.knights = 0;
+    assert!(g.item_may_appear(c));
+    let neighbours = g.board.tile(c).neighbors.clone();
+    let (knight_tile, robber_tile, item_tile) = (neighbours[0], neighbours[1], neighbours[2]);
+    unit(&mut g, 1, P1, UnitKind::Knight, knight_tile);
+    let id = robber(&mut g, 2, robber_tile);
+    g.robbers.iter_mut().find(|r| r.id == id).unwrap().frozen_through_round = 99;
+    g.robbers_quiet_until = 99;
+    item(&mut g, item_tile, ItemKind::Scroll, 99);
+    assert!(!g.item_may_appear(knight_tile) && !g.item_may_appear(robber_tile) && !g.item_may_appear(item_tile));
+    let mut touching_town = false;
+    for s in 0..60 {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        let new: Vec<_> = copy.items.iter().filter(|i| i.tile != item_tile).collect();
+        assert!(!new.is_empty());
+        for it in new {
+            assert!(it.tile != knight_tile && it.tile != robber_tile);
+            assert_eq!(it.last_round, g.round + balance::ITEM_ROUNDS);
+            touching_town |= g.board.tile(it.tile).vertices.contains(&town);
+        }
+        let mut tiles: Vec<_> = copy.items.iter().map(|i| i.tile).collect();
+        tiles.sort();
+        tiles.dedup();
+        assert_eq!(tiles.len(), copy.items.len(), "distinct tiles");
+    }
+    assert!(touching_town, "tiles touching a town are eligible");
+}
+
+#[test]
+fn items_leave_a_token_holder_their_last_deploy_tile() {
+    let mut g = playing(2);
+    let c = centre(&g);
+    let town = g.board.tile(c).vertices[0];
+    put(&mut g, town, P0, BuildingKind::Town);
+    let around: Vec<TileId> = g.board.vertex(town).tiles.clone();
+    assert_eq!(around.len(), 3);
+    // Robbers that stay put take all but one of the town's tiles.
+    for (i, &t) in around[1..].iter().enumerate() {
+        let id = robber(&mut g, 10 + i as u32, t);
+        g.robbers.iter_mut().find(|r| r.id == id).unwrap().frozen_through_round = 99;
+    }
+    g.robbers_quiet_until = 99;
+    assert_eq!(g.players[0].cards.knights, balance::STARTING_KNIGHTS);
+    assert_eq!(g.deploy_tiles(P0), vec![around[0]]);
+    for s in 0..60 {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        assert!(copy.item_at(around[0]).is_none(), "seed {s} covered the last deploy tile");
+    }
+    // Without a token to deploy, the tile is fair game again.
+    g.players[0].cards.knights = 0;
+    assert!((0..60).any(|s| {
+        let mut copy = g.clone();
+        copy.end_round(&mut Rng::new(s));
+        copy.item_at(around[0]).is_some()
+    }));
+}
+
+#[test]
+fn items_vanish_after_their_rounds_and_a_knight_guards_its_tile() {
     let mut g = playing(2);
     let town = g.board.tile(centre(&g)).vertices[0];
     put(&mut g, town, P0, BuildingKind::Town);
     let near: Vec<TileId> = g.board.tile_ids().filter(|&x| g.board.tile(x).vertices.contains(&town)).collect();
-    let trials = 400;
-    let mut appeared = 0;
-    for s in 0..trials {
-        let mut copy = g.clone();
-        copy.end_round(&mut Rng::new(s));
-        if let Some(it) = copy.items.first() {
-            appeared += 1;
-            assert!(!near.contains(&it.tile), "never on a tile touching a town");
-            assert!(copy.robber_at(it.tile).is_none());
-            assert_eq!(it.last_round, g.round + balance::ITEM_ROUNDS);
-        }
-    }
-    assert!((260..=340).contains(&appeared), "about three rounds in four: {appeared} of {trials}");
-
-    // One left at the end of this round lasts the next three, guarded from
+    // One with `ITEM_ROUNDS` rounds to go stays through them, guarded from
     // robbers by a knight standing on it.
     let far = g.board.tile_ids().find(|x| !near.contains(x)).unwrap();
     let last = g.round + balance::ITEM_ROUNDS;
@@ -817,6 +909,36 @@ fn robber_capacity_counts_towns_and_cities_only() {
         put(&mut g, VertexId(i * 3), P0, BuildingKind::Town);
     }
     assert_eq!(g.robber_capacity(), 2);
+}
+
+#[test]
+fn bigger_islands_hold_more_robbers() {
+    let capacity: Vec<u32> =
+        (2..=6).map(|r| Game::with_board(&names(2), Board::hexagon(r)).robber_capacity()).collect();
+    assert_eq!(capacity, [0, 0, 1, 2, 3], "19, 37, 61, 91, 127 tiles with no towns");
+}
+
+#[test]
+fn new_robbers_appear_far_from_the_others() {
+    let mut base = playing(2);
+    for i in 0..8u16 {
+        put(&mut base, VertexId(i * 5), P0, BuildingKind::Town);
+    }
+    let first = robber(&mut base, 100, TileId(0));
+    base.robbers[0].frozen_through_round = 99;
+    let near = base.board.tile(TileId(0)).neighbors.clone();
+    let (mut spawned, mut adjacent) = (0, 0);
+    for seed in 0..400 {
+        let mut g = base.clone();
+        g.end_round(&mut Rng::new(seed));
+        if let Some(new) = g.robbers.iter().find(|r| r.id != first) {
+            spawned += 1;
+            adjacent += usize::from(near.contains(&new.tile));
+        }
+    }
+    assert!(spawned > 100);
+    // Picked evenly, about one in six would land next to the first.
+    assert!(adjacent * 20 < spawned, "{adjacent} of {spawned} next to the first robber");
 }
 
 #[test]

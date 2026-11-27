@@ -6,6 +6,7 @@ use kings_cove_engine::{
     Action, Blockade, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Spell, Target,
     UnitKind, balance,
 };
+use kings_cove_protocol::{Reaction, SentReaction};
 use nsh_core::prelude::*;
 
 use crate::{
@@ -156,7 +157,7 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         }
         Event::Upgraded { player, to, .. } => format!("{} upgraded to a {}", n(*player), to.name()),
         Event::CardBought { player, kind } => {
-            format!("{} bought a {} card", n(*player), kind.name())
+            format!("{} bought a {} token", n(*player), kind.name())
         }
         Event::Deployed { player, kind, .. } => {
             format!("{} deployed a {}", n(*player), kind.name())
@@ -261,87 +262,117 @@ fn dice(app: AppState) -> impl IntoElement {
     }))
 }
 
-fn players_bar(app: AppState) -> impl IntoElement {
-    dynamic(move || {
-        let mv = app.view.get()?;
-        let g = mv.game.as_ref()?;
-        let chips: Vec<View> = g
-            .players
-            .iter()
-            .map(|p| {
-                let active = g.current == p.id && !matches!(g.phase, Phase::Finished { .. });
-                let me = p.id == mv.seat;
-                let color = palette::player(p.id);
-                let cards = p.cards.knights;
-                let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                let stats = view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(3.0))
-                    .child(star_icon(12.0))
-                    .child(bold(g.points(p.id).to_string(), 11.0, palette::INK))
-                    .child(view().w(px(3.0)))
-                    .child(cards_icon(12.0))
-                    .child(bold(p.resources.total().to_string(), 11.0, palette::MUTED))
-                    .child((cards > 0).then(|| {
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .child(view().w(px(3.0)))
-                            .child(glyph_icon(Glyph::Knight, color, 12.0, 12.0))
-                            .child(bold(cards.to_string(), 11.0, palette::MUTED))
-                    }))
-                    .child(g.has_city(p.id).then(|| {
-                        let wait = p.mana_ready_round.saturating_sub(g.round);
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .child(view().w(px(3.0)))
-                            .child(mana_icon(12.0, wait == 0))
-                            .child((wait > 0).then(|| bold(wait.to_string(), 11.0, palette::MUTED)))
-                    }));
-                let chip = view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .pl(px(4.0))
-                    .pr(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(18.0))
-                    .bg(hexa(palette::PAPER, if active { 1.0 } else { 0.8 }))
-                    .border_2()
-                    .border_color(hex(if active { palette::GOLD } else { palette::PAPER_DIM }))
-                    .child(
-                        view()
-                            .size(px(28.0))
-                            .rounded(px(14.0))
-                            .items_center()
-                            .justify_center()
-                            .bg(hex(color))
-                            .border_2()
-                            .border_color(hex(if active { palette::GOLD } else { 0xffffff }))
-                            .child(bold(initial, 13.0, palette::ink_on(color))),
-                    )
-                    .child(
-                        view()
-                            .gap(px(1.0))
-                            .child(
-                                bold(if me { format!("{} (you)", p.name) } else { p.name.clone() }, 11.5, palette::INK)
-                                    .number_of_lines(1)
-                                    .max_w(px(78.0)),
-                            )
-                            .child(stats),
-                    );
-                if active { chip.shadow_lg() } else { chip }
-            })
-            .collect();
-        Some(view().flex_row().flex_wrap().gap(px(5.0)).flex_1().child(chips))
-    })
+/// A player's chip: color and initial, name, and their points, resources,
+/// knight tokens and mana.
+fn player_chip(g: &Game, p: &kings_cove_engine::Player, me: bool, active: bool) -> View {
+    let color = palette::player(p.id);
+    let cards = p.cards.knights;
+    let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    let stats = view()
+        .flex_row()
+        .items_center()
+        .gap(px(3.0))
+        .child(star_icon(12.0))
+        .child(bold(g.points(p.id).to_string(), 11.0, palette::INK))
+        .child(view().w(px(3.0)))
+        .child(cards_icon(12.0))
+        .child(bold(p.resources.total().to_string(), 11.0, palette::MUTED))
+        .child((cards > 0).then(|| {
+            view()
+                .flex_row()
+                .items_center()
+                .child(view().w(px(3.0)))
+                .child(glyph_icon(Glyph::Knight, color, 12.0, 12.0))
+                .child(bold(cards.to_string(), 11.0, palette::MUTED))
+        }))
+        .child(g.has_city(p.id).then(|| {
+            let wait = p.mana_ready_round.saturating_sub(g.round);
+            view()
+                .flex_row()
+                .items_center()
+                .child(view().w(px(3.0)))
+                .child(mana_icon(12.0, wait == 0))
+                .child((wait > 0).then(|| bold(wait.to_string(), 11.0, palette::MUTED)))
+        }));
+    let chip = view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .pl(px(4.0))
+        .pr(px(10.0))
+        .py(px(4.0))
+        .rounded(px(18.0))
+        .bg(hexa(palette::PAPER, if active { 1.0 } else { 0.8 }))
+        .border_2()
+        .border_color(hex(if active { palette::GOLD } else { palette::PAPER_DIM }))
+        .child(
+            view()
+                .size(px(28.0))
+                .rounded(px(14.0))
+                .items_center()
+                .justify_center()
+                .bg(hex(color))
+                .border_2()
+                .border_color(hex(if active { palette::GOLD } else { 0xffffff }))
+                .child(bold(initial, 13.0, palette::ink_on(color))),
+        )
+        .child(
+            view()
+                .gap(px(1.0))
+                .child(
+                    bold(if me { format!("{} (you)", p.name) } else { p.name.clone() }, 11.5, palette::INK)
+                        .number_of_lines(1)
+                        .max_w(px(78.0)),
+                )
+                .child(stats),
+        );
+    if active { chip.shadow_lg() } else { chip }
 }
 
-fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> String {
-    let who = name(names, g.current);
-    match g.phase {
+/// The active player's chip; tapping it drops everyone's below it.
+fn players_bar(app: AppState) -> impl IntoElement {
+    let everyone = move || {
+        let mv = app.view.get()?;
+        let g = mv.game.as_ref()?;
+        let finished = matches!(g.phase, Phase::Finished { .. });
+        let chips: Vec<View> =
+            g.players.iter().map(|p| player_chip(g, p, p.id == mv.seat, p.id == g.current && !finished)).collect();
+        Some(view().gap(px(5.0)).items_start().child(chips))
+    };
+    view()
+        .flex_1()
+        .items_start()
+        .child(dynamic(move || {
+            let mv = app.view.get()?;
+            let g = mv.game.as_ref()?;
+            let finished = matches!(g.phase, Phase::Finished { .. });
+            let current = &g.players[g.current.index()];
+            Some(
+                player_chip(g, current, current.id == mv.seat, !finished)
+                    .active(|s| s.opacity(0.8))
+                    .on_press(move || app.players_open.update(|o| *o = !*o)),
+            )
+        }))
+        // Out of the column's flow, so opening it moves nothing else; made
+        // once per opening, so it slides in only then.
+        .child(when(app.players_open, move || {
+            panel()
+                .absolute()
+                .top(px(46.0))
+                .left(px(0.0))
+                .w(px(240.0))
+                .p(px(8.0))
+                .gap(px(5.0))
+                .items_start()
+                .on_press(move || app.players_open.set(false))
+                .bind_motion(&motion().entering(MotionPreset::FadeInDown))
+                .child(dynamic(everyone))
+        }))
+}
+
+/// What the board asks of the player now, if anything.
+fn prompt(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<String> {
+    Some(match g.phase {
         Phase::Finished { winner } => format!("{} wins!", name(names, winner)),
         Phase::Setup { step, placing } if g.current == seat => match placing {
             SetupPlacing::Building => {
@@ -349,8 +380,8 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
             }
             SetupPlacing::Road { .. } => "Tap a glowing edge for a road beside it".to_owned(),
         },
-        Phase::Setup { .. } => format!("{who} is placing…"),
-        Phase::Playing if g.current != seat => format!("{who}'s turn"),
+        Phase::Setup { .. } => return None,
+        Phase::Playing if g.current != seat => return None,
         Phase::Playing if g.dice.is_none() => "Your turn! Roll the dice".to_owned(),
         Phase::Playing => match app.mode.get() {
             Mode::Road => "Tap a glowing edge to build a road".to_owned(),
@@ -371,9 +402,9 @@ fn status_text(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Str
                 "You rolled 7: tap a tile to place a bandit".to_owned()
             }
             Mode::Idle if g.robber_relocation => "You rolled 7: tap a bandit to move it".to_owned(),
-            Mode::Idle => "Build, trade, or command your units".to_owned(),
+            Mode::Idle => return None,
         },
-    }
+    })
 }
 
 fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
@@ -442,67 +473,102 @@ fn top(app: AppState) -> impl IntoElement {
         .right(px(0.0))
         .pt_safe_area_plus(px(8.0))
         .px(px(8.0))
-        .gap(px(6.0))
         .pointer_events(PointerEvents::BoxNone)
-        .child(
-            // Above the status card, so the history panel opens over it.
-            view().flex_row().items_start().gap(px(6.0)).z_index(1).child(players_bar(app)).child(
-                view()
-                    .items_end()
-                    .gap(px(4.0))
-                    .child(dice(app))
-                    .child(dynamic(move || {
-                        let (round, goal) = app
-                            .view
-                            .with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| (g.round, g.victory_points))))?;
-                        let online = app.connected.get();
-                        Some(bold(
-                            if !online {
-                                "reconnecting…".to_owned()
-                            } else if round == 0 {
-                                format!("SETUP · TO {goal}")
-                            } else {
-                                format!("ROUND {round} · TO {goal}")
-                            },
-                            10.0,
-                            if online { 0xe7dfcb } else { palette::GOLD },
-                        ))
-                    }))
-                    .child(history(app)),
-            ),
-        )
+        .child(view().flex_row().items_start().gap(px(6.0)).child(players_bar(app)).child(
+            view().items_end().gap(px(4.0)).child(dice(app)).child(dynamic(move || {
+                let (round, goal) =
+                    app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref().map(|g| (g.round, g.victory_points))))?;
+                let online = app.connected.get();
+                Some(bold(
+                    if !online {
+                        "reconnecting…".to_owned()
+                    } else if round == 0 {
+                        format!("SETUP · TO {goal}")
+                    } else {
+                        format!("ROUND {round} · TO {goal}")
+                    },
+                    10.0,
+                    if online { 0xe7dfcb } else { palette::GOLD },
+                ))
+            })),
+        ))
+}
+
+/// The strip over the dock: what the board asks (or what was tapped), the
+/// latest action and the player's points. Tapping it opens the history
+/// above it.
+fn action_bar(app: AppState) -> impl IntoElement {
+    view()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(when(app.history_open, move || {
+            panel()
+                .mx(px(8.0))
+                .mb(px(6.0))
+                .px(px(12.0))
+                .py(px(8.0))
+                .gap(px(3.0))
+                .on_press(move || app.history_open.set(false))
+                .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                .child(bold("History", 12.0, palette::MUTED))
+                .child(dynamic(move || {
+                    let mv = app.view.get()?;
+                    let g = mv.game.as_ref()?;
+                    let lines: Vec<Text> = g
+                        .events
+                        .iter()
+                        .rev()
+                        .filter_map(|e| describe(&mv.players, &e.event))
+                        .take(14)
+                        .map(|l| label(l, 12.0, palette::INK).number_of_lines(1))
+                        .collect();
+                    Some(view().gap(px(3.0)).child(lines))
+                }))
+        }))
         .child(dynamic(move || {
-            let view = app.view.get()?;
-            let g = view.game.as_ref()?;
-            let inspecting = app.inspect.get();
-            let my_turn = g.is_active(view.seat) && inspecting.is_none();
-            let main = match inspecting {
-                Some(i) => inspect_text(g, &view.players, i),
-                None => status_text(app, g, view.seat, &view.players),
+            let mv = app.view.get()?;
+            let g = mv.game.as_ref()?;
+            let seat = mv.seat;
+            let ask = match app.inspect.get() {
+                Some(i) => Some(inspect_text(g, &mv.players, i)),
+                None => prompt(app, g, seat, &mv.players),
             };
             // The dice are still in the air: keep their result for the landing.
             let last = if app.dice_hidden.get() {
                 Some("Rolling…".to_owned())
             } else {
-                g.events.iter().rev().find_map(|e| describe(&view.players, &e.event))
+                g.events.iter().rev().find_map(|e| describe(&mv.players, &e.event))
             };
+            let (last_size, last_color) = if ask.is_some() { (11.0, 0xbdb7aa) } else { (13.0, 0xffffff) };
             Some(
-                panel()
-                    .self_start()
-                    .px(px(12.0))
-                    .py(px(7.0))
-                    .gap(px(2.0))
-                    .bg(hexa(if my_turn { 0xfff0c2 } else { palette::PAPER }, 0.97))
-                    .border_color(hex(if my_turn { palette::GOLD } else { palette::PAPER_DIM }))
-                    .border_2()
-                    .child(bold(main, 13.5, palette::INK))
-                    .child(last.map(|l| label(l, 11.0, palette::MUTED).number_of_lines(1)))
-                    .child(unit_command(app, g, view.seat)),
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .bg(hexa(0x000000, 0.6))
+                    .rounded_tl(px(22.0))
+                    .rounded_tr(px(22.0))
+                    .active(|s| s.opacity(0.85))
+                    .on_press(move || app.history_open.update(|o| *o = !*o))
+                    .child(
+                        view()
+                            .flex_1()
+                            .gap(px(2.0))
+                            .child(ask.map(|a| bold(a, 13.5, if g.is_active(seat) { 0xffe7a3 } else { 0xffffff })))
+                            .child(last.map(|l| label(l, last_size, last_color).number_of_lines(1)))
+                            .child(unit_command(app, g, seat)),
+                    )
+                    .child(view().flex_row().items_center().gap(px(4.0)).child(star_icon(16.0)).child(bold(
+                        g.points(seat).to_string(),
+                        16.0,
+                        0xffffff,
+                    ))),
             )
         }))
 }
 
-/// The selected knight's blockade order, under the status line.
+/// The selected knight's blockade order, under the prompt.
 fn unit_command(app: AppState, g: &Game, seat: PlayerId) -> Option<View> {
     let Mode::Unit(id) = app.mode.get() else { return None };
     let (text, action, ok) = match g.unit(id)?.blockade {
@@ -512,45 +578,10 @@ fn unit_command(app: AppState, g: &Game, seat: PlayerId) -> Option<View> {
         }
         Some(Blockade::Lifting { .. }) => return None,
     };
-    Some(pill(text, palette::INK, 0xffffff, ok && !app.busy.get(), move || {
+    Some(pill(text, palette::GOLD, palette::INK, ok && !app.busy.get(), move || {
         app.mode.set(Mode::Idle);
         app.send(action.clone());
     }))
-}
-
-/// The turn history: a button under the dice, its panel dropping below it.
-fn history(app: AppState) -> View {
-    view().items_end().child(small_button("History", move || app.history_open.update(|o| *o = !*o))).child(dynamic(
-        move || {
-            if !app.history_open.get() {
-                return None;
-            }
-            let view = app.view.get()?;
-            let g = view.game.as_ref()?;
-            let lines: Vec<Text> = g
-                .events
-                .iter()
-                .rev()
-                .filter_map(|e| describe(&view.players, &e.event))
-                .take(14)
-                .map(|l| label(l, 12.0, palette::INK).number_of_lines(1))
-                .collect();
-            // Out of the column's flow, so opening it moves nothing else.
-            Some(
-                panel()
-                    .absolute()
-                    .top(px(28.0))
-                    .right(px(0.0))
-                    .w(px(270.0))
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .gap(px(3.0))
-                    .on_press(move || app.history_open.set(false))
-                    .child(bold("History", 12.0, palette::MUTED))
-                    .child(lines),
-            )
-        },
-    ))
 }
 
 // ----- Bottom -----
@@ -1389,7 +1420,8 @@ fn bottom(app: AppState) -> impl IntoElement {
                 trade_offer(app, g, view_.seat, &view_.players)
             }),
         ))
-        .child(dynamic(move || {
+        .child(reaction_picker(app))
+        .child(view().pointer_events(PointerEvents::BoxNone).child(action_bar(app)).child(dynamic(move || {
             let view_ = app.view.get()?;
             let g = view_.game.as_ref()?;
             let _ = app.mode.get();
@@ -1402,8 +1434,6 @@ fn bottom(app: AppState) -> impl IntoElement {
                     .bg_linear(deg(180.0))
                     .gradient_from(hex(0xfbf6ea))
                     .gradient_to(hex(0xe9dfc6))
-                    .rounded_tl(px(22.0))
-                    .rounded_tr(px(22.0))
                     .border_t(px(2.0))
                     .border_color(hex(if g.is_active(seat) { palette::GOLD } else { 0xcbbf9f }))
                     .shadow_lg()
@@ -1417,13 +1447,13 @@ fn bottom(app: AppState) -> impl IntoElement {
                         view()
                             .flex_row()
                             .items_center()
-                            .justify_end()
                             .gap(px(8.0))
+                            .child(reaction_button(app))
                             .child(primary(app, g, seat, &view_.players).map(|p| p.flex_1()))
                             .child(menu_button(app)),
                     ),
             )
-        }))
+        })))
 }
 
 fn winner(app: AppState) -> impl IntoElement {
@@ -1479,17 +1509,6 @@ fn winner(app: AppState) -> impl IntoElement {
     })
 }
 
-fn small_button(title: &'static str, on: impl Fn() + 'static) -> View {
-    view()
-        .px(px(10.0))
-        .py(px(4.0))
-        .rounded(px(10.0))
-        .bg(hexa(palette::PAPER, 0.85))
-        .active(|s| s.opacity(0.6))
-        .on_press(on)
-        .child(bold(title, 11.0, palette::INK))
-}
-
 /// The round gear button beside the main button: it opens the menu.
 fn menu_button(app: AppState) -> View {
     let gear = canvas(move || {
@@ -1513,7 +1532,12 @@ fn menu_button(app: AppState) -> View {
             .fill()
     })
     .size(px(28.0));
-    view()
+    round_button(true, move || app.menu.set(Menu::Open)).child(gear)
+}
+
+/// A round button the main button's height, on either side of it.
+fn round_button(enabled: bool, on: impl Fn() + 'static) -> View {
+    let v = view()
         .size(px(52.0))
         .rounded(px(26.0))
         .items_center()
@@ -1522,9 +1546,87 @@ fn menu_button(app: AppState) -> View {
         .border_2()
         .border_color(hex(palette::PAPER_DIM))
         .shadow_md()
-        .active(|s| s.opacity(0.7).scale(0.94))
-        .on_press(move || app.menu.set(Menu::Open))
-        .child(gear)
+        .opacity(if enabled { 1.0 } else { 0.4 });
+    if enabled { v.active(|s| s.opacity(0.7).scale(0.94)).on_press(on) } else { v }
+}
+
+/// The round button across from the menu: it opens the reactions, and rests
+/// through the cooldown after one is sent.
+fn reaction_button(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let ready = app.react_ready.get();
+        Some(
+            round_button(ready, move || app.reactions_open.update(|o| *o = !*o))
+                .child(text(Reaction::Laugh.emoji()).text_size(px(24.0))),
+        )
+    })
+}
+
+/// The reactions to pick from, over the dock.
+fn reaction_picker(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        if !app.reactions_open.get() || !app.react_ready.get() {
+            return None;
+        }
+        let choices: Vec<View> = Reaction::ALL
+            .into_iter()
+            .map(|r| {
+                view()
+                    .size(px(44.0))
+                    .rounded(px(22.0))
+                    .items_center()
+                    .justify_center()
+                    .active(|s| s.opacity(0.6).scale(0.9))
+                    .on_press(move || app.react(r))
+                    .child(text(r.emoji()).text_size(px(26.0)))
+            })
+            .collect();
+        Some(
+            panel()
+                .self_start()
+                .ml(px(8.0))
+                .flex_row()
+                .p(px(4.0))
+                .gap(px(2.0))
+                .rounded(px(26.0))
+                .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                .child(choices),
+        )
+    })
+}
+
+/// Reactions just sent, each with its sender's name, in the middle of the
+/// screen for a moment.
+fn reactions_layer(app: AppState) -> impl IntoElement {
+    // One row per reaction, kept while it shows, so each pops in only once.
+    let rows = each(
+        app.reactions_shown,
+        |r: &SentReaction| r.seq,
+        move |r, _| {
+            let r = r.get_untracked();
+            let color = palette::player(r.seat);
+            let who = app.view.with_untracked(|v| v.as_ref().map(|v| name(&v.players, r.seat))).unwrap_or_default();
+            view()
+                .items_center()
+                .gap(px(6.0))
+                .bind_motion(&motion().entering(MotionPreset::PopIn))
+                .child(text(r.reaction.emoji()).text_size(px(64.0)))
+                .child(view().px(px(10.0)).py(px(3.0)).rounded(px(10.0)).bg(hex(color)).child(bold(
+                    who,
+                    13.0,
+                    palette::ink_on(color),
+                )))
+        },
+    );
+    view()
+        .absolute()
+        .inset_0()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(24.0))
+        .pointer_events(PointerEvents::None)
+        .child(rows)
 }
 
 /// A dimmed screen with a card in the middle. The card swallows its own
@@ -1669,6 +1771,7 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .child(bottom(app))
         .child(winner(app))
         .child(fx::fx_layer(app))
+        .child(reactions_layer(app))
         .child(item_card(app))
         .child(spellbook(app))
         .child(attack_confirm(app))
