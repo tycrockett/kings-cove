@@ -447,6 +447,9 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
             }
             if let Some(p) = g.players.iter().find(|p| g.ringed_tiles(p.id).contains(&t)) {
                 s += &format!(" · ringed by {}", name(names, p.id));
+                if !g.city_on(t) {
+                    s += " (pays once a castle stands on it)";
+                }
             }
             if let Some(item) = g.item_at(t) {
                 let what = item.kind.map_or("an unknown item", rules::item_title);

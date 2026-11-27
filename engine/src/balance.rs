@@ -164,7 +164,8 @@ pub const RELIC_POINTS: u32 = 1;
 
 /// Full rounds a knight's blockade holds after it starts packing up.
 pub const BLOCKADE_LIFT_ROUNDS: u32 = 2;
-/// What a tile pays each turn to the player ringing it with roads and buildings.
+/// What a tile pays each turn to the player ringing it with roads and
+/// buildings, a city among them.
 pub const RING_INCOME: u32 = 1;
 
 /// How many of one resource the bank takes for one of another.

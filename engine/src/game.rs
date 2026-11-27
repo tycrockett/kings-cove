@@ -1084,6 +1084,11 @@ impl Game {
             .collect()
     }
 
+    /// A city stands on one of the tile's corners: a ring around it pays.
+    pub fn city_on(&self, tile: TileId) -> bool {
+        self.board.tile(tile).vertices.iter().any(|&v| self.building(v).is_some_and(|b| b.kind == BuildingKind::City))
+    }
+
     /// Tiles the unit may move to now.
     pub fn move_targets(&self, player: PlayerId, id: UnitId) -> Vec<TileId> {
         let Some(unit) = self.unit(id) else {
@@ -1769,8 +1774,9 @@ impl Game {
         self.begin_turn(PlayerId(next as u8));
     }
 
-    /// The player's knights stand ready, and every tile they ring pays them,
-    /// unless a bandit or a blockade stands on it.
+    /// The player's knights stand ready, and every tile they ring with a
+    /// city among its corners pays them, unless a bandit or a blockade
+    /// stands on it.
     fn begin_turn(&mut self, player: PlayerId) {
         self.current = player;
         self.dice = None;
@@ -1781,7 +1787,7 @@ impl Game {
         }
         self.log(Event::TurnStarted { player, round: self.round });
         for tile in self.ringed_tiles(player) {
-            if self.robber_at(tile).is_some() || self.blockaded(tile) {
+            if !self.city_on(tile) || self.robber_at(tile).is_some() || self.blockaded(tile) {
                 continue;
             }
             let resource = self.board.tile(tile).resource;

@@ -864,7 +864,7 @@ fn a_blockade_starves_its_tile_and_takes_two_full_rounds_to_lift() {
 }
 
 #[test]
-fn a_tile_ringed_with_roads_and_buildings_pays_every_turn() {
+fn a_tile_ringed_with_roads_and_buildings_and_a_castle_pays_every_turn() {
     let mut g = playing(2);
     let mut r = rng();
     let t = centre(&g);
@@ -887,6 +887,9 @@ fn a_tile_ringed_with_roads_and_buildings_pays_every_turn() {
     pass(&mut g, &mut r);
     assert_eq!(g.players[0].resources.get(tile.resource), before, "five corners are no ring");
     put(&mut g, tile.vertices[5], P0, BuildingKind::Outpost);
+    pass(&mut g, &mut r);
+    assert_eq!(g.players[0].resources.get(tile.resource), before, "a ring without a castle pays nothing");
+    put(&mut g, tile.vertices[5], P0, BuildingKind::City);
     pass(&mut g, &mut r);
     assert_eq!(g.players[0].resources.get(tile.resource), before + balance::RING_INCOME);
 }

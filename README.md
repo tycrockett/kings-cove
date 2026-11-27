@@ -74,8 +74,8 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   | Castle | 2 | 2 |
 
 - **Roads** sit on tile sides and must connect to the owner's roads or buildings. A player whose roads cover all six
-  sides of a tile and whose buildings stand on all six of its corners has *ringed* it: it pays them 1 of its resource at
-  the start of each of their turns, unless a bandit or a blockade stands on it.
+  sides of a tile and whose buildings stand on all six of its corners, one of them a castle, has *ringed* it: it pays
+  them 1 of its resource at the start of each of their turns, unless a bandit or a blockade stands on it.
 - **Setup**: in snake order each player places a starting town with a road, then an outpost with a road, and starts
   with a small stock of resources and one knight token.
 - **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a bandit or a blockade
