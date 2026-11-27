@@ -1148,15 +1148,19 @@ fn palisade(mut p: Painter, g: &Game, tile: TileId, owner: PlayerId, b: Blockade
 }
 
 /// The spell's seal at the top of its tile, with the rolls it has left,
-/// legible at any zoom.
+/// legible at any zoom. It stays clear of the number token below it
+/// (raised to its spell's place, its top 0.38 S above the centre): zoomed
+/// out, where the tile is too small for both, it rises past the tile's top.
 fn spell_seal(p: Painter, g: &Game, e: &Enchantment, tile: TileId, px1: f32) -> Painter {
     let c = tile_pos(g, tile);
     let (_, deep, _) = art::spell_colors(e.spell);
-    let mut p = p.save().translate(c.0, c.1 - 0.62 * S).scale(px1, px1);
+    // The seal reaches 11 points below its centre; 2 more keep it apart.
+    let lift = (0.62 * S).max(0.38 * S + 13.0 * px1);
+    let mut p = p.save().translate(c.0, c.1 - lift).scale(px1, px1);
     p = art::shadow(p, 0.45, 6.0, 2.0);
     p = art::spell_emblem(p, e.spell, (0.0, 0.0), 11.0, 1.5);
     p = art::no_shadow(p);
-    p = count_badge(p, (9.0, 8.0), e.charges, deep, 1.0);
+    p = count_badge(p, (10.0, 4.0), e.charges, deep, 1.0);
     p.restore()
 }
 
