@@ -871,8 +871,11 @@ fn spellbook(app: AppState) -> impl IntoElement {
                     return row;
                 }
                 let blocker = spell_blocker(g, seat, spell);
-                let lines: Vec<Text> =
-                    rules::spell_rules(spell).into_iter().map(|l| label(l, 13.0, palette::INK)).collect();
+                let lines: Vec<Text> = rules::spell_rules(spell)
+                    .into_iter()
+                    .chain([rules::mana_rule()])
+                    .map(|l| label(l, 13.0, palette::INK))
+                    .collect();
                 let cast = pill(
                     format!("Cast {}", spell.name()),
                     palette::GO,

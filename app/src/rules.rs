@@ -88,10 +88,7 @@ impl Item {
                 "Sits on a side of a tile.".to_owned(),
                 "Must touch one of your roads or buildings.".to_owned(),
                 "New outposts can only go on a corner your roads reach.".to_owned(),
-                format!(
-                    "Ring a tile with your roads on all six sides and your buildings on all six corners: it pays you {} of its resource at the start of each of your turns, unless a bandit or a blockade stands on it.",
-                    balance::RING_INCOME
-                ),
+                "Close a ring of roads and buildings around a tile, one of them a castle, and it pays you every turn (see Rings).".to_owned(),
             ],
             Item::Outpost => vec![
                 "Goes on any free corner one of your roads reaches.".to_owned(),
@@ -118,7 +115,8 @@ impl Item {
                     balance::CITY_POINTS,
                     balance::CITY_YIELD
                 ),
-                "Once you have a castle, spells cost no resources.".to_owned(),
+                "Once you have a castle, spells cost no resources (see Spells and mana).".to_owned(),
+                "A ring with a castle on it pays you every turn (see Rings).".to_owned(),
             ],
             Item::Knight => vec![
                 "Buying gives you a token. Deploy it onto a free tile touching your town or castle (not an outpost).".to_owned(),
@@ -158,7 +156,7 @@ pub fn spell_summary(spell: Spell) -> &'static str {
     }
 }
 
-/// What the spell does, then the rules every spell shares.
+/// What the spell does; the rules every spell shares are [`casting_rules`].
 pub fn spell_rules(spell: Spell) -> Vec<String> {
     let rolls = |effect: &str| {
         format!(
@@ -191,11 +189,25 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
     if spell.lasting().is_some() {
         lines.push("A spell cast on a tile that already holds one replaces it.".to_owned());
     }
-    lines.push(format!(
-        "Anyone can cast spells: pay the price, or nothing once you have a castle. Any spell empties your mana for {} rounds.",
-        balance::MANA_RECHARGE_ROUNDS
-    ));
     lines
+}
+
+/// How mana limits casting, in a sentence.
+pub fn mana_rule() -> String {
+    format!(
+        "All your spells share one mana: casting any spell empties it, and it refills after {} rounds.",
+        balance::MANA_RECHARGE_ROUNDS
+    )
+}
+
+/// The rules every spell shares.
+pub fn casting_rules() -> Vec<String> {
+    vec![
+        "Cast a spell from the spellbook on your turn, after you roll.".to_owned(),
+        "Anyone can cast. Without a castle a spell costs the price on its page; once you have a castle, every spell is free.".to_owned(),
+        mana_rule(),
+        "A mana crystal refills your mana at once. A spell scroll casts its spell free, whatever your mana, and leaves your mana as it is.".to_owned(),
+    ]
 }
 
 /// What a lingering spell's counter counts.
@@ -235,7 +247,7 @@ pub fn item_rule(kind: ItemKind) -> String {
         ItemKind::Supplies => format!("{} of one resource, whichever turns up.", balance::SUPPLIES_FIND),
         ItemKind::ManaCrystal => "Your mana refills at once.".to_owned(),
         ItemKind::Scroll => {
-            "One free cast of a random spell: no price, no castle needed, and your mana stays as it is.".to_owned()
+            "One free cast of a random spell: no price, whatever your mana, and your mana stays as it is.".to_owned()
         }
         ItemKind::Recruit => "A knight token.".to_owned(),
         ItemKind::Relic => format!(
@@ -299,9 +311,10 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                     ),
                 },
                 format!(
-                    "Towns are worth {} VP and castles {}; outposts score nothing.",
+                    "Towns are worth {} VP and castles {}; outposts score nothing. A relic counts {} VP for as long as one of your knights carries it.",
                     balance::TOWN_POINTS,
-                    balance::CITY_POINTS
+                    balance::CITY_POINTS,
+                    balance::RELIC_POINTS
                 ),
             ],
         ),
@@ -333,6 +346,20 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
         cost: Some(item.cost()),
         lines: std::iter::once(item.summary().to_owned()).chain(item.rules()).collect(),
     }));
+    pages.push(page(
+        "Rings",
+        Some(Glyph::Road),
+        vec![
+            "Ring a tile: your roads on all six of its sides and your buildings on all six of its corners.".to_owned(),
+            format!(
+                "Once one of those buildings is a castle, the tile pays you {} of its resource at the start of each of your turns, whatever is rolled.",
+                balance::RING_INCOME
+            ),
+            "A bandit or a blockade on the tile stops the payment while it stands there.".to_owned(),
+            "Towns and castles can't stand on neighbouring corners, so at most three of a ring's buildings are towns or castles; the rest are outposts.".to_owned(),
+        ],
+    ));
+    pages.push(page("Spells and mana", Some(Glyph::Spellbook), casting_rules()));
     pages.extend(Spell::ALL.into_iter().map(|spell| Section {
         title: format!("Spell: {}", spell_title(spell)),
         glyph: Some(Glyph::Spell(spell)),
@@ -361,6 +388,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 "Knight → bandit: the bandit and the knight both fall.".to_owned(),
                 "Knight → knight: both knights fall.".to_owned(),
                 "Every attack costs the attacking knight. One knight or bandit per tile.".to_owned(),
+                "Instead of moving or attacking, a knight can blockade its tile: nothing is produced there until the blockade lifts (see Knight).".to_owned(),
             ],
         ),
         page(
@@ -394,6 +422,15 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                     balance::BANK_TRADE_RATE
                 ),
                 "Or offer resources to everyone or to one player. The first player to accept trades with you; anyone can decline.".to_owned(),
+            ],
+        ),
+        page(
+            "Leaving a match",
+            None,
+            vec![
+                "Closing the app or losing the connection keeps your seat: open the app again and you are back in the match.".to_owned(),
+                "Menu → Leave match takes this device out of the match. Your seat stays, and the others wait on your turns.".to_owned(),
+                "The host can end the match for everyone from the menu; every player goes back to the home screen.".to_owned(),
             ],
         ),
     ]);
