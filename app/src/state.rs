@@ -24,11 +24,12 @@ use nsh_core::platform::Lifecycle;
 
 /// How far behind the game queued effects may fall before they are dropped.
 const MAX_BACKLOG_MS: f64 = 4000.0;
-/// The clock's period while something animates: about 60 frames a second.
+/// The clock's period while something animates: every display frame, up to
+/// 60 a second (a 120 Hz screen gets every other one).
 const FRAME_MS: u64 = 16;
-/// Its period while only spells shimmer on the board: 8 frames a second
-/// keep the shimmer alive without working a phone hard.
-const SHIMMER_MS: u64 = 125;
+/// Its period while only spells shimmer on the board: 30 frames a second
+/// keep the shimmer smooth while working a phone half as hard.
+const SHIMMER_MS: u64 = 33;
 /// How long a reaction stays in the middle of the screen.
 const REACTION_SHOW_MS: u64 = 2600;
 const SERVER_KEY: &str = "server";
@@ -324,10 +325,14 @@ impl AppState {
     // ----- Actions -----
 
     /// Sends an action; the server validates it and the answer replaces the view.
+    /// Ending the turn takes the board back to the whole island.
     pub fn send(&self, action: Action) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
+        if action == Action::EndTurn {
+            self.look_at(None);
+        }
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
         self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| this.receive(v));
@@ -667,14 +672,29 @@ impl AppState {
         }
     }
 
-    /// Ticks every `ms`, unless the clock already ticks at least as often.
+    /// Ticks on display frames, at most once every `ms`, unless the clock
+    /// already ticks at least as often. In step with the screen, so motion
+    /// does not judder as a free-running timer drifts against it.
     fn tick_every(&self, ms: u64) {
         if self.ticker.with(|t| t.as_ref().is_some_and(|(period, _)| *period <= ms)) {
             return;
         }
         self.stop_clock();
         let this = *self;
-        let task = self.root.run(|| set_interval(Duration::from_millis(ms), move || this.tick(ms)));
+        let task = self.root.run(|| {
+            spawn(async move {
+                let mut last = f64::MIN;
+                loop {
+                    next_frame().await;
+                    let now = now_ms();
+                    // A frame's slack, so a 60 Hz screen meets a 16 ms period.
+                    if now - last + 2.0 >= ms as f64 {
+                        last = now;
+                        this.tick(ms);
+                    }
+                }
+            })
+        });
         self.ticker.replace(Some((ms, task)));
     }
 

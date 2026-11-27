@@ -619,12 +619,15 @@ pub fn draw_ground(s: &Scene, skip: &[TileId]) -> Painter {
 }
 
 /// The middle layer, the only one that moves on its own: tiles whose number
-/// came up wobble, and spells shimmer on their tiles.
+/// came up wobble, and spells shimmer on their tiles. It redraws every tick
+/// of the clock, so it holds only what moves; the spells' seals, which do
+/// not, are on the top layer. Tiles off screen are left out.
 pub fn draw_spells(s: &Scene) -> Painter {
     let g = s.game;
     let px1 = 1.0 / s.cam.scale;
     let mut p = world(s, Painter::new());
-    for t in jelly_tiles(s.anims) {
+    let seen = |t: TileId| on_screen(s, tile_pos(g, t), S);
+    for t in jelly_tiles(s.anims).into_iter().filter(|&t| seen(t)) {
         let running = s.anims.iter().filter(|a| a.running(s.now)).find_map(|a| match a.kind {
             AnimKind::Jelly { tile, mood } if tile == t => Some((a.t(s.now), mood)),
             _ => None,
@@ -634,20 +637,18 @@ pub fn draw_spells(s: &Scene) -> Painter {
             None => tile_art(p, g, t, px1, true),
         };
     }
-
-    // Spells: their look on the tile (both tiles of a swap) and a seal
-    // counting what is left.
-    let spelled = || g.enchantments.iter().flat_map(|e| std::iter::once(e.tile).chain(e.partner).map(move |t| (e, t)));
-    for (e, t) in spelled() {
+    for (e, t) in spelled(g).filter(|&(_, t)| seen(t)) {
         p = enchanted_tile(p, g, e, t, s.now, px1);
     }
-    for (e, t) in spelled() {
-        p = spell_seal(p, g, e, t, px1);
-    }
-    if let Some(t) = g.luck {
+    if let Some(t) = g.luck.filter(|&t| seen(t)) {
         p = lucky_tile(p, g, t, s.now, px1);
     }
     p.restore()
+}
+
+/// Every tile under a spell, with its spell: both tiles of a swap.
+fn spelled(g: &Game) -> impl Iterator<Item = (&Enchantment, TileId)> {
+    g.enchantments.iter().flat_map(|e| std::iter::once(e.tile).chain(e.partner).map(move |t| (e, t)))
 }
 
 /// The top layer: highlights, roads, buildings, pieces and the effects of
@@ -657,6 +658,11 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     let g = s.game;
     let px1 = 1.0 / s.cam.scale;
     let mut p = world(s, Painter::new());
+
+    // Each spell's seal, counting the rolls it has left.
+    for (e, t) in spelled(g) {
+        p = spell_seal(p, g, e, t, px1);
+    }
 
     // Tile highlights.
     for o in s.opts {
@@ -737,13 +743,15 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     // with the rounds it has left.
     for item in &g.items {
         let at = piece_pos(g, item.tile);
-        let u = 0.25 * S;
+        // Never smaller on screen than its badge, which stands off its
+        // upper right so as not to hide it.
+        let u = (0.25 * S).max(10.0 * px1);
         p = match item.kind {
-            Some(ItemKind::Relic) => art::relic(p, at, 0.22 * S, 1.6 * px1),
+            Some(ItemKind::Relic) => art::relic(p, at, 0.88 * u, 1.6 * px1),
             _ => art::chest(p, at, u, 1.6 * px1),
         };
         let left = (item.last_round + 1).saturating_sub(g.round);
-        p = count_badge(p, (at.0 + 1.0 * u, at.1 - 0.75 * u), left, palette::INK, px1);
+        p = count_badge(p, (at.0 + 1.05 * u + 4.0 * px1, at.1 - 0.55 * u - 3.0 * px1), left, palette::INK, px1);
     }
 
     // Units and robbers (sliding when they just moved).
