@@ -15,7 +15,7 @@ use nsh_core::{
 };
 
 use crate::{
-    art::{self, circle, ease_in_out_sine, ease_out, ease_out_back, hash01, lerp, phase, poly, text_at},
+    art::{self, circle, ease_in_out_sine, ease_out, ease_out_back, hash01, hex_points, lerp, phase, poly, text_at},
     palette::{self, hex, hexa},
     state::{AppState, Hud, Inspect, Mode, now_ms},
 };
@@ -534,15 +534,6 @@ impl<'a> Scene<'a> {
     fn bare(game: &'a Game, seat: PlayerId, cam: Camera, size: (f32, f32)) -> Scene<'a> {
         Scene { game, seat, cam, size, opts: &[], mode: Mode::Idle, inspect: None, anims: &[], now: 0.0 }
     }
-}
-
-fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
-    (0..6)
-        .map(|i| {
-            let a = -PI / 2.0 + i as f32 * PI / 3.0;
-            (cx + r * a.cos(), cy + r * a.sin())
-        })
-        .collect()
 }
 
 const SAND: u32 = 0xdcc893;

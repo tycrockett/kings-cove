@@ -37,13 +37,27 @@ pub fn App() -> impl IntoElement {
         .bg(hex(palette::TABLE))
         .child(dynamic(move || {
             Some(match screen.get() {
-                (false, _) => home(app).into_element(),
+                (false, _) => view().flex_1().child(water_backdrop()).child(home(app)).into_element(),
                 (true, None) => connecting(app).into_element(),
                 (true, Some(false)) => lobby(app).into_element(),
                 (true, Some(true)) => hud::game_screen(app).into_element(),
             })
         }))
         .child(hud::rulebook(app))
+}
+
+/// The home screen's sea of water tiles, behind everything; drawn again
+/// only when its size changes.
+fn water_backdrop() -> impl IntoElement {
+    let size = signal((0.0_f32, 0.0_f32));
+    canvas(move || {
+        let (w, h) = size.get();
+        art::water_tiles(Painter::new(), w, h)
+    })
+    .absolute()
+    .inset_0()
+    .pointer_events(PointerEvents::None)
+    .on_layout(move |f: &Bounds<Points>| size.set((f.size.width.0, f.size.height.0)))
 }
 
 fn field(placeholder: &str, value: Signal<String>) -> impl IntoElement {

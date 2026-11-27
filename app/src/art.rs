@@ -7,7 +7,7 @@ use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{BuildingKind, Resource, Spell};
 use nsh_core::{
-    canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline},
+    canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline, LineCap},
     prelude::*,
 };
 
@@ -99,6 +99,16 @@ pub fn ellipse(p: Painter, (x, y): (f32, f32), rx: f32, ry: f32, rotation: f32) 
         radians(TAU),
         false,
     )
+}
+
+/// The corners of a pointy-top hexagon of corner radius `r` round `c`.
+pub fn hex_points((cx, cy): (f32, f32), r: f32) -> Vec<(f32, f32)> {
+    (0..6)
+        .map(|i| {
+            let a = -PI / 2.0 + i as f32 * PI / 3.0;
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
 }
 
 pub fn rrect(p: Painter, (x, y): (f32, f32), w: f32, h: f32, r: f32) -> Painter {
@@ -226,6 +236,42 @@ pub fn resource_icon(p: Painter, r: Resource, (x, y): (f32, f32), s: f32, line: 
             bar(p, 0.0, -0.16)
         }
     }
+}
+
+// ----- Backgrounds -----
+
+/// A `w` × `h` sea of hexagonal water tiles, each a slightly different blue
+/// with a pale rim and a wave or two, darker towards the edges: the home
+/// screen's backdrop. It never moves, so it is drawn once per size.
+pub fn water_tiles(p: Painter, w: f32, h: f32) -> Painter {
+    const R: f32 = 34.0;
+    let (dx, dy) = (R * 3f32.sqrt(), R * 1.5);
+    let mut p = p.fill_color(hex(0x163845)).fill_rect(0.0, 0.0, w, h);
+    for row in -1..(h / dy) as i32 + 2 {
+        for col in -1..(w / dx) as i32 + 2 {
+            let c = (col as f32 * dx + if row % 2 != 0 { dx / 2.0 } else { 0.0 }, row as f32 * dy);
+            let seed = (row + 1) as u32 * 131 + (col + 1) as u32;
+            let top = palette::lighten(0x2c6f82, 0.2 * hash01(seed));
+            p = poly(p, &hex_points(c, R * 0.93))
+                .fill_style(vgrad(c.1 - R, c.1 + R, top, palette::shade(top, 0.78)))
+                .fill()
+                .stroke_color(hexa(0x8fd3d0, 0.28))
+                .line_width(1.5)
+                .stroke();
+            p = p.stroke_color(hexa(0xffffff, 0.16)).line_width(1.6);
+            for i in 0..2 {
+                let at = (c.0 + (hash01(seed * 7 + i) - 0.5) * R * 0.9, c.1 + (hash01(seed * 11 + i) - 0.5) * R * 0.8);
+                let r = R * (0.14 + 0.08 * hash01(seed * 13 + i));
+                p = p.begin_path().arc(at.0, at.1, r, PI * 1.15, PI * 1.85).stroke();
+                p = p.begin_path().arc(at.0 + r * 1.3, at.1 + r * 0.1, r * 0.8, PI * 1.2, PI * 1.8).stroke();
+            }
+        }
+    }
+    let middle = point(px(w / 2.0), px(h * 0.35));
+    let edges = CanvasGradient::radial(middle, px(0.0), middle, px(w.max(h) * 0.8))
+        .add_color_stop(percentage(0.4), hexa(0x0b1f27, 0.0))
+        .add_color_stop(percentage(1.0), hexa(0x0b1f27, 0.6));
+    p.fill_style(edges).fill_rect(0.0, 0.0, w, h)
 }
 
 // ----- Pieces -----
@@ -485,46 +531,101 @@ pub fn spellbook(p: Painter, w: f32, h: f32) -> Painter {
         .stroke()
 }
 
-/// A bandit: hooded, masked with a red kerchief, a dagger in hand and a
-/// sack of loot over the shoulder.
+/// A bandit: a cloaked outlaw in a deep, peaked hood, the face lost in its
+/// shadow but for two glinting eyes over a scarf, a dagger raised in one
+/// hand and a purse of stolen coin at the belt.
 pub fn bandit(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
     let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
-    let outline = hex(0xd9d4c5);
-    let p = ground_shadow(p, at(0.0, 1.0), 0.95 * u);
-    // The sack, behind the shoulder.
-    let p = circle(p, at(0.6, 0.0), 0.36 * u)
-        .fill_style(vgrad(y - 0.36 * u, y + 0.36 * u, 0xc9a26a, 0x8a6a3c))
+    let pt = |dx: f32, dy: f32| point(px(x + dx * u), px(y + dy * u));
+    let ink = hex(palette::INK);
+    let cloak = vgrad(y - 1.15 * u, y + u, 0x6a5c50, 0x2a221c);
+    let p = ground_shadow(p, at(0.0, 1.0), 0.9 * u);
+    // The dagger, raised behind the shoulder, its guard above the fist.
+    let p = poly(p, &[at(0.57, 0.0), at(0.67, 0.07), at(1.02, -0.62)])
+        .fill_style(vgrad(y - 0.62 * u, y + 0.07 * u, 0xf4f6f8, 0x9aa3ad))
         .fill()
-        .stroke_color(hex(0x3b2a18))
-        .line_width(line)
+        .stroke_color(ink)
+        .line_width(line * 0.8)
         .stroke();
-    let p = poly(p, &[at(0.5, -0.3), at(0.7, -0.3), at(0.6, -0.42)]).fill_color(hex(0x3b2a18)).fill();
-    // Cloak and hood.
-    let cloak = vgrad(y - u, y + u, 0x5b4a3a, 0x241a12);
-    let p = poly(p, &[at(-0.8, 1.0), at(0.8, 1.0), at(0.35, -0.2), at(-0.35, -0.2)])
+    let (g0, g1) = (at(0.52, -0.1), at(0.78, 0.06));
+    let p = p
+        .stroke_color(hex(0xc9a227))
+        .line_width(0.08 * u)
+        .begin_path()
+        .move_to(g0.0, g0.1)
+        .line_to(g1.0, g1.1)
+        .stroke();
+    // The cloak, flaring to the ground.
+    let p = p
+        .begin_path()
+        .move_to(x - 0.36 * u, y - 0.3 * u)
+        .bezier_curve_to(pt(-0.5, 0.2), pt(-0.7, 0.6), pt(-0.78, 1.0))
+        .line_to(x + 0.78 * u, y + u)
+        .bezier_curve_to(pt(0.7, 0.6), pt(0.5, 0.2), pt(0.36, -0.3))
+        .close_path()
         .fill_style(cloak.clone())
         .fill()
-        .stroke_color(outline)
+        .stroke_color(ink)
         .line_width(line)
         .stroke();
-    let p = circle(p, at(0.0, -0.55), 0.5 * u).fill_style(cloak).fill().stroke();
-    // The face in the hood, the kerchief over its lower half, glinting eyes.
-    let p = ellipse(p, at(0.0, -0.48), 0.31 * u, 0.29 * u, 0.0).fill_color(hex(0xe2b58a)).fill();
-    let p = poly(p, &[at(-0.31, -0.5), at(0.31, -0.5), at(0.26, -0.3), at(0.0, -0.2), at(-0.26, -0.3)])
-        .fill_color(hex(0xb3261e))
-        .fill();
-    let p = poly(p, &[at(0.28, -0.46), at(0.5, -0.38), at(0.34, -0.3)]).fill_color(hex(0x8f1d17)).fill();
-    let p = circle(p, at(-0.12, -0.6), 0.055 * u).fill_color(hex(0x17171a)).fill();
-    let p = circle(p, at(0.12, -0.6), 0.055 * u).fill_color(hex(0x17171a)).fill();
-    // The dagger, held low.
-    let p = poly(p, &[at(-0.5, 0.35), at(-0.42, 0.42), at(-0.98, 0.0)])
-        .fill_color(hex(0xe3e7ec))
+    // A belt, with a purse of coin hanging from it.
+    let p = poly(p, &[at(-0.53, 0.3), at(0.53, 0.3), at(0.56, 0.42), at(-0.56, 0.42)]).fill_color(hex(0x4a3020)).fill();
+    let p = rrect(p, at(0.0, 0.36), 0.14 * u, 0.13 * u, 0.02 * u).fill_color(hex(0xc9a227)).fill();
+    let p = circle(p, at(-0.3, 0.6), 0.17 * u)
+        .fill_style(vgrad(y + 0.43 * u, y + 0.77 * u, 0xb08a52, 0x6e5230))
         .fill()
-        .stroke_color(hex(0x3b3f45))
-        .line_width(line * 0.7)
+        .stroke_color(ink)
+        .line_width(line * 0.8)
         .stroke();
-    let (h0, h1) = (at(-0.58, 0.48), at(-0.36, 0.3));
-    p.stroke_color(hex(0x6b4a2f)).line_width(0.12 * u).begin_path().move_to(h0.0, h0.1).line_to(h1.0, h1.1).stroke()
+    let p = circle(p, at(-0.3, 0.45), 0.05 * u).fill_color(hex(0x4a3020)).fill();
+    // The arm from the shoulder to the fist round the dagger's grip.
+    let (s0, s1) = (at(0.28, -0.12), at(0.56, 0.12));
+    let p = p
+        .stroke_color(ink)
+        .line_width(0.22 * u + 2.0 * line)
+        .line_cap(LineCap::Round)
+        .begin_path()
+        .move_to(s0.0, s0.1)
+        .line_to(s1.0, s1.1)
+        .stroke()
+        .stroke_color(hex(0x4e433a))
+        .line_width(0.22 * u)
+        .stroke()
+        .line_cap(LineCap::Butt);
+    let p = circle(p, at(0.62, 0.13), 0.11 * u)
+        .fill_color(hex(0xd7a77a))
+        .fill()
+        .stroke_color(ink)
+        .line_width(line)
+        .stroke();
+    // The hood: peaked, the peak falling back.
+    let p = p
+        .begin_path()
+        .move_to(x - 0.5 * u, y - 0.2 * u)
+        .bezier_curve_to(pt(-0.58, -0.78), pt(-0.22, -1.08), pt(0.18, -1.15))
+        .bezier_curve_to(pt(0.3, -0.95), pt(0.58, -0.72), pt(0.5, -0.2))
+        .quadratic_curve_to(pt(0.0, -0.02), pt(-0.5, -0.2))
+        .close_path()
+        .fill_style(cloak)
+        .fill()
+        .stroke_color(ink)
+        .line_width(line)
+        .stroke();
+    // The face, lost in the hood's shadow inside its lit rim: glinting eyes
+    // over a scarf.
+    let p = ellipse(p, at(0.0, -0.5), 0.31 * u, 0.29 * u, 0.0).fill_color(hex(0x9a8a7a)).fill();
+    let p = ellipse(p, at(0.0, -0.5), 0.27 * u, 0.25 * u, 0.0).fill_color(hex(0x120d0a)).fill();
+    let p = p
+        .begin_path()
+        .move_to(x - 0.27 * u, y - 0.47 * u)
+        .quadratic_curve_to(pt(0.0, -0.38), pt(0.27, -0.47))
+        .quadratic_curve_to(pt(0.22, -0.28), pt(0.0, -0.25))
+        .quadratic_curve_to(pt(-0.22, -0.28), pt(-0.27, -0.47))
+        .close_path()
+        .fill_color(hex(0x8f2a20))
+        .fill();
+    let p = ellipse(p, at(-0.1, -0.56), 0.065 * u, 0.035 * u, 0.15).fill_color(hex(0xffd34d)).fill();
+    ellipse(p, at(0.1, -0.56), 0.065 * u, 0.035 * u, -0.15).fill_color(hex(0xffd34d)).fill()
 }
 
 /// A treasure chest: an item nobody has found yet.
