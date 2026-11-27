@@ -93,8 +93,8 @@ impl UnitKind {
     }
 }
 
-/// A spell a player with a city casts on their turn. All share the caster's
-/// mana; each has its own price.
+/// A spell a player casts on their turn. All share the caster's mana; each
+/// has its own price, which a caster with a city does not pay.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Spell {
     /// A tile produces nothing for its next rolls.
@@ -449,7 +449,6 @@ pub enum RuleError {
     NotTradeRecipient,
     TraderCannotPay,
     NoSuchPlayer,
-    SpellsLocked,
     ManaEmpty,
     SpellTarget,
     WindfallPending,
@@ -489,7 +488,6 @@ impl fmt::Display for RuleError {
             RuleError::NotTradeRecipient => "That trade is not offered to you",
             RuleError::TraderCannotPay => "The offering player no longer has those resources",
             RuleError::NoSuchPlayer => "No such player",
-            RuleError::SpellsLocked => "Build a castle to unlock spells",
             RuleError::ManaEmpty => "Your mana is still recharging",
             RuleError::SpellTarget => "That spell cannot be cast there",
             RuleError::WindfallPending => "Windfall already waits for your next roll",
@@ -855,9 +853,15 @@ impl Game {
         tile.index() < self.board.tiles.len() && !self.occupied(tile)
     }
 
-    /// Spells unlock with the player's first city.
+    /// A player with a city casts spells free.
     pub fn has_city(&self, player: PlayerId) -> bool {
         self.buildings.iter().flatten().any(|b| b.owner == player && b.kind == BuildingKind::City)
+    }
+
+    /// What casting `spell` costs `player` (a scroll aside): its price, or
+    /// nothing once they have a city.
+    pub fn spell_price(&self, player: PlayerId, spell: Spell) -> Resources {
+        if self.has_city(player) { Resources::ZERO } else { spell.cost() }
     }
 
     /// A unit or a robber stands on it.
@@ -1206,16 +1210,13 @@ impl Game {
         if self.players[player.index()].resources.covers(cost) { Ok(()) } else { Err(RuleError::CannotAfford) }
     }
 
-    /// Casting `spell` on `tiles` (as many as it targets): needs a city,
-    /// full mana, the spell's price and fitting targets, or else a scroll of
-    /// it and fitting targets. A lingering spell replaces any already on its
-    /// tiles.
+    /// Casting `spell` on `tiles` (as many as it targets): needs full mana,
+    /// the spell's price (nothing with a city) and fitting targets, or else
+    /// a scroll of it and fitting targets. A lingering spell replaces any
+    /// already on its tiles.
     pub fn can_cast(&self, player: PlayerId, spell: Spell, tiles: &[TileId]) -> Result<(), RuleError> {
         self.require_main_action(player)?;
         let scroll = self.players[player.index()].scrolls.contains(&spell);
-        if !scroll && !self.has_city(player) {
-            return Err(RuleError::SpellsLocked);
-        }
         if !scroll && self.round < self.players[player.index()].mana_ready_round {
             return Err(RuleError::ManaEmpty);
         }
@@ -1237,7 +1238,7 @@ impl Game {
             Spell::Windfall if self.players[player.index()].windfall => return Err(RuleError::WindfallPending),
             _ => {}
         }
-        if scroll { Ok(()) } else { self.require_funds(player, &spell.cost()) }
+        if scroll { Ok(()) } else { self.require_funds(player, &self.spell_price(player, spell)) }
     }
 
     /// A scroll of the spell is used up first: free, and the mana stays.
@@ -1247,7 +1248,7 @@ impl Game {
         if let Some(i) = scrolls.iter().position(|&s| s == spell) {
             scrolls.remove(i);
         } else {
-            self.pay(player, &spell.cost());
+            self.pay(player, &self.spell_price(player, spell));
             self.players[player.index()].mana_ready_round = self.round + balance::MANA_RECHARGE_ROUNDS;
         }
         self.log(Event::SpellCast { player, spell, tiles: tiles.to_vec() });

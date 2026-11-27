@@ -86,8 +86,9 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   knight falls with it. One knight or bandit per tile. Instead of acting, a knight can *blockade* its tile: the tile
   produces nothing for anyone and the knight can neither move nor attack. Lifting the blockade is an order too; the
   blockade then holds for 2 more full rounds before the knight is free.
-- **Spells** unlock with a player's first castle and are cast from the spellbook on their turn; any spell empties the
-  caster's mana for 4 rounds. *Frost* stops any tile producing for the next 2 rolls of its number; *Bounty* doubles it.
+- **Spells** are cast from the spellbook on a player's turn, by anyone: they cost their price in resources, or nothing
+  once the caster has a castle. Any spell empties the caster's mana for 4 rounds. *Frost* stops any tile producing for
+  the next 2 rolls of its number; *Bounty* doubles it.
   *Lure* moves any bandit to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Windfall* pays 1 of each
   resource the caster's buildings touch on their next roll. *Luck* gives the next roll, whoever makes it, a 50% chance
   of coming up as a chosen tile's number. Tile spells affect everyone on the tile, and a new one on a tile replaces the

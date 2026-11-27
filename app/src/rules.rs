@@ -118,7 +118,7 @@ impl Item {
                     balance::CITY_POINTS,
                     balance::CITY_YIELD
                 ),
-                "Your first castle unlocks spells.".to_owned(),
+                "Once you have a castle, spells cost no resources.".to_owned(),
             ],
             Item::Knight => vec![
                 "Buying gives you a token. Deploy it onto a free tile touching your town or castle (not an outpost).".to_owned(),
@@ -192,7 +192,7 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
         lines.push("A spell cast on a tile that already holds one replaces it.".to_owned());
     }
     lines.push(format!(
-        "Spells unlock with your first castle. Any spell empties your mana for {} rounds.",
+        "Anyone can cast spells: pay the price, or nothing once you have a castle. Any spell empties your mana for {} rounds.",
         balance::MANA_RECHARGE_ROUNDS
     ));
     lines

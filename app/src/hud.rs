@@ -291,7 +291,7 @@ fn player_chip(g: &Game, p: &kings_cove_engine::Player, me: bool, active: bool) 
                 .child(glyph_icon(Glyph::Knight, color, 12.0, 12.0))
                 .child(bold(cards.to_string(), 11.0, palette::MUTED))
         }))
-        .child(g.has_city(p.id).then(|| {
+        .child({
             let wait = p.mana_ready_round.saturating_sub(g.round);
             view()
                 .flex_row()
@@ -299,7 +299,7 @@ fn player_chip(g: &Game, p: &kings_cove_engine::Player, me: bool, active: bool) 
                 .child(view().w(px(3.0)))
                 .child(mana_icon(12.0, wait == 0))
                 .child((wait > 0).then(|| bold(wait.to_string(), 11.0, palette::MUTED)))
-        }));
+        });
     let chip = view()
         .flex_row()
         .items_center()
@@ -776,15 +776,8 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
     view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)))
 }
 
-/// The player's mana, in a word or two; their scrolls when they have no city.
+/// The player's mana, in a word or two.
 fn mana_state(g: &Game, seat: PlayerId) -> String {
-    if !g.has_city(seat) {
-        return match g.players[seat.index()].scrolls.len() {
-            0 => "need a castle".to_owned(),
-            1 => "1 scroll".to_owned(),
-            n => format!("{n} scrolls"),
-        };
-    }
     match g.players[seat.index()].mana_ready_round.saturating_sub(g.round) {
         0 => "ready".to_owned(),
         1 => "1 round".to_owned(),
@@ -800,16 +793,13 @@ fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
     if g.dice.is_none() {
         return Some("Roll the dice first".to_owned());
     }
-    // A scroll of the spell casts it free, with no city and whatever the mana.
+    // A scroll of the spell casts it free, whatever the mana.
     if !g.players[seat.index()].scrolls.contains(&spell) {
-        if !g.has_city(seat) {
-            return Some("Build a castle to unlock spells".to_owned());
-        }
         let wait = g.players[seat.index()].mana_ready_round.saturating_sub(g.round);
         if wait > 0 {
             return Some(format!("Your mana refills in {wait} round{}", if wait == 1 { "" } else { "s" }));
         }
-        if !g.players[seat.index()].resources.covers(&spell.cost()) {
+        if !g.players[seat.index()].resources.covers(&g.spell_price(seat, spell)) {
             return Some("Not enough resources".to_owned());
         }
     }
@@ -831,6 +821,7 @@ fn spellbook(app: AppState) -> impl IntoElement {
         let g = view_.game.as_ref()?;
         let seat = view_.seat;
         let have = g.players[seat.index()].resources;
+        let castle = g.has_city(seat);
         let picked = chosen.get();
         let busy = app.busy.get();
         let close = move || app.spellbook_open.set(false);
@@ -858,7 +849,11 @@ fn spellbook(app: AppState) -> impl IntoElement {
                                 )
                             })),
                     )
-                    .child(cost_row(&spell.cost(), Some(&have), 16.0, 12.0));
+                    .child(if castle {
+                        view().child(bold("Free", 13.0, palette::GO))
+                    } else {
+                        cost_row(&spell.cost(), Some(&have), 16.0, 12.0)
+                    });
                 let row = view()
                     .px(px(10.0))
                     .py(px(8.0))
@@ -919,11 +914,21 @@ fn spellbook(app: AppState) -> impl IntoElement {
                                 .pt(px(14.0))
                                 .pb(px(10.0))
                                 .child(glyph_icon(Glyph::Spellbook, 0, 36.0, 40.0))
-                                .child(view().flex_1().child(bold("Spells", 22.0, palette::INK)).child(label(
-                                    format!("Mana: {}", mana_state(g, seat)),
-                                    12.0,
-                                    palette::MUTED,
-                                )))
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .child(bold("Spells", 22.0, palette::INK))
+                                        .child(label(format!("Mana: {}", mana_state(g, seat)), 12.0, palette::MUTED))
+                                        .child(label(
+                                            if castle {
+                                                "Free: you have a castle"
+                                            } else {
+                                                "Free once you have a castle"
+                                            },
+                                            12.0,
+                                            palette::MUTED,
+                                        )),
+                                )
                                 .child(pill("Close", palette::INK, 0xffffff, true, close)),
                         )
                         .child(scroll().flex_1().child(view().px(px(12.0)).pb(px(16.0)).gap(px(8.0)).child(rows))),

@@ -115,8 +115,8 @@ pub const ROBBER_SPAWN_CHANCE: (u64, u64) = (1, 2);
 /// below its minimum.
 pub const ROBBER_RESPAWN_ROUNDS: u32 = 2;
 
-// Spells, unlocked by a city, all sharing the caster's mana. Iron is the
-// heart of every one of them.
+// Spells, all sharing the caster's mana; free to a caster with a city. Iron
+// is the heart of every one of them.
 
 /// Iron and stone to freeze a field or a mine.
 pub const FROST_COST: Resources = res(0, 1, 0, 3);

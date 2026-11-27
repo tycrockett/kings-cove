@@ -496,7 +496,7 @@ fn cast(spell: Spell, tiles: &[TileId]) -> Action {
 }
 
 #[test]
-fn spells_need_a_city_full_mana_fitting_targets_and_their_price() {
+fn spells_need_full_mana_fitting_targets_and_their_price_unless_the_caster_has_a_city() {
     let (mut g, t) = spellbook();
     let mut r = rng();
     assert_eq!(g.apply(P1, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::NotYourTurn));
@@ -507,7 +507,7 @@ fn spells_need_a_city_full_mana_fitting_targets_and_their_price() {
     assert_eq!(g.apply(P0, cast(Spell::Frost, &[]), &mut r), Err(RuleError::InvalidTarget));
     let before = g.players[0].resources;
     g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
-    assert_eq!(before.total() - g.players[0].resources.total(), balance::FROST_COST.total());
+    assert_eq!(g.players[0].resources, before, "free with a city");
     assert_eq!(g.apply(P0, cast(Spell::Bounty, &[stone]), &mut r), Err(RuleError::ManaEmpty), "one mana for all");
     // Mana is back after its recharge rounds; a new spell replaces the old one.
     g.round += balance::MANA_RECHARGE_ROUNDS;
@@ -515,13 +515,14 @@ fn spells_need_a_city_full_mana_fitting_targets_and_their_price() {
     assert_eq!(g.enchantments.len(), 1);
     assert_eq!(g.enchantment_at(t).unwrap().spell, Spell::Bounty);
 
-    // Without a city, spells stay locked; without the price, unaffordable.
+    // Without a city, a spell costs its price and the same mana.
     let mut g = playing(2);
+    let t = centre(&g);
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::CannotAfford));
     g.players[0].resources = rich();
-    assert_eq!(g.apply(P0, cast(Spell::Frost, &[centre(&g)]), &mut r), Err(RuleError::SpellsLocked));
-    let (mut g, t) = spellbook();
-    g.players[0].resources = Resources::ZERO;
-    assert_eq!(g.apply(P0, cast(Spell::Bounty, &[t]), &mut r), Err(RuleError::CannotAfford));
+    g.apply(P0, cast(Spell::Frost, &[t]), &mut r).unwrap();
+    assert_eq!(rich().total() - g.players[0].resources.total(), balance::FROST_COST.total());
+    assert_eq!(g.apply(P0, cast(Spell::Bounty, &[t]), &mut r), Err(RuleError::ManaEmpty));
 }
 
 #[test]
@@ -795,7 +796,7 @@ fn knights_take_items_by_walking_onto_them_and_drop_relics_when_they_fall() {
 }
 
 #[test]
-fn a_scroll_casts_its_spell_free_without_a_city_or_mana() {
+fn a_scroll_casts_its_spell_free_whatever_the_mana() {
     let mut g = playing(2);
     let mut r = rng();
     let t = centre(&g);
@@ -805,7 +806,7 @@ fn a_scroll_casts_its_spell_free_without_a_city_or_mana() {
     assert!(g.players[0].scrolls.is_empty());
     assert_eq!(g.players[0].mana_ready_round, g.round + 3, "the mana is untouched");
     assert_eq!(g.enchantment_at(t).unwrap().spell, Spell::Frost);
-    assert_eq!(g.apply(P0, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::SpellsLocked), "used up");
+    assert_eq!(g.apply(P0, cast(Spell::Frost, &[t]), &mut r), Err(RuleError::ManaEmpty), "used up");
 }
 
 #[test]
