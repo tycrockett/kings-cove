@@ -530,23 +530,25 @@ pub fn bandit(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
 /// A treasure chest: an item nobody has found yet.
 pub fn chest(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
     let ink = hex(palette::INK);
-    let p = ground_shadow(p, (x, y + 0.75 * u), 0.9 * u);
-    let p = rrect(p, (x, y + 0.25 * u), 1.6 * u, 0.9 * u, 0.1 * u)
+    let at = |dx: f32, dy: f32| point(px(x + dx * u), px(y + dy * u));
+    let p = ground_shadow(p, (x, y + 0.78 * u), 1.15 * u);
+    let p = rrect(p, (x, y + 0.25 * u), 2.1 * u, 0.95 * u, 0.1 * u)
         .fill_style(vgrad(y - 0.2 * u, y + 0.7 * u, 0xb7793f, 0x7a4a22))
         .fill()
         .stroke_color(ink)
         .line_width(line)
         .stroke();
+    // A low domed lid, as wide as the chest.
     let p = p
         .begin_path()
-        .move_to(x - 0.8 * u, y - 0.2 * u)
-        .arc(x, y - 0.2 * u, 0.8 * u, PI, 0.0)
+        .move_to(x - 1.05 * u, y - 0.22 * u)
+        .bezier_curve_to(at(-1.05, -1.0), at(1.05, -1.0), at(1.05, -0.22))
         .close_path()
-        .fill_style(vgrad(y - u, y - 0.2 * u, 0xd08a48, 0x8f5a2b))
+        .fill_style(vgrad(y - 0.8 * u, y - 0.22 * u, 0xd08a48, 0x8f5a2b))
         .fill()
         .stroke();
-    let p = p.fill_color(hex(palette::GOLD)).fill_rect(x - 0.12 * u, y - 0.98 * u, 0.24 * u, 1.66 * u);
-    rrect(p, (x, y - 0.15 * u), 0.38 * u, 0.38 * u, 0.06 * u)
+    let p = p.fill_color(hex(palette::GOLD)).fill_rect(x - 0.12 * u, y - 0.8 * u, 0.24 * u, 1.52 * u);
+    rrect(p, (x, y - 0.15 * u), 0.42 * u, 0.42 * u, 0.06 * u)
         .fill_color(hex(palette::GOLD))
         .fill()
         .stroke_color(ink)

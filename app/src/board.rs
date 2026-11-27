@@ -737,14 +737,13 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     // with the rounds it has left.
     for item in &g.items {
         let at = piece_pos(g, item.tile);
+        let u = 0.25 * S;
         p = match item.kind {
             Some(ItemKind::Relic) => art::relic(p, at, 0.22 * S, 1.6 * px1),
-            _ => art::chest(p, at, 0.2 * S, 1.6 * px1),
+            _ => art::chest(p, at, u, 1.6 * px1),
         };
-        let badge = (at.0 + 0.24 * S, at.1 - 0.22 * S);
         let left = (item.last_round + 1).saturating_sub(g.round);
-        p = circle(p, badge, 0.09 * S).fill_color(hex(palette::INK)).fill();
-        p = text_at(p, &left.to_string(), badge, 0.12 * S, 0xffffff, 900, px1);
+        p = count_badge(p, (at.0 + 1.0 * u, at.1 - 0.75 * u), left, palette::INK, px1);
     }
 
     // Units and robbers (sliding when they just moved).
@@ -1140,18 +1139,25 @@ fn palisade(mut p: Painter, g: &Game, tile: TileId, owner: PlayerId, b: Blockade
     p
 }
 
-/// The spell's seal on its tile's upper right, with the rolls it has left,
+/// The spell's seal at the top of its tile, with the rolls it has left,
 /// legible at any zoom.
 fn spell_seal(p: Painter, g: &Game, e: &Enchantment, tile: TileId, px1: f32) -> Painter {
     let c = tile_pos(g, tile);
     let (_, deep, _) = art::spell_colors(e.spell);
-    let mut p = p.save().translate(c.0 + 0.5 * S, c.1 - 0.5 * S).scale(px1, px1);
+    let mut p = p.save().translate(c.0, c.1 - 0.62 * S).scale(px1, px1);
     p = art::shadow(p, 0.45, 6.0, 2.0);
     p = art::spell_emblem(p, e.spell, (0.0, 0.0), 11.0, 1.5);
     p = art::no_shadow(p);
-    p = circle(p, (9.0, 8.0), 7.0).fill_color(hex(deep)).fill().stroke_color(hex(0xffffff)).line_width(1.5).stroke();
-    p = text_at(p, &e.charges.to_string(), (9.0, 8.5), 10.0, 0xffffff, 900, 1.0);
+    p = count_badge(p, (9.0, 8.0), e.charges, deep, 1.0);
     p.restore()
+}
+
+/// A count on a dot of `fill`, ringed in white, the same size on screen at
+/// any zoom (`pt` world units to a point): rolls or rounds left.
+fn count_badge(p: Painter, at: (f32, f32), n: u32, fill: u32, pt: f32) -> Painter {
+    let p =
+        circle(p, at, 7.0 * pt).fill_color(hex(fill)).fill().stroke_color(hex(0xffffff)).line_width(1.5 * pt).stroke();
+    text_at(p, &n.to_string(), (at.0, at.1 + 0.5 * pt), 10.0 * pt, 0xffffff, 900, pt)
 }
 
 /// Trees, peaks, fields or ore hills, placed the same way every frame;
