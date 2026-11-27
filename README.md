@@ -141,7 +141,7 @@ Costs (all in `engine/src/balance.rs`):
 - Tap any tile, building or road to inspect it. The dark strip over the dock shows what to do, or the latest action,
   and your points; tap it for the event history.
 - Tapping a tile or a unit zooms in on it and the two rings of tiles around it; **Recenter**, at the left over the dark
-  strip, zooms back out. Tapping that tile again, the sea, building something or moving a knight zooms back out too.
+  strip, zooms back out, as does tapping that tile again or the sea. Building and moving leave the view where it is.
 - The chip at the top left is the player whose turn it is; tap it to see everyone's points, resources, knight tokens
   and mana.
 - The smiley left of the main button sends a reaction everyone sees in the middle of the screen.

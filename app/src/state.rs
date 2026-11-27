@@ -15,7 +15,7 @@ use nsh_core::{prelude::*, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    board::{self, Anim, AnimKind, Mood, Piece},
+    board::{self, Anim, AnimKind, Mood},
     fx::{self, Fx, FxKind},
     palette,
     rules::Item,
@@ -324,31 +324,13 @@ impl AppState {
     // ----- Actions -----
 
     /// Sends an action; the server validates it and the answer replaces the view.
-    /// Building something or moving a knight takes the board back to the
-    /// whole island, once the new piece has popped in or the knight arrived.
     pub fn send(&self, action: Action) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
-        let recenter = matches!(
-            action,
-            Action::SetupBuilding(_)
-                | Action::SetupRoad(_)
-                | Action::BuildRoad(_)
-                | Action::BuildOutpost(_)
-                | Action::UpgradeTown(_)
-                | Action::UpgradeCity(_)
-                | Action::Deploy { .. }
-                | Action::MoveUnit { .. }
-        );
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
-        self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| {
-            this.receive(v);
-            if recenter {
-                this.recenter_when_settled();
-            }
-        });
+        self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| this.receive(v));
     }
 
     /// Points the board at `tile`, or at the whole island. The camera flies
@@ -356,27 +338,6 @@ impl AppState {
     /// panned away.
     pub fn look_at(&self, tile: Option<TileId>) {
         self.focus.update(|f| *f = tile);
-    }
-
-    /// Back to the whole island once the pieces popping in or knights
-    /// sliding now have settled, so only one thing moves at a time; unless
-    /// the player has looked elsewhere meanwhile.
-    fn recenter_when_settled(&self) {
-        let now = now_ms();
-        let settled = self.anims.with_untracked(|a| {
-            a.iter()
-                .filter(|x| matches!(x.kind, AnimKind::Pop { .. } | AnimKind::Slide { piece: Piece::Unit(_), .. }))
-                .map(Anim::end)
-                .fold(now, f64::max)
-        });
-        let (this, focus) = (*self, self.focus.get_untracked());
-        self.root.run(|| {
-            set_timeout(Duration::from_millis((settled - now) as u64), move || {
-                if this.focus.get_untracked() == focus {
-                    this.look_at(None);
-                }
-            })
-        });
     }
 
     /// Sends a reaction everyone sees. Neither held back by an action in
