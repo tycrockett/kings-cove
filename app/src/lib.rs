@@ -100,53 +100,56 @@ fn home(app: AppState) -> impl IntoElement {
     let can_create = move || !name.get().trim().is_empty();
     let can_join = move || can_create() && code.get().trim().len() >= 4;
     scroll().flex_1().child(
-        view()
-            .p_safe_area()
-            .px(px(20.0))
-            .py(px(28.0))
-            .gap(px(18.0))
-            .child(
-                view()
-                    .items_center()
-                    .gap(px(4.0))
-                    .pt(px(24.0))
-                    .child(bold("King's Cove", 34.0, palette::PAPER))
-                    .child(label("Build, trade and defend an island", 14.0, 0xc9d3cf))
-                    .child(label(format!("v{} · {}", env!("CARGO_PKG_VERSION"), env!("KC_BUILD")), 11.0, 0x8fa39c)),
-            )
-            .child(
-                card()
-                    .child(label("Your name", 12.0, palette::MUTED))
-                    .child(field("Name", name))
-                    .child(dynamic(move || {
-                        let ok = can_create() && !app.busy.get();
-                        Some(pill("Create match", palette::GO, 0xffffff, ok, move || app.create(name.get_untracked())))
-                    }))
-                    .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
-                    .child(label("Join with a room code", 12.0, palette::MUTED))
-                    .child(view().flex_row().gap(px(8.0)).child(view().flex_1().child(field("CODE", code))).child(
-                        dynamic(move || {
-                            let ok = can_join() && !app.busy.get();
-                            Some(pill("Join", 0x2f6db5, 0xffffff, ok, move || {
-                                app.join(code.get_untracked(), name.get_untracked())
+        view().p_safe_area().px(px(20.0)).py(px(28.0)).items_center().child(
+            view()
+                .w_full()
+                .max_w(px(hud::MENU_WIDTH))
+                .gap(px(18.0))
+                .child(
+                    view()
+                        .items_center()
+                        .gap(px(4.0))
+                        .pt(px(24.0))
+                        .child(bold("King's Cove", 34.0, palette::PAPER))
+                        .child(label("Build, trade and defend an island", 14.0, 0xc9d3cf))
+                        .child(label(format!("v{} · {}", env!("CARGO_PKG_VERSION"), env!("KC_BUILD")), 11.0, 0x8fa39c)),
+                )
+                .child(
+                    card()
+                        .child(label("Your name", 12.0, palette::MUTED))
+                        .child(field("Name", name))
+                        .child(dynamic(move || {
+                            let ok = can_create() && !app.busy.get();
+                            Some(pill("Create match", palette::GO, 0xffffff, ok, move || {
+                                app.create(name.get_untracked())
                             }))
-                        }),
-                    )),
-            )
-            .child(
-                view()
-                    .gap(px(8.0))
-                    .child(
-                        label("Server settings", 12.0, 0xc9d3cf)
-                            .self_center()
-                            .on_press(move || show_server.update(|s| *s = !*s)),
-                    )
-                    .child(dynamic(move || {
-                        show_server.get().then(|| card().child(field("http://host:8787", app.server)))
-                    })),
-            )
-            .child(rules_card(app))
-            .child(dynamic(move || app.toast.get().map(|t| bold(t, 13.0, palette::GOLD).self_center()))),
+                        }))
+                        .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
+                        .child(label("Join with a room code", 12.0, palette::MUTED))
+                        .child(view().flex_row().gap(px(8.0)).child(view().flex_1().child(field("CODE", code))).child(
+                            dynamic(move || {
+                                let ok = can_join() && !app.busy.get();
+                                Some(pill("Join", 0x2f6db5, 0xffffff, ok, move || {
+                                    app.join(code.get_untracked(), name.get_untracked())
+                                }))
+                            }),
+                        )),
+                )
+                .child(
+                    view()
+                        .gap(px(8.0))
+                        .child(
+                            label("Server settings", 12.0, 0xc9d3cf)
+                                .self_center()
+                                .on_press(move || show_server.update(|s| *s = !*s)),
+                        )
+                        .child(dynamic(move || {
+                            show_server.get().then(|| card().child(field("http://host:8787", app.server)))
+                        })),
+                )
+                .child(rules_card(app))
+                .child(dynamic(move || app.toast.get().map(|t| bold(t, 13.0, palette::GOLD).self_center()))),
+        ),
     )
 }
 
@@ -182,6 +185,7 @@ fn lobby(app: AppState) -> impl IntoElement {
         .p_safe_area()
         .px(px(20.0))
         .justify_center()
+        .items_center()
         .child(dynamic(move || {
             let view_ = app.view.get()?;
             let host = view_.seat == PlayerId(0);
@@ -217,6 +221,8 @@ fn lobby(app: AppState) -> impl IntoElement {
             let can_start = host && count >= balance::MIN_PLAYERS && !app.busy.get();
             Some(
                 card()
+                    .w_full()
+                    .max_w(px(hud::MENU_WIDTH))
                     .items_stretch()
                     .child(label("Room code", 12.0, palette::MUTED).self_center())
                     .child({

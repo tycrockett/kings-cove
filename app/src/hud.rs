@@ -41,6 +41,12 @@ pub fn pill(text_: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: imp
     if enabled { v.active(|s| s.opacity(0.7).scale(0.97)).on_press(on) } else { v }
 }
 
+/// The widest a menu card or column grows: phones fill their width, wider
+/// screens keep a phone-sized column in the middle.
+pub const MENU_WIDTH: f32 = 440.0;
+/// The widest the rulebook grows.
+const RULEBOOK_WIDTH: f32 = 640.0;
+
 fn panel() -> View {
     view()
         .bg(hexa(palette::PAPER, 0.97))
@@ -1051,9 +1057,12 @@ pub fn rulebook(app: AppState) -> impl IntoElement {
                 .pt_safe_area_plus(px(16.0))
                 .pb_safe_area_plus(px(16.0))
                 .px(px(12.0))
+                .items_center()
                 .child(
                     panel()
                         .flex_1()
+                        .w_full()
+                        .max_w(px(RULEBOOK_WIDTH))
                         .border_2()
                         .border_color(hex(palette::GOLD))
                         .bind_motion(&motion().entering(MotionPreset::FadeInUp))
@@ -1633,7 +1642,8 @@ fn reactions_layer(app: AppState) -> impl IntoElement {
 /// taps, so a press handler on the sheet only hears taps outside it.
 fn sheet(card: View) -> View {
     view().absolute().inset_0().items_center().justify_center().px(px(24.0)).bg(hexa(0x000000, 0.5)).child(
-        card.self_stretch()
+        card.w_full()
+            .max_w(px(MENU_WIDTH))
             .px(px(20.0))
             .py(px(20.0))
             .gap(px(12.0))
