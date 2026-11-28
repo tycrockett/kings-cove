@@ -830,7 +830,7 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
     let spells = {
         let fg = if casting { palette::INK } else { 0xffffff };
         let status = if scrolls > 0 {
-            view().child(bold(scrolls.to_string(), 14.0, fg))
+            view().child(bold(format!("×{scrolls}"), 14.0, fg))
         } else if ready {
             view().child(mana_icon(16.0, true))
         } else {
