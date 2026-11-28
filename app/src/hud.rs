@@ -509,7 +509,10 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
     match i {
         Inspect::Tile(t) => {
             let tile = g.board.tile(t);
-            let mut s = format!("{} · {}", tile.resource.name(), tile.number);
+            let mut s = match g.structure_at(t) {
+                Some(kind) => rules::structure_title(kind).to_owned(),
+                None => format!("{} · {}", tile.resource.name(), tile.number),
+            };
             if let Some(u) = g.unit_at(t) {
                 let relics = match u.relics {
                     0 => String::new(),

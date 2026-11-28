@@ -596,23 +596,24 @@ fn pips(number: u8) -> u32 {
     6u32.saturating_sub(u32::from(number.abs_diff(7)))
 }
 
-/// The resources of the tiles `player`'s buildings touch.
+/// The resources of the producing tiles `player`'s buildings touch.
 fn touched(g: &Game, player: PlayerId) -> Vec<Resource> {
     g.board
         .vertices
         .iter()
         .filter(|v| g.building(v.id).is_some_and(|b| b.owner == player))
-        .flat_map(|v| v.tiles.iter().map(|&t| g.board.tile(t).resource))
+        .flat_map(|v| v.tiles.iter().filter(|&&t| g.structure_at(t).is_none()).map(|&t| g.board.tile(t).resource))
         .collect()
 }
 
 /// What a building on `v` collects in 36 rolls, more for resources not yet
-/// `touched`.
+/// `touched`; structures' tiles produce nothing.
 fn corner_value(g: &Game, touched: &[Resource], v: VertexId) -> u32 {
     g.board
         .vertex(v)
         .tiles
         .iter()
+        .filter(|&&t| g.structure_at(t).is_none())
         .map(|&t| {
             let tile = g.board.tile(t);
             pips(tile.number) + if touched.contains(&tile.resource) { 0 } else { NEW_RESOURCE_BONUS }

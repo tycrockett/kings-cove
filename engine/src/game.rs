@@ -819,9 +819,10 @@ pub struct Game {
 
 impl Game {
     /// A new game for `names` with `settings`: a generated island of their
-    /// size and shape, their structures spread over it, played to their goal.
+    /// size and shape, their structures spread over it on tiles of their own
+    /// (no resource, no number), played to their goal.
     pub fn new(names: &[String], settings: &Settings, rng: &mut Rng) -> Game {
-        let board = Board::generate(settings.map_size, settings.map_shape, rng);
+        let board = Board::layout(settings.map_size, settings.map_shape, rng);
         let mut game = Game::with_board(names, board);
         game.victory_points = settings.victory_points;
         let tiles = game.board.tiles.len();
@@ -834,6 +835,8 @@ impl Game {
         .flat_map(|&(kind, amount)| std::iter::repeat_n(kind, amount.count(tiles)))
         .collect();
         game.raise_structures(kinds, rng);
+        let barren: Vec<TileId> = game.structures.iter().map(|s| s.tile).collect();
+        game.board.deal_out(&barren, rng);
         // The island always has a robber, from the first turn on, off the structures.
         let free: Vec<TileId> = game.board.tile_ids().filter(|&t| game.structure_at(t).is_none()).collect();
         if let Some(tile) = rng.pick(&free) {
@@ -1349,6 +1352,12 @@ impl Game {
         if tiles.len() != spell.targets() || tiles.iter().any(|t| t.index() >= self.board.tiles.len()) {
             return Err(RuleError::InvalidTarget);
         }
+        // Structures' tiles have no number to freeze, bless, swap or favour.
+        if matches!(spell, Spell::Frost | Spell::Bounty | Spell::Swap | Spell::Luck)
+            && tiles.iter().any(|&t| self.structure_at(t).is_some())
+        {
+            return Err(RuleError::SpellTarget);
+        }
         match spell {
             Spell::Lure => {
                 self.robber_at(tiles[0]).ok_or(RuleError::NoSuchRobber)?;
@@ -1730,7 +1739,7 @@ impl Game {
         let mut gained = Resources::ZERO;
         for (v, b) in self.buildings.iter().enumerate() {
             if b.is_some_and(|b| b.owner == player) {
-                for &t in &self.board.vertices[v].tiles {
+                for &t in self.board.vertices[v].tiles.iter().filter(|&&t| self.structure_at(t).is_none()) {
                     *gained.get_mut(self.board.tile(t).resource) = 1;
                 }
             }
@@ -1981,7 +1990,8 @@ impl Game {
         }
         self.log(Event::TurnStarted { player, round: self.round });
         for tile in self.ringed_tiles(player) {
-            if !self.city_on(tile) || self.robber_at(tile).is_some() || self.blockaded(tile) {
+            let barren = self.structure_at(tile).is_some();
+            if barren || !self.city_on(tile) || self.robber_at(tile).is_some() || self.blockaded(tile) {
                 continue;
             }
             let resource = self.board.tile(tile).resource;

@@ -64,10 +64,11 @@ pub fn piece_pos(g: &Game, t: TileId) -> (f32, f32) {
     (x, y + 0.44 * S)
 }
 
-/// Where a structure stands on its tile: above the number token.
+/// Where a structure stands on its tile: in the middle, a little above the
+/// spot a knight or bandit takes.
 pub fn structure_pos(g: &Game, t: TileId) -> (f32, f32) {
     let (x, y) = tile_pos(g, t);
-    (x, y - 0.6 * S)
+    (x, y - 0.12 * S)
 }
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -733,9 +734,8 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     }
 
     // Structures: a held one rings its tile in the holder's colour and
-    // flies it; a bandit's flies dark. Never smaller on screen than a
-    // badge, and then raised to keep clear of the number token.
-    let u = (0.17 * S).max(6.0 * px1);
+    // flies it; a bandit's flies dark. Never smaller on screen than a badge.
+    let u = (0.24 * S).max(7.0 * px1);
     for s in &g.structures {
         let holder = g.structure_holder(s.tile);
         if let Some(owner) = holder {
@@ -749,8 +749,7 @@ pub fn draw_pieces(s: &Scene) -> Painter {
             None if g.robber_at(s.tile).is_some() => 0x2b2b2e,
             None => palette::GOLD,
         };
-        let (x, y) = structure_pos(g, s.tile);
-        let at = (x, y.min(tile_pos(g, s.tile).1 - 0.4 * S - u));
+        let at = structure_pos(g, s.tile);
         p = match s.kind {
             StructureKind::Shrine => art::shrine(p, at, u, mark, px1),
             StructureKind::Mine => art::mine(p, at, u, mark, px1),
@@ -985,22 +984,32 @@ fn waves(mut p: Painter, px1: f32, rings: f32) -> Painter {
 const SPOTS: [(f32, f32); 8] =
     [(-0.5, -0.42), (0.5, -0.42), (-0.2, -0.62), (0.22, -0.6), (-0.64, 0.1), (0.64, 0.1), (-0.44, 0.5), (0.44, 0.5)];
 
+/// The ground of a structure's tile: a bare clearing of trodden earth.
+const CLEARING: u32 = 0xc9bc92;
+
 /// One tile: terrain, its scenery (simpler without `detail`) and its number
-/// token.
+/// token; a structure's tile is a bare clearing, with neither.
 fn tile_art(mut p: Painter, g: &Game, t: TileId, px1: f32, detail: bool) -> Painter {
     let tile = g.board.tile(t);
     let c = tile_pos(g, t);
-    let base = palette::resource(tile.resource);
+    let barren = g.structure_at(t).is_some();
+    let base = if barren { CLEARING } else { palette::resource(tile.resource) };
     let outline = hex_points(c, S * 0.96);
     p = poly(p, &outline)
         .fill_style(art::vgrad(c.1 - S, c.1 + S, palette::lighten(base, 0.2), palette::shade(base, 0.8)))
         .fill();
-    p = poly(p.save(), &outline).clip();
-    p = scenery(p, tile.resource, c, t.0 as u32, base, px1, detail).restore();
+    if barren {
+        p = art::ellipse(p, (c.0, c.1 + 0.1 * S), 0.7 * S, 0.5 * S, 0.0).fill_color(hexa(0xffffff, 0.16)).fill();
+    } else {
+        p = poly(p.save(), &outline).clip();
+        p = scenery(p, tile.resource, c, t.0 as u32, base, px1, detail).restore();
+    }
     p = poly(p, &hex_points(c, S * 0.9)).stroke_color(hexa(0xffffff, 0.2)).line_width(2.0 * px1).stroke();
     p = poly(p, &outline).stroke_color(hex(palette::shade(base, 0.6))).line_width(1.5 * px1).stroke();
     let robbed = g.robber_at(t).is_some();
-    p = token(p, (c.0, c.1 - 0.08 * S), tile.number, robbed, px1);
+    if !barren {
+        p = token(p, (c.0, c.1 - 0.08 * S), tile.number, robbed, px1);
+    }
     if robbed {
         p = poly(p, &outline).fill_color(hexa(0x000000, 0.25)).fill();
     }
@@ -1126,7 +1135,10 @@ fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: 
         p = poly(p, &outline).stroke_color(hex(glow)).line_width(5.0 * px1).stroke();
     }
     p = poly(p, &hex_points(c, S * 0.92)).stroke_color(hexa(0xffffff, 0.9)).line_width(2.5 * px1).stroke();
-    // The number stays readable above the spell.
+    // The number stays readable above the spell; a structure's tile has none.
+    if g.structure_at(tile).is_some() {
+        return p;
+    }
     let number = g.board.tile(tile).number;
     token(p, (c.0, c.1 - 0.08 * S), number, g.robber_at(tile).is_some(), px1)
 }

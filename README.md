@@ -98,7 +98,8 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   small or small for 2, small or medium for 3, medium to extra large for 4), a goal for the island (10; 10–15; 15–20;
   20–30; 30–40 from extra small up), and any shape and number of each structure.
 - **Structures**: shrines, mines and lumber mills (each off, few or many: 1, 1, 2, 3, 4 or 2, 2, 4, 6, 8 on the five
-  sizes) stand on tiles for the whole match, all as far apart as they can be. One serves the player whose knight stands
+  sizes) stand for the whole match, all as far apart as they can be, each on a tile of its own with no resource and no
+  number, which never produces. One serves the player whose knight stands
   on it, for as long as it stands there: a *shrine* is worth 2 VP; a *mine* pays 1 iron or 1 stone (drawn) and a
   *lumber mill* 1 wood at the start of each of that player's turns. At the end of each round every empty structure
   draws the nearest bandit not yet drawn one tile toward it; a bandit on a structure holds it, staying put until a

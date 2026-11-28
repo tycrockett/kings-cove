@@ -427,7 +427,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             Some(Glyph::Shrine),
             {
                 let mut lines = vec![
-                    "When the host asks for them, shrines, mines and lumber mills stand on the island for the whole match, as far apart as they can be.".to_owned(),
+                    "When the host asks for them, shrines, mines and lumber mills stand on the island for the whole match, as far apart as they can be, each on a tile of its own: a bare clearing with no resource and no number, which never produces.".to_owned(),
                     "A structure serves the player whose knight stands on it, for as long as it stands there: moving on or falling ends it.".to_owned(),
                 ];
                 lines.extend(StructureKind::ALL.into_iter().map(|kind| format!("• {}: {}", structure_title(kind), structure_rule(kind))));

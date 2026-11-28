@@ -1238,6 +1238,12 @@ fn structures_stand_far_apart_as_many_of_each_as_the_island_size_asks() {
                         g.robbers.iter().all(|r| g.structure_at(r.tile).is_none()),
                         "the first bandit stands off them"
                     );
+                    // Their tiles are bare; every other tile is numbered, balanced.
+                    for t in &g.board.tiles {
+                        let barren = g.structure_at(t.id).is_some();
+                        assert_eq!(t.number == 0, barren, "{size:?} {shape:?} {amount:?}: tile {:?}", t.id);
+                    }
+                    assert!(g.board.numbers_balanced());
                 }
             }
         }
@@ -1283,6 +1289,10 @@ fn mines_and_lumber_mills_pay_the_holder_at_the_start_of_their_turns() {
     structure(&mut g, StructureKind::LumberMill, mill);
     unit(&mut g, 1, P0, UnitKind::Knight, mine);
     unit(&mut g, 2, P0, UnitKind::Knight, mill);
+    // A structure's tile has no number for a tile spell to work on.
+    for spell in [Spell::Frost, Spell::Bounty, Spell::Luck] {
+        assert_eq!(g.can_cast(P0, spell, &[mine]), Err(RuleError::SpellTarget), "{spell:?}");
+    }
     let mut r = rng();
     g.apply(P0, Action::EndTurn, &mut r).unwrap();
     assert_eq!(g.players[1].resources, Resources::ZERO, "nothing for the other player");

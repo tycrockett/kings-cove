@@ -25,7 +25,10 @@ pub struct Tile {
     pub id: TileId,
     pub q: i32,
     pub r: i32,
+    /// What it produces; meaningless on a barren tile.
     pub resource: Resource,
+    /// Its production number, 2..=12 without 7; 0 on a barren tile (where a
+    /// structure stands), which never produces.
     pub number: u8,
     /// Corners, clockwise from the top.
     pub vertices: [VertexId; 6],
@@ -146,38 +149,49 @@ impl Board {
         Board { tiles, vertices, edges }
     }
 
-    /// A playable island of `size` and `shape`: the resources of
-    /// [`balance::TILE_RESOURCES`] and the numbers of
-    /// [`balance::PRODUCTION_NUMBERS`] (repeated for a bigger board) dealt
-    /// onto it so no two hot numbers touch and no tile shares its number
-    /// with a neighbour.
+    /// A playable island of `size` and `shape`: [`Board::layout`] with
+    /// resources and numbers dealt onto every tile ([`Board::deal_out`]).
     pub fn generate(size: MapSize, shape: MapShape, rng: &mut Rng) -> Board {
-        let mut board = match shape {
-            MapShape::Classic => Board::hexagon(size.radius()),
-            MapShape::Wild => Board::from_coords(wild_coords(size.tiles(), rng)),
-        };
-        let n = board.tiles.len();
-        let pool: Vec<Resource> =
-            balance::TILE_RESOURCES.iter().flat_map(|&(r, count)| std::iter::repeat_n(r, count)).collect();
-        let mut resources = deal(&pool, n, rng);
-        rng.shuffle(&mut resources);
-        for (tile, resource) in board.tiles.iter_mut().zip(resources) {
-            tile.resource = resource;
-        }
-        let mut numbers = deal(&balance::PRODUCTION_NUMBERS, n, rng);
-        loop {
-            rng.shuffle(&mut numbers);
-            if board.place_numbers(&numbers, rng) {
-                break;
-            }
-        }
+        let mut board = Board::layout(size, shape, rng);
+        board.deal_out(&[], rng);
         board
     }
 
-    /// Places `numbers` one per tile so they are balanced, backtracking when
-    /// a tile has no fitting number left; gives up (to be retried with
-    /// another draw) when that takes too long.
-    fn place_numbers(&mut self, numbers: &[u8], rng: &mut Rng) -> bool {
+    /// The tiles of an island of `size` and `shape`, every tile Wood 2.
+    pub fn layout(size: MapSize, shape: MapShape, rng: &mut Rng) -> Board {
+        match shape {
+            MapShape::Classic => Board::hexagon(size.radius()),
+            MapShape::Wild => Board::from_coords(wild_coords(size.tiles(), rng)),
+        }
+    }
+
+    /// Deals the resources of [`balance::TILE_RESOURCES`] and the numbers of
+    /// [`balance::PRODUCTION_NUMBERS`] (repeated for a bigger board) onto
+    /// every tile but the `barren` ones, so no two hot numbers touch and no
+    /// tile shares its number with a neighbour. Barren tiles (where a
+    /// structure stands) get number 0: they never produce.
+    pub fn deal_out(&mut self, barren: &[TileId], rng: &mut Rng) {
+        let open: Vec<usize> = self.tile_ids().filter(|t| !barren.contains(t)).map(TileId::index).collect();
+        let pool: Vec<Resource> =
+            balance::TILE_RESOURCES.iter().flat_map(|&(r, count)| std::iter::repeat_n(r, count)).collect();
+        let mut resources = deal(&pool, open.len(), rng);
+        rng.shuffle(&mut resources);
+        for (&i, resource) in open.iter().zip(resources) {
+            self.tiles[i].resource = resource;
+        }
+        let mut numbers = deal(&balance::PRODUCTION_NUMBERS, open.len(), rng);
+        loop {
+            rng.shuffle(&mut numbers);
+            if self.place_numbers(&numbers, &open, rng) {
+                break;
+            }
+        }
+    }
+
+    /// Places `numbers` one per `open` tile (the rest get 0) so they are
+    /// balanced, backtracking when a tile has no fitting number left; gives
+    /// up (to be retried with another draw) when that takes too long.
+    fn place_numbers(&mut self, numbers: &[u8], open: &[usize], rng: &mut Rng) -> bool {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
         for &n in numbers {
             *counts.entry(n).or_default() += 1;
@@ -186,13 +200,12 @@ impl Board {
             tile.number = 0;
         }
         let mut budget = 20_000;
-        self.fill(0, &mut counts, rng, &mut budget)
+        self.fill(open, &mut counts, rng, &mut budget)
     }
 
-    fn fill(&mut self, i: usize, counts: &mut BTreeMap<u8, usize>, rng: &mut Rng, budget: &mut u32) -> bool {
-        if i == self.tiles.len() {
-            return true;
-        }
+    /// Numbers the first of `open` and, recursively, the rest.
+    fn fill(&mut self, open: &[usize], counts: &mut BTreeMap<u8, usize>, rng: &mut Rng, budget: &mut u32) -> bool {
+        let Some((&i, rest)) = open.split_first() else { return true };
         if *budget == 0 {
             return false;
         }
@@ -203,7 +216,7 @@ impl Board {
             if self.fits(TileId(i as u16), n) {
                 self.tiles[i].number = n;
                 *counts.get_mut(&n).expect("counted") -= 1;
-                if self.fill(i + 1, counts, rng, budget) {
+                if self.fill(rest, counts, rng, budget) {
                     return true;
                 }
                 *counts.get_mut(&n).expect("counted") += 1;
@@ -222,14 +235,16 @@ impl Board {
         })
     }
 
-    /// No hot numbers side by side, and no neighbours sharing a number.
+    /// No hot numbers side by side, and no neighbours sharing a number;
+    /// barren tiles (number 0) aside.
     pub fn numbers_balanced(&self) -> bool {
-        self.tiles.iter().all(|t| {
-            t.neighbors.iter().all(|&n| {
-                let other = self.tile(n).number;
-                other != t.number
-                    && !(balance::HOT_NUMBERS.contains(&t.number) && balance::HOT_NUMBERS.contains(&other))
-            })
+        let hot = |n: u8| balance::HOT_NUMBERS.contains(&n);
+        self.tiles.iter().filter(|t| t.number != 0).all(|t| {
+            t.neighbors
+                .iter()
+                .map(|&n| self.tile(n).number)
+                .filter(|&other| other != 0)
+                .all(|other| other != t.number && !(hot(t.number) && hot(other)))
         })
     }
 
