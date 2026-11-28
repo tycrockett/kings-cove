@@ -31,6 +31,11 @@ const FIT_BOTTOM: f32 = 218.0;
 const FIT_MARGIN: f32 = 8.0;
 /// How long the camera takes to fly to a tile or back to the whole island.
 const FLY_MS: f64 = 300.0;
+/// The farthest the camera zooms out: a tile's corner radius never drawn
+/// smaller than this many points, so number tokens stay readable. A
+/// sprawling wild island then fills the screen and pans instead of fitting.
+const MIN_TILE_PT: f32 = 18.0;
+const MIN_SCALE: f32 = MIN_TILE_PT / S;
 
 // ----- Geometry -----
 
@@ -91,14 +96,15 @@ impl Camera {
     }
 
     /// Fits the board into a viewport `w` wide, in the band `(top, height)`
-    /// the HUD leaves clear.
+    /// the HUD leaves clear; an island too big to fit readably is centred at
+    /// the farthest zoom instead ([`MIN_SCALE`]).
     pub fn fit(g: &Game, w: f32, (top, usable_h): (f32, f32)) -> Camera {
         let pts: Vec<(f32, f32)> = g.board.vertices.iter().map(|v| lattice(v.x, v.y)).collect();
         let min_x = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min) - S * 0.4;
         let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max) + S * 0.4;
         let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min) - S * 0.4;
         let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max) + S * 0.4;
-        let scale = ((w - 16.0) / (max_x - min_x)).min(usable_h / (max_y - min_y)).max(0.05);
+        let scale = ((w - 16.0) / (max_x - min_x)).min(usable_h / (max_y - min_y)).max(MIN_SCALE);
         Camera {
             x: w / 2.0 - (min_x + max_x) / 2.0 * scale,
             y: top + usable_h / 2.0 - (min_y + max_y) / 2.0 * scale,
@@ -138,7 +144,7 @@ impl Camera {
 
     /// Zooms by `factor` keeping the screen point `(sx, sy)` still.
     pub fn zoom(&mut self, factor: f32, sx: f32, sy: f32) {
-        let next = (self.scale * factor).clamp(self.fit * 0.6, self.fit * 4.0);
+        let next = (self.scale * factor).clamp((self.fit * 0.6).max(MIN_SCALE), self.fit * 4.0);
         let f = next / self.scale;
         self.x = sx - (sx - self.x) * f;
         self.y = sy - (sy - self.y) * f;
