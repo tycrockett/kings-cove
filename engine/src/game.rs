@@ -861,6 +861,57 @@ pub enum Event {
     },
 }
 
+impl Action {
+    /// Whether a player may take this action back, given the `events` it
+    /// produced. Only plain turn actions qualify: building, buying, bank
+    /// trades, blockades, deploying, moving, and any spell but Ward and
+    /// Lure (it moves a bandit, which may take an item where it lands).
+    ///
+    /// Everything else is refused: setup, rolls, attacks, robber moves and
+    /// trade offers change what others see or hold, and ending a turn
+    /// starts someone else's. Any event outside a short list of
+    /// self-contained ones also blocks it, in particular:
+    /// - `ItemFound`: the item is drawn from the dice and now gone;
+    /// - `ItemStolen`, `RobberSpawned`, `RobberPlaced`, `StructureSeized`:
+    ///   a bandit appeared or acted;
+    /// - `WardStruck`, `RelicDropped`, `KnightsClashed`, `KnightKilledRobber`:
+    ///   a piece fell, perhaps another player's;
+    /// - `Won`: the game is over.
+    pub fn undoable(&self, events: &[Event]) -> bool {
+        let kind_ok = match self {
+            Action::BuildRoad(_)
+            | Action::BuildOutpost(_)
+            | Action::UpgradeTown(_)
+            | Action::UpgradeCity(_)
+            | Action::BuyCard(_)
+            | Action::TradeWithBank { .. }
+            | Action::LayBlockade { .. }
+            | Action::LiftBlockade { .. }
+            | Action::Deploy { .. }
+            | Action::MoveUnit { .. } => true,
+            Action::CastSpell { spell, .. } => !matches!(spell, Spell::Ward | Spell::Lure),
+            _ => false,
+        };
+        kind_ok
+            && events.iter().all(|e| {
+                matches!(
+                    e,
+                    Event::SpellCast { .. }
+                        | Event::BuiltRoad { .. }
+                        | Event::Built { .. }
+                        | Event::Upgraded { .. }
+                        | Event::CardBought { .. }
+                        | Event::Deployed { .. }
+                        | Event::UnitMoved { .. }
+                        | Event::StructureTaken { .. }
+                        | Event::BlockadeLaid { .. }
+                        | Event::BlockadeLifting { .. }
+                        | Event::BankTraded { .. }
+                )
+            })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent {
     pub seq: u64,

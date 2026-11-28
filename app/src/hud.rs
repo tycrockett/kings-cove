@@ -12,6 +12,7 @@ use nsh_core::{LayoutCurve, LayoutTransition, prelude::*};
 use crate::{
     art::{self, Glyph},
     board, fx,
+    nudge::{self, Anchor, Row},
     palette::{self, hex, hexa},
     rules::{self, Item},
     sound::{self, Cue},
@@ -49,7 +50,7 @@ pub fn pill(text_: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: imp
     }
 }
 
-/// Sound effects and music, each on or off.
+/// Sound effects, music and tips, each on or off.
 pub fn sound_settings(app: AppState) -> impl IntoElement {
     dynamic(move || {
         let text = |on: bool| if on { "On" } else { "Off" }.to_owned();
@@ -61,6 +62,9 @@ pub fn sound_settings(app: AppState) -> impl IntoElement {
                 }))
                 .child(crate::choice("Music", &[true, false], app.music_on.get(), true, text, move |on| {
                     app.set_music(on)
+                }))
+                .child(crate::choice("Tips", &[true, false], app.tips_on.get(), true, text, move |on| {
+                    app.set_tips(on)
                 })),
         )
     })
@@ -88,6 +92,24 @@ pub fn resource_icon(r: Resource, s: f32) -> impl IntoElement {
 
 fn glyph_icon(g: Glyph, color: u32, w: f32, h: f32) -> impl IntoElement {
     canvas(move || art::glyph(Painter::new(), g, color, w, h)).w(px(w)).h(px(h))
+}
+
+/// A small round badge on a chip's top right corner, over its edge.
+fn chip_badge(content: impl IntoElement) -> View {
+    view()
+        .absolute()
+        .top(px(-6.0))
+        .right(px(-6.0))
+        .min_w(px(18.0))
+        .h(px(18.0))
+        .px(px(4.0))
+        .rounded(px(9.0))
+        .items_center()
+        .justify_center()
+        .bg(hex(0xfffdf6))
+        .border_1()
+        .border_color(hex(0x4a3c30))
+        .child(content)
 }
 
 fn star_icon(s: f32) -> impl IntoElement {
@@ -772,16 +794,16 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
             let chip = view()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
-                .pl(px(4.0))
-                .pr(px(8.0))
+                .gap(px(2.0))
+                .pl(px(3.0))
+                .pr(px(4.0))
                 .py(px(4.0))
                 .rounded(px(12.0))
                 .bg(hex(0xfffdf6))
                 .border_1()
                 .border_color(hexa(palette::INK, 0.12))
                 .opacity(if n > 0 { 1.0 } else { 0.6 })
-                .child(resource_icon(r, 26.0))
+                .child(resource_icon(r, 22.0))
                 .child(bold(n.to_string(), 18.0, palette::INK).min_w(px(11.0)));
             if before.is_some_and(|b| n > b.get(r)) {
                 chip.bind_motion(&motion().entering(MotionPreset::Tada.spec().timing(|t| t.delay(delay))))
@@ -795,16 +817,14 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         let selected = app.mode.get_untracked() == mode;
         let enabled = can_deploy && count > 0;
         let v = view()
-            .flex_row()
-            .items_center()
-            .gap(px(3.0))
             .px(px(6.0))
             .py(px(4.0))
             .rounded(px(12.0))
             .bg(hex(if selected { palette::GOLD } else { 0x4a3c30 }))
             .opacity(if count > 0 { 1.0 } else { 0.45 })
+            .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Knight, f))
             .child(glyph_icon(Glyph::Knight, palette::player(seat), 22.0, 26.0))
-            .child(bold(format!("×{count}"), 14.0, if selected { palette::INK } else { 0xffffff }));
+            .child(chip_badge(bold(count.to_string(), 11.0, palette::INK)));
         if enabled {
             v.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || {
                 app.inspect.set(None);
@@ -814,32 +834,70 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
             v
         }
     };
+    // The Spells chip: styled like the knight chip, it opens the spellbook.
+    // Its badge shows the scrolls held, else a drop when the mana is ready,
+    // else the rounds left before it is.
+    let casting = matches!(app.mode.get_untracked(), Mode::Cast(..));
+    let scrolls = me.scrolls.len();
+    let ready = mana_state(g, seat) == "ready";
+    let spells = {
+        let status = if scrolls > 0 {
+            chip_badge(bold(format!("×{scrolls}"), 11.0, palette::INK))
+        } else if ready {
+            chip_badge(mana_icon(12.0, true))
+        } else {
+            chip_badge(bold(me.mana_ready_round.saturating_sub(g.round).to_string(), 11.0, palette::INK))
+        };
+        view()
+            .px(px(6.0))
+            .py(px(4.0))
+            .rounded(px(12.0))
+            .bg(hex(if casting { palette::GOLD } else { 0x4a3c30 }))
+            .opacity(if scrolls > 0 || ready { 1.0 } else { 0.45 })
+            .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Spells, f))
+            .child(glyph_icon(Glyph::Spellbook, palette::player(seat), 24.0, 26.0))
+            .child(status)
+            .active(|s| s.opacity(0.7).scale(0.96))
+            .on_press(move || {
+                app.inspect.set(None);
+                if casting {
+                    app.mode.set(Mode::Idle);
+                } else {
+                    app.spellbook_open.set(true);
+                }
+            })
+    };
     // Trading with the bank or the table, right beside what is traded.
     let trading = app.trade_open.get_untracked();
     let trade_enabled = g.is_active(seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing) && g.trade.is_none();
     let trade = view()
         .items_center()
         .justify_center()
-        .px(px(6.0))
+        .px(px(4.0))
         .py(px(4.0))
         .rounded(px(12.0))
         .bg(hex(if trading { palette::GOLD } else { 0xfffdf6 }))
         .border_1()
         .border_color(hex(if trading { 0xb8860b } else { palette::PAPER_DIM }))
         .opacity(if trade_enabled || trading { 1.0 } else { 0.45 })
+        .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Trade, f))
         .child(glyph_icon(Glyph::Trade, palette::player(seat), 30.0, 26.0));
     let trade = if trade_enabled {
         trade.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || app.trade_open.update(|o| *o = !*o))
     } else {
         trade
     };
+    // Resources, then the trade button right beside them, then the knight
+    // and Spells chips.
     view()
         .flex_row()
         .items_center()
-        .gap(px(5.0))
-        .child(view().flex_row().flex_1().gap(px(4.0)).child(resources))
-        .child(card(me.cards.knights))
+        .gap(px(4.0))
+        .on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Inventory, f))
+        .child(view().flex_row().flex_1().gap(px(3.0)).child(resources))
         .child(trade)
+        .child(card(me.cards.knights))
+        .child(spells)
 }
 
 /// What buying an item does: pick a place on the board, or buy a card.
@@ -859,7 +917,7 @@ fn item_use(item: Item) -> Use {
 }
 
 /// Why the player cannot use `item` right now, or `None` when they can.
-fn item_blocker(g: &Game, seat: PlayerId, item: Item) -> Option<String> {
+pub(crate) fn item_blocker(g: &Game, seat: PlayerId, item: Item) -> Option<String> {
     if !g.is_active(seat) || !matches!(g.phase, Phase::Playing) {
         return Some("Wait for your turn".to_owned());
     }
@@ -915,6 +973,7 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
             tile(item.glyph(), item.title(), selected, opacity)
                 .child(cost_row(&item.cost(), Some(&have), 14.0, 11.5))
                 .active(|s| s.opacity(0.75).scale(0.95))
+                .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Tile(item), f))
                 .on_press(move || {
                     app.inspect.set(None);
                     if selected {
@@ -940,7 +999,12 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 app.spellbook_open.set(true);
             }
         });
-    view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)))
+    view().on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Tray, f)).child(
+        scroll()
+            .horizontal()
+            .on_scroll(move |e: &ScrollEvent| nudge::mark_scroll(app, e.offset.x.0))
+            .child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)),
+    )
 }
 
 /// The player's mana, in a word or two.
@@ -953,7 +1017,7 @@ fn mana_state(g: &Game, seat: PlayerId) -> String {
 }
 
 /// Why the player cannot cast `spell` right now, or `None` when they can.
-fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
+pub(crate) fn spell_blocker(g: &Game, seat: PlayerId, spell: Spell) -> Option<String> {
     if !g.is_active(seat) || !matches!(g.phase, Phase::Playing) {
         return Some("Wait for your turn".to_owned());
     }
@@ -1305,6 +1369,7 @@ fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<
             app.trade_open.set(false);
             app.send(Action::EndTurn)
         })
+        .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::EndTurn, f))
         .child(bold("End turn", 18.0, 0xffffff)),
         Phase::Setup { .. } if g.current == seat => big_button(0xfff0c2, false, || {})
             .border_2()
@@ -1326,6 +1391,40 @@ fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<
                 .child(bold(format!("{current} is playing…"), 16.0, 0xffffff)),
         ),
         Phase::Finished { .. } => return None,
+    })
+}
+
+/// Whether the player may take back their last action now: their turn,
+/// after the roll, with nothing in flight.
+pub(crate) fn undo_shown(app: AppState) -> bool {
+    let can = app.view.with(|v| {
+        v.as_ref().is_some_and(|v| {
+            v.can_undo
+                && v.game
+                    .as_ref()
+                    .is_some_and(|g| g.is_active(v.seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing))
+        })
+    });
+    can && !app.busy.get()
+}
+
+/// Undo, at the right over the action strip, across from Recenter, while
+/// the player may take back their last action.
+fn undo_button(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        if !undo_shown(app) {
+            return None;
+        }
+        let hud = app.hud.get();
+        Some(
+            view().absolute().right(px(8.0)).bottom(px(hud.strip + hud.dock + 6.0)).child(
+                pill("Undo", palette::PAPER, palette::INK, true, move || {
+                    sound::play(Cue::Tap, 0.3, 1.0);
+                    app.undo()
+                })
+                .shadow_md(),
+            ),
+        )
     })
 }
 
@@ -1970,12 +2069,14 @@ fn bottom(app: AppState) -> impl IntoElement {
                             .flex_row()
                             .items_center()
                             .gap(px(8.0))
+                            .on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Bottom, f))
                             .child(reaction_button(app))
                             .child(primary(app, g, seat, &view_.players).map(|p| p.flex_1()))
                             .child(menu_button(app)),
                     ),
             )
         })))
+        .child(nudge::layer(app))
 }
 
 /// Over the action strip on the left while the board is zoomed in on a
@@ -2349,6 +2450,7 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .child(turn_glow(app))
         .child(top(app))
         .child(recenter_button(app))
+        .child(undo_button(app))
         .child(bottom(app))
         .child(winner(app))
         .child(fx::fx_layer(app))

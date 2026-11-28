@@ -187,6 +187,8 @@ Costs (all in `engine/src/balance.rs`):
   you want for it; or tap resources into *You give* and *You get* (− takes one back) and offer them. A card you can't
   afford yet shows what you're short, with *Ask the table* (an offer filled in for you) and, when the bank can cover
   it, a one-tap bank trade. An offer everyone declined comes back to sweeten and send again.
+- The **Spells** chip right of your knight tokens opens the spellbook and shows your mana: ready, or the rounds until
+  it refills.
 - Tap one of your ready units (gold dot) to see gold moves and red attacks.
 - Tap any tile, building or road to inspect it. The dark strip over the dock shows what to do, or the latest action,
   and your points; tap it for the event history.
@@ -196,6 +198,15 @@ Costs (all in `engine/src/balance.rs`):
 - The chip at the top left is the player whose turn it is; tap it to see everyone's points, resources, knight tokens
   and mana.
 - The smiley left of the main button sends a reaction everyone sees in the middle of the screen.
+- **Undo**, at the right over the dark strip (across from *Recenter*), takes back your last action while nothing else
+  has happened since: a build, upgrade,
+  knight token, bank trade, blockade order, deploy, move, or any spell but Ward and Lure. Rolls, attacks, trades with
+  players and ending the turn can't be undone, nor a deploy or move that found an item, hit a ward or won the game.
+- Tips: a dark bubble above the strip, with a gold line down to a ring around what just became useful, such as *Deploy
+  Knight* on a new knight token, *Magic is ready!* on the Spells chip, a build you can now afford, a good bank trade, or
+  *End turn* once nothing is left to do. Each
+  stays until your next tap anywhere (which still does what it taps) and shows once a turn; a new knight token brings
+  *Deploy Knight* back. *Tips* turns them off, in **Menu** or in *Settings* on the home screen.
 - Sound: effects go with the dice, harvests, turns, building, trades, fights, spells and finds, and a Norse tune of
   lyre, drums and drone loops while a match is on screen. *Sound effects* and *Music* turn each off, in **Menu** or
   in *Settings* on the home screen. Every sound is synthesized when the app starts (`app/src/synth.rs`); no audio

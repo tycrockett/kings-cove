@@ -10,6 +10,7 @@
 //! | `POST /start` | [`SessionRequest`] | [`MatchView`] |
 //! | `POST /action` | [`ActionRequest`] | [`MatchView`] |
 //! | `POST /react` | [`ReactRequest`] | [`MatchView`] |
+//! | `POST /undo` | [`SessionRequest`] | [`MatchView`], the seat's last action taken back (when `can_undo`) |
 //! | `POST /end` | [`SessionRequest`] (the host's) | [`MatchView`], now `ended` |
 //! | `GET /poll?code=&token=&since=` | | [`MatchView`] once its version passes `since` (long poll) |
 //!
@@ -216,4 +217,7 @@ pub struct MatchView {
     /// (and a practice rival, which only passes).
     #[serde(default)]
     pub bots: Vec<Option<Style>>,
+    /// The seat may take back its last action with `POST /undo`.
+    #[serde(default)]
+    pub can_undo: bool,
 }

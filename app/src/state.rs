@@ -17,6 +17,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{
     board::{self, Anim, AnimKind, Mood},
     fx::{self, Fx, FxKind},
+    nudge::{self, Nudge, Spots},
     palette,
     rules::Item,
     sound::{self, Cue},
@@ -52,6 +53,7 @@ const SESSION_KEY: &str = "session";
 const NAME_KEY: &str = "name";
 const EFFECTS_KEY: &str = "sound-effects";
 const MUSIC_KEY: &str = "music";
+const TIPS_KEY: &str = "tips";
 /// The server a fresh install talks to: `KC_SERVER_URL` when the app was
 /// built (the published web build sets it), else this machine.
 pub const DEFAULT_SERVER: &str = match option_env!("KC_SERVER_URL") {
@@ -197,6 +199,17 @@ pub struct AppState {
     /// The player's sound settings: effects, and music during a match.
     pub effects_on: Signal<bool>,
     pub music_on: Signal<bool>,
+    /// Whether tips pop up over the dock.
+    pub tips_on: Signal<bool>,
+    /// The tip showing over the dock, if any.
+    pub nudge: Signal<Option<Nudge>>,
+    /// Where the tips' anchors were laid out.
+    pub spots: Signal<Spots>,
+    /// The tips already shown this turn.
+    seen_nudges: Stored<Vec<Nudge>>,
+    /// Tips about something that just happened, waiting for the showing one
+    /// to go, highest priority first.
+    pending_nudges: Stored<Vec<Nudge>>,
     last_seq: Stored<Option<u64>>,
     poll_generation: Stored<u64>,
     /// The interval ticking `clock`, with its period (ms).
@@ -252,6 +265,11 @@ impl AppState {
             join_code: signal(String::new()),
             effects_on: signal(Storage::get_item(EFFECTS_KEY).as_deref() != Some("off")),
             music_on: signal(Storage::get_item(MUSIC_KEY).as_deref() != Some("off")),
+            tips_on: signal(Storage::get_item(TIPS_KEY).as_deref() != Some("off")),
+            nudge: signal(None),
+            spots: signal(Spots::default()),
+            seen_nudges: stored(Vec::new()),
+            pending_nudges: stored(Vec::new()),
             last_seq: stored(None),
             poll_generation: stored(0),
             ticker: stored(None),
@@ -423,6 +441,9 @@ impl AppState {
         self.menu.set(Menu::Closed);
         self.item_card.set(None);
         self.confirm_attack.set(None);
+        self.nudge.set(None);
+        self.seen_nudges.replace(Vec::new());
+        self.pending_nudges.replace(Vec::new());
         self.anims.set(Vec::new());
         self.fx.set(Vec::new());
         self.fx_cursor.replace(0.0);
@@ -455,6 +476,15 @@ impl AppState {
         let _ = Storage::set_item(MUSIC_KEY, if on { "on" } else { "off" });
     }
 
+    pub fn set_tips(&self, on: bool) {
+        self.tips_on.set(on);
+        if !on {
+            self.nudge.set(None);
+            self.pending_nudges.replace(Vec::new());
+        }
+        let _ = Storage::set_item(TIPS_KEY, if on { "on" } else { "off" });
+    }
+
     /// Starts or stops the music, in the app's scope so that it outlives
     /// what asked.
     pub fn play_music(&self, on: bool) {
@@ -475,6 +505,20 @@ impl AppState {
         let (this, base) = (*self, self.base());
         let body = ActionRequest { code: s.code, token: s.token, action };
         self.request(async move { post::<_, MatchView>(&base, "/action", &body).await }, move |v| this.receive(v));
+    }
+
+    /// Takes back the player's last action: the server answers with the view
+    /// from before it.
+    pub fn undo(&self) {
+        let Some(s) = self.session.get_untracked() else {
+            return;
+        };
+        self.mode.set(Mode::Idle);
+        self.inspect.set(None);
+        self.trade_open.set(false);
+        let (this, base) = (*self, self.base());
+        let body = SessionRequest { code: s.code, token: s.token };
+        self.request(async move { post::<_, MatchView>(&base, "/undo", &body).await }, move |v| this.receive(v));
     }
 
     /// Points the board at `tile`, or at the whole island. The camera flies
@@ -521,6 +565,61 @@ impl AppState {
                 shown.update(|s| s.retain(|r| !fresh.iter().any(|f| f.seq == r.seq)))
             })
         });
+    }
+
+    /// Shows `nudge` over the dock until the next press.
+    fn show_nudge(&self, nudge: Nudge) {
+        self.seen_nudges.with(|s| s.push(nudge));
+        self.nudge.set(Some(nudge));
+    }
+
+    /// Hides the showing tip, and shows the next one waiting, if any.
+    pub fn hide_nudge(&self) {
+        self.nudge.set(None);
+        let next = self.pending_nudges.with(|p| (!p.is_empty()).then(|| p.remove(0)));
+        if let Some(n) = next {
+            self.show_nudge(n);
+        }
+    }
+
+    /// Hides the showing tip when it is no longer on offer, and shows what
+    /// just became so. Each shows once a turn, which starts afresh when the
+    /// player's turn does. Tips about something that just happened wait for
+    /// the showing one to go; the rest show only when nothing else does.
+    fn follow_nudges(&self, before: Option<&Game>, after: &Game, seat: PlayerId, events: &[Event]) {
+        if events.iter().any(|e| matches!(e, Event::TurnStarted { player, .. } if *player == seat)) {
+            self.seen_nudges.replace(Vec::new());
+            self.pending_nudges.replace(Vec::new());
+        }
+        if !self.tips_on.get_untracked() {
+            return;
+        }
+        let on_offer = nudge::available(after, seat);
+        self.pending_nudges.with(|p| p.retain(|n| on_offer.contains(n)));
+        if self.nudge.get_untracked().is_some_and(|n| !on_offer.contains(&n)) {
+            self.hide_nudge();
+        }
+        let Some(before) = before else {
+            return;
+        };
+        let (seen, pending) = (self.seen_nudges.get(), self.pending_nudges.get());
+        let showing = self.nudge.get_untracked();
+        let fresh: Vec<Nudge> = nudge::fresh(before, after, seat, &seen)
+            .into_iter()
+            .filter(|n| !pending.contains(n) && showing != Some(*n))
+            .collect();
+        self.pending_nudges.with(|p| {
+            p.extend(fresh.iter().copied().filter(|n| n.queues()));
+            // `available` lists them by priority.
+            p.sort_by_key(|n| on_offer.iter().position(|o| o == n));
+        });
+        if showing.is_some() {
+            return;
+        }
+        let next = self.pending_nudges.with(|p| (!p.is_empty()).then(|| p.remove(0)));
+        if let Some(n) = next.or_else(|| fresh.first().copied()) {
+            self.show_nudge(n);
+        }
     }
 
     fn request<T: 'static>(
@@ -612,6 +711,7 @@ impl AppState {
                         game.events.iter().filter(|e| e.seq > seen).map(|e| e.event.clone()).collect();
                     self.animate(previous.as_ref(), game, view.seat, &view.players, &fresh);
                     self.follow_trade_events(previous.as_ref(), game, view.seat, &fresh);
+                    self.follow_nudges(previous.as_ref(), game, view.seat, &fresh);
                 }
             }
             self.last_seq.replace(Some(latest));

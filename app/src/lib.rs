@@ -5,6 +5,7 @@ mod art;
 mod board;
 mod fx;
 mod hud;
+mod nudge;
 mod palette;
 mod rules;
 mod sound;

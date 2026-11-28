@@ -7,7 +7,7 @@ pub mod practice;
 use std::collections::BTreeMap;
 
 use kings_cove_engine::{
-    Action, Event, Game, PlayerId, Rng, balance,
+    Action, Event, Game, Phase, PlayerId, Rng, balance,
     balance::{Amount, MapShape, MapSize, Settings},
     bot::{self, Style},
 };
@@ -85,6 +85,18 @@ pub struct Match {
     /// restarted server gives the offer its full time again.
     #[serde(skip)]
     bot_offer: Option<(u64, u64)>,
+    /// The game and dice as they were before the last action, while its
+    /// seat may still take it back. Not saved: a restart forgets it.
+    #[serde(skip)]
+    undo: Option<Undo>,
+}
+
+/// What `POST /undo` puts back.
+#[derive(Clone, Debug)]
+struct Undo {
+    seat: PlayerId,
+    game: Game,
+    rng: Rng,
 }
 
 /// The goal of matches saved before goals could be chosen.
@@ -122,6 +134,7 @@ impl Match {
             random: self.random,
             reactions: self.reactions.clone(),
             bots: self.seats.iter().map(|s| (s.bot && !s.passive).then_some(s.style)).collect(),
+            can_undo: self.undo.as_ref().is_some_and(|u| u.seat == seat),
         }
     }
 
@@ -253,6 +266,7 @@ impl Store {
                 reactions: Vec::new(),
                 reaction_seq: 0,
                 bot_offer: None,
+                undo: None,
             },
         );
         code
@@ -345,6 +359,7 @@ impl Store {
         (m.victory_points, m.map_size, m.map_shape, m.shrines, m.mines, m.mills) =
             (victory_points, map_size, map_shape, shrines, mines, mills);
         m.game = Some(Game::new(&names, &settings, &mut m.rng));
+        m.undo = None;
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -356,8 +371,39 @@ impl Store {
             return Err(ENDED.to_owned());
         }
         let game = m.game.as_mut().ok_or("The match has not started")?;
+        let (before, before_rng, before_seq) = (game.clone(), m.rng.clone(), game.event_seq);
+        let taken = action.clone();
         game.apply(seat, action, &mut m.rng).map_err(|e| e.to_string())?;
+        let after_apply = game.event_seq;
+        let events: Vec<Event> = game.events.iter().filter(|e| e.seq > before_seq).map(|e| e.event.clone()).collect();
         m.play_bots();
+        let game = m.game.as_ref().expect("a game was just played");
+        let quiet = game.event_seq == after_apply;
+        let mine = matches!(game.phase, Phase::Playing) && game.current == seat;
+        m.undo = (taken.undoable(&events) && quiet && mine).then_some(Undo { seat, game: before, rng: before_rng });
+        m.version += 1;
+        Ok(m.view(seat))
+    }
+
+    /// A seat takes back its own last action, while nothing else has happened.
+    /// The event counter keeps climbing so clients animate what follows.
+    pub fn undo(&mut self, code: &str, token: &str) -> Result<MatchView, String> {
+        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
+        let seat = m.seat_of(token)?;
+        if m.ended {
+            return Err(ENDED.to_owned());
+        }
+        let undo = match m.undo.take() {
+            Some(u) if u.seat == seat => u,
+            other => {
+                m.undo = other;
+                return Err("Nothing to undo".to_owned());
+            }
+        };
+        let seq = m.game.as_ref().map_or(0, |g| g.event_seq);
+        let Undo { game, rng, .. } = undo;
+        m.game = Some(Game { event_seq: seq, ..game });
+        m.rng = rng;
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -399,6 +445,7 @@ impl Store {
         if let Some(random) = change.random {
             m.random = random;
         }
+        m.undo = None;
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -428,6 +475,7 @@ impl Store {
         }
         if !m.ended {
             m.ended = true;
+            m.undo = None;
             m.version += 1;
         }
         Ok(m.view(seat))
@@ -451,6 +499,7 @@ impl Store {
                     let game = m.game.as_mut().expect("an open offer is in a game");
                     let _ = game.apply(from, Action::CancelTrade, &mut m.rng);
                     m.bot_offer = None;
+                    m.undo = None;
                     m.play_bots();
                     m.version += 1;
                     changed = true;
@@ -764,5 +813,65 @@ mod tests {
             let passed = store.act(&me.code, &me.token, Action::EndTurn).unwrap().game.unwrap();
             assert_eq!((passed.current, passed.round, passed.dice), (PlayerId(0), 2, None), "seed {seed}");
         }
+    }
+
+    /// A practice match after the roll, with a road the host can build.
+    fn rolled_practice(seed: u64) -> (Store, Session, kings_cove_engine::EdgeId) {
+        let mut store = Store::new(seed);
+        let me = store.practice("Ada").unwrap();
+        store.act(&me.code, &me.token, Action::Roll).unwrap();
+        let game = store.view(&me.code, &me.token).unwrap().game.unwrap();
+        let edge = (0..game.roads.len())
+            .map(|i| kings_cove_engine::EdgeId(i as _))
+            .find(|&e| game.can_build_road(PlayerId(0), e).is_ok())
+            .expect("a road to build");
+        (store, me, edge)
+    }
+
+    #[test]
+    fn a_built_road_can_be_taken_back_once() {
+        let (mut store, me, edge) = rolled_practice(1);
+        let before = store.view(&me.code, &me.token).unwrap();
+        assert!(!before.can_undo, "a roll cannot be undone");
+        let built = store.act(&me.code, &me.token, Action::BuildRoad(edge)).unwrap();
+        assert!(built.can_undo);
+        assert_ne!(
+            built.game.as_ref().unwrap().players[0].resources,
+            before.game.as_ref().unwrap().players[0].resources
+        );
+        let back = store.undo(&me.code, &me.token).unwrap();
+        assert!(!back.can_undo);
+        let (g, b) = (back.game.unwrap(), before.game.unwrap());
+        assert_eq!(g.players[0].resources, b.players[0].resources);
+        assert_eq!(g.roads, b.roads);
+        assert!(g.event_seq >= built.game.unwrap().event_seq, "the counter never runs backwards");
+        assert!(store.undo(&me.code, &me.token).is_err(), "only once");
+        let again = store.act(&me.code, &me.token, Action::BuildRoad(edge)).unwrap().game.unwrap();
+        assert!(again.events.last().unwrap().seq > g.event_seq, "fresh events get fresh numbers");
+    }
+
+    #[test]
+    fn only_the_latest_plain_action_is_undoable() {
+        let (mut store, me, edge) = rolled_practice(1);
+        store.act(&me.code, &me.token, Action::BuildRoad(edge)).unwrap();
+        let bought = store.act(&me.code, &me.token, Action::BuyCard(kings_cove_engine::UnitKind::Knight)).unwrap();
+        assert!(bought.can_undo);
+        let back = store.undo(&me.code, &me.token).unwrap().game.unwrap();
+        assert!(back.roads[edge.index()].is_some(), "the road before it stays");
+        assert!(!store.view(&me.code, &me.token).unwrap().can_undo);
+        let ended = store.act(&me.code, &me.token, Action::EndTurn).unwrap();
+        assert!(!ended.can_undo);
+        assert!(store.undo(&me.code, &me.token).is_err());
+    }
+
+    #[test]
+    fn another_seat_cannot_undo() {
+        let (mut store, me, edge) = rolled_practice(1);
+        let rival = store.matches[&me.code].seats[1].token.clone();
+        store.act(&me.code, &me.token, Action::BuildRoad(edge)).unwrap();
+        assert!(!store.view(&me.code, &rival).unwrap().can_undo);
+        assert!(store.undo(&me.code, &rival).is_err());
+        assert!(store.undo(&me.code, "forged").is_err());
+        assert!(store.undo(&me.code, &me.token).is_ok(), "still the host's to take back");
     }
 }
