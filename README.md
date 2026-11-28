@@ -47,7 +47,7 @@ one knight (a ruthless bot two) and casts a spell when a castle or a scroll make
 price. Its turns happen as soon as the turn passes to it; an offer it makes to a person waits up to 30 seconds for an
 answer, then the bot withdraws it and plays on. A bot never reads what a hidden item is. The home screen shows the
 client's version and the commit it was built from.
-On a phone, open *Server settings* on the home screen and enter the server's LAN address (`http://192.168.x.y:8787`).
+On a phone, open *Settings* on the home screen and enter the server's LAN address (`http://192.168.x.y:8787`).
 A client that closes or loses its connection resumes its seat on the next launch (the seat token is kept in the app's
 storage); a restarted server resumes its matches from the data file.
 
@@ -182,6 +182,10 @@ Costs (all in `engine/src/balance.rs`):
 - The chip at the top left is the player whose turn it is; tap it to see everyone's points, resources, knight tokens
   and mana.
 - The smiley left of the main button sends a reaction everyone sees in the middle of the screen.
+- Sound: effects go with the dice, harvests, turns, building, trades, fights, spells and finds, and a Norse tune of
+  lyre, drums and drone loops while a match is on screen. *Sound effects* and *Music* turn each off, in **Menu** or
+  in *Settings* on the home screen. Every sound is synthesized when the app starts (`app/src/synth.rs`); no audio
+  files ship with it. In the web client, sound starts with the first tap, as browsers require.
 
 ## Test
 

@@ -17,6 +17,7 @@ use crate::{
     fx::{self, Fx, FxKind},
     palette,
     rules::Item,
+    sound::{self, Cue},
 };
 use nsh_core::platform::Lifecycle;
 
@@ -39,6 +40,8 @@ const REACTION_SHOW_MS: u64 = 2600;
 const SERVER_KEY: &str = "server";
 const SESSION_KEY: &str = "session";
 const NAME_KEY: &str = "name";
+const EFFECTS_KEY: &str = "sound-effects";
+const MUSIC_KEY: &str = "music";
 /// The server a fresh install talks to: `KC_SERVER_URL` when the app was
 /// built (the published web build sets it), else this machine.
 pub const DEFAULT_SERVER: &str = match option_env!("KC_SERVER_URL") {
@@ -173,6 +176,9 @@ pub struct AppState {
     pub link_copied: Signal<bool>,
     /// The room code typed on the home screen, or a room link's.
     pub join_code: Signal<String>,
+    /// The player's sound settings: effects, and music during a match.
+    pub effects_on: Signal<bool>,
+    pub music_on: Signal<bool>,
     last_seq: Stored<Option<u64>>,
     poll_generation: Stored<u64>,
     /// The interval ticking `clock`, with its period (ms).
@@ -222,6 +228,8 @@ impl AppState {
             code_copied: signal(false),
             link_copied: signal(false),
             join_code: signal(String::new()),
+            effects_on: signal(Storage::get_item(EFFECTS_KEY).as_deref() != Some("off")),
+            music_on: signal(Storage::get_item(MUSIC_KEY).as_deref() != Some("off")),
             last_seq: stored(None),
             poll_generation: stored(0),
             ticker: stored(None),
@@ -239,6 +247,8 @@ impl AppState {
                 }
             })
         });
+        sound::set_effects(state.effects_on.get_untracked());
+        state.root.run(|| spawn(sound::load()));
         state
     }
 
@@ -391,6 +401,7 @@ impl AppState {
         self.fx.set(Vec::new());
         self.fx_cursor.replace(0.0);
         self.last_seq.replace(None);
+        sound::hush();
     }
 
     fn remember_lobby_inputs(&self, name: &str) {
@@ -402,6 +413,26 @@ impl AppState {
         let _ = Storage::set_item(SESSION_KEY, serde_json::to_string(&session).expect("json"));
         self.session.set(Some(session));
         self.poll();
+    }
+
+    // ----- Sound -----
+
+    pub fn set_effects(&self, on: bool) {
+        self.effects_on.set(on);
+        let _ = Storage::set_item(EFFECTS_KEY, if on { "on" } else { "off" });
+        sound::set_effects(on);
+        sound::play(Cue::Tap, 0.3, 1.0);
+    }
+
+    pub fn set_music(&self, on: bool) {
+        self.music_on.set(on);
+        let _ = Storage::set_item(MUSIC_KEY, if on { "on" } else { "off" });
+    }
+
+    /// Starts or stops the music, in the app's scope so that it outlives
+    /// what asked.
+    pub fn play_music(&self, on: bool) {
+        self.root.run(|| sound::music(on));
     }
 
     // ----- Actions -----
@@ -603,6 +634,11 @@ impl AppState {
         };
 
         let (mut anims, mut effects) = (Vec::new(), Vec::new());
+        // The sounds that go with them, and when.
+        let mut cues: Vec<(f64, (Cue, f32, f32))> = Vec::new();
+        let turn_cue = |player: PlayerId| {
+            if player == seat { (Cue::Horn, 0.7, 1.0) } else { (Cue::TurnOther, 0.5, 1.0) }
+        };
         // Effects play one after another, after those already queued; when
         // the queue falls far behind the game, what is stale is dropped.
         let mut cursor = now.max(self.fx_cursor.get());
@@ -649,6 +685,7 @@ impl AppState {
                     self.dice_hidden.set(true);
                     self.dice_until.replace(cursor + fx::DICE_LANDED_MS);
                     harvest = cursor + fx::DICE_LANDED_MS - 100.0;
+                    cues.push((cursor, (Cue::Dice, 0.45, 1.0)));
                     for t in after.board.tiles.iter().filter(|t| t.number == sum) {
                         let spell = before.and_then(|b| b.enchantment_at(t.id)).map(|e| e.spell);
                         let mood = match (after.robber_at(t.id).is_some() || after.blockaded(t.id), spell) {
@@ -686,14 +723,20 @@ impl AppState {
                     anims.push(Anim { start, dur: board::GAIN_MS, kind });
                     if mine {
                         self.gains_at.replace(start + 500.0);
+                        // Each badge a step higher.
+                        cues.push((start, (Cue::Harvest, 0.6, 1.0 + 0.06 * slot as f32)));
                     }
                 }
                 Event::TurnStarted { player, round } => {
                     let b = banner(player, round, cursor.max(calm(&anims)));
                     cursor = b.end() - 300.0;
+                    cues.push((b.start, turn_cue(player)));
                     effects.push(b);
                 }
-                Event::Won { .. } => effects.push(Fx { start: cursor, dur: fx::CONFETTI_MS, kind: FxKind::Confetti }),
+                Event::Won { .. } => {
+                    effects.push(Fx { start: cursor, dur: fx::CONFETTI_MS, kind: FxKind::Confetti });
+                    cues.push((cursor, (Cue::Fanfare, 0.8, 1.0)));
+                }
                 // What a roll's tiles did, shown with their wobble.
                 Event::ProductionBlocked { tile }
                 | Event::ProductionBlockaded { tile, .. }
@@ -733,11 +776,18 @@ impl AppState {
                 Event::RingPaid { player, tile, resource, amount }
                 | Event::StructurePaid { player, tile, resource, amount, .. } => {
                     let color = palette::player(player);
-                    let kind = AnimKind::Gain { tile, resource, amount, color, mine: player == seat, slot: 0, of: 1 };
+                    let mine = player == seat;
+                    let kind = AnimKind::Gain { tile, resource, amount, color, mine, slot: 0, of: 1 };
                     anims.push(Anim { start: cursor, dur: board::GAIN_MS, kind });
+                    if mine {
+                        cues.push((cursor, (Cue::Harvest, 0.5, 1.1)));
+                    }
                 }
                 _ => {
                     let shown = board::anims_for(after, event, cursor);
+                    if let Some(cue) = sound::cue_for(event) {
+                        cues.push((shown.first().map_or(cursor, |a| a.start), cue));
+                    }
                     if !own && let Some(lead) = shown.first() {
                         cursor += lead.dur.min(MOVE_STEP_MS);
                     }
@@ -749,9 +799,16 @@ impl AppState {
         if matches!(after.phase, Phase::Setup { .. }) && before.is_none_or(|b| b.current != after.current) {
             let b = banner(after.current, 0, (cursor + 250.0).max(calm(&anims)));
             cursor = b.end() - 300.0;
+            cues.push((b.start, turn_cue(after.current)));
             effects.push(b);
         }
         self.fx_cursor.replace(cursor);
+        let now = now_ms();
+        self.root.run(|| {
+            for (start, (cue, volume, rate)) in cues {
+                sound::play_in(start - now, cue, volume, rate);
+            }
+        });
         if anims.is_empty() && effects.is_empty() {
             return;
         }

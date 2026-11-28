@@ -7,7 +7,9 @@ mod fx;
 mod hud;
 mod palette;
 mod rules;
+mod sound;
 mod state;
+mod synth;
 
 use kings_cove_engine::{
     PlayerId, balance,
@@ -167,12 +169,17 @@ fn home(app: AppState) -> impl IntoElement {
                     view()
                         .gap(px(8.0))
                         .child(
-                            label("Server settings", 12.0, 0xc9d3cf)
+                            label("Settings", 12.0, 0xc9d3cf)
                                 .self_center()
                                 .on_press(move || show_server.update(|s| *s = !*s)),
                         )
                         .child(dynamic(move || {
-                            show_server.get().then(|| card().child(field("http://host:8787", app.server)))
+                            show_server.get().then(|| {
+                                card()
+                                    .child(label("Server", 12.0, palette::MUTED))
+                                    .child(field("http://host:8787", app.server))
+                                    .child(hud::sound_settings(app))
+                            })
                         })),
                 )
                 .child(rules_card(app))

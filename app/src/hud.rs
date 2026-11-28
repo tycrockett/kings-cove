@@ -14,6 +14,7 @@ use crate::{
     board, fx,
     palette::{self, hex, hexa},
     rules::{self, Item},
+    sound::{self, Cue},
     state::{AppState, Hud, Inspect, Menu, Mode, now_ms},
 };
 
@@ -38,7 +39,31 @@ pub fn pill(text_: impl Into<String>, fill: u32, fg: u32, enabled: bool, on: imp
         .bg(hex(fill))
         .opacity(if enabled { 1.0 } else { 0.4 })
         .child(bold(text_, 14.0, fg));
-    if enabled { v.active(|s| s.opacity(0.7).scale(0.97)).on_press(on) } else { v }
+    if enabled {
+        v.active(|s| s.opacity(0.7).scale(0.97)).on_press(move || {
+            sound::play(Cue::Tap, 0.3, 1.0);
+            on()
+        })
+    } else {
+        v
+    }
+}
+
+/// Sound effects and music, each on or off.
+pub fn sound_settings(app: AppState) -> impl IntoElement {
+    dynamic(move || {
+        let text = |on: bool| if on { "On" } else { "Off" }.to_owned();
+        Some(
+            view()
+                .gap(px(10.0))
+                .child(crate::choice("Sound effects", &[true, false], app.effects_on.get(), true, text, move |on| {
+                    app.set_effects(on)
+                }))
+                .child(crate::choice("Music", &[true, false], app.music_on.get(), true, text, move |on| {
+                    app.set_music(on)
+                })),
+        )
+    })
 }
 
 /// The widest a menu card or column grows: phones fill their width, wider
@@ -1907,6 +1932,7 @@ fn menu(app: AppState) -> impl IntoElement {
                     app.menu.set(Menu::Closed);
                     app.rules_open.set(true);
                 }))
+                .child(sound_settings(app))
                 .child(pill("Leave match", 0x8a8070, 0xffffff, true, move || app.menu.set(Menu::ConfirmLeave)))
                 .child(host.then(|| {
                     pill("End match for everyone", palette::DANGER, 0xffffff, true, move || {
@@ -1989,6 +2015,12 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
             untracked(move || app.resume_clock());
         }
     });
+    // Music plays while a match is on screen, in front, if the player wants it.
+    effect(move || {
+        let on = app.music_on.get() && lifecycle() != nsh_core::platform::Lifecycle::Background;
+        untracked(move || app.play_music(on));
+    });
+    cleanup(move || app.play_music(false));
     // Leave a selection that no longer applies (the unit died, the 7 passed).
     effect(move || {
         let Some(view_) = app.view.get() else { return };
