@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, bot::Style};
+use kings_cove_engine::{
+    Action, Event, Game, Phase, PlayerId, Resources, RobberId, Spell, TileId, UnitId, UnitKind, bot::Style,
+};
 use kings_cove_protocol::{
     ActionRequest, AddBotRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, ReactRequest,
     Reaction, SentReaction, Session, SessionRequest,
@@ -154,6 +156,14 @@ pub struct AppState {
     /// inventory can bounce as they do (ms).
     pub gains_at: Stored<f64>,
     pub trade_open: Signal<bool>,
+    /// The offer being put together, kept while the composer is closed so a
+    /// declined offer can be sweetened and sent again.
+    pub trade_give: Signal<Resources>,
+    pub trade_want: Signal<Resources>,
+    pub trade_to: Signal<Option<PlayerId>>,
+    /// A counter being put together to the open offer, as the maker would see
+    /// it: what they give and what they get.
+    pub counter: Signal<Option<(Resources, Resources)>>,
     pub history_open: Signal<bool>,
     /// Everyone's chips, dropped below the active player's.
     pub players_open: Signal<bool>,
@@ -215,6 +225,10 @@ impl AppState {
             fx_cursor: stored(0.0),
             gains_at: stored(0.0),
             trade_open: signal(false),
+            trade_give: signal(Resources::ZERO),
+            trade_want: signal(Resources::ZERO),
+            trade_to: signal(None),
+            counter: signal(None),
             history_open: signal(false),
             players_open: signal(false),
             reactions_open: signal(false),
@@ -389,6 +403,10 @@ impl AppState {
         self.inspect.set(None);
         self.focus.set(None);
         self.trade_open.set(false);
+        self.trade_give.set(Resources::ZERO);
+        self.trade_want.set(Resources::ZERO);
+        self.trade_to.set(None);
+        self.counter.set(None);
         self.history_open.set(false);
         self.players_open.set(false);
         self.reactions_open.set(false);
@@ -571,6 +589,8 @@ impl AppState {
             return;
         }
         if let Some(game) = &view.game {
+            let previous = self.game();
+            self.follow_trade(previous.as_ref(), game);
             let latest = game.event_seq;
             match self.last_seq.get() {
                 // First sight of this match: show it as it is, animate nothing
@@ -580,10 +600,10 @@ impl AppState {
                 }
                 None => {}
                 Some(seen) => {
-                    let previous = self.game();
                     let fresh: Vec<Event> =
                         game.events.iter().filter(|e| e.seq > seen).map(|e| e.event.clone()).collect();
                     self.animate(previous.as_ref(), game, view.seat, &view.players, &fresh);
+                    self.follow_trade_events(previous.as_ref(), game, view.seat, &fresh);
                 }
             }
             self.last_seq.replace(Some(latest));
@@ -597,6 +617,38 @@ impl AppState {
         // Spells on the board shimmer for as long as they last.
         if enchanted {
             self.shimmer();
+        }
+    }
+
+    /// Clears a counter draft when the offer it answers changes or closes.
+    fn follow_trade(&self, before: Option<&Game>, after: &Game) {
+        let same = match (before.and_then(|g| g.trade.as_ref()), after.trade.as_ref()) {
+            (Some(a), Some(b)) => (a.from, a.to, a.give, a.want) == (b.from, b.to, b.give, b.want),
+            _ => false,
+        };
+        if !same {
+            self.counter.set(None);
+        }
+    }
+
+    /// Follows the player's own offer: a declined one reopens the composer
+    /// with the draft intact; a completed one clears the draft. Bots answer
+    /// within the same view, so the offer may open and close in `events`.
+    fn follow_trade_events(&self, before: Option<&Game>, after: &Game, seat: PlayerId, events: &[Event]) {
+        let was_mine = before.and_then(|g| g.trade.as_ref()).is_some_and(|o| o.from == seat)
+            || events.iter().any(|e| matches!(e, Event::TradeProposed { from, .. } if *from == seat));
+        let traded = events.iter().any(|e| matches!(e, Event::Traded { from, .. } if *from == seat));
+        if traded {
+            self.trade_give.set(Resources::ZERO);
+            self.trade_want.set(Resources::ZERO);
+            self.trade_to.set(None);
+        } else if was_mine
+            && after.trade.is_none()
+            && after.is_active(seat)
+            && events.iter().any(|e| matches!(e, Event::TradeDeclined { .. }))
+            && !events.iter().any(|e| matches!(e, Event::TradeCancelled { .. }))
+        {
+            self.trade_open.set(true);
         }
     }
 

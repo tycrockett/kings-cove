@@ -3,8 +3,8 @@
 //! history and the winner.
 
 use kings_cove_engine::{
-    Action, Blockade, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Spell, Target,
-    UnitKind, balance,
+    Action, Answer, Blockade, BuildingKind, Event, Game, Phase, PlayerId, Resource, Resources, SetupPlacing, Spell,
+    Target, UnitKind, balance, bot::Style, suggest_offer,
 };
 use kings_cove_protocol::{Reaction, SentReaction};
 use nsh_core::{LayoutCurve, LayoutTransition, prelude::*};
@@ -256,13 +256,20 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::Traded { from, to, give, want } => {
             format!("{} traded {} to {} for {}", n(*from), resources_text(give), n(*to), resources_text(want))
         }
-        Event::BankTraded { player, give, get } => format!(
-            "{} traded {} {} to the bank for 1 {}",
-            n(*player),
-            balance::BANK_TRADE_RATE,
-            give.name(),
-            get.name()
+        Event::TradeAccepted { player } => format!("{} accepts", n(*player)),
+        Event::TradeCountered { player, give, want } => {
+            format!("{} counters: gives {} for {}", n(*player), resources_text(want), resources_text(give))
+        }
+        Event::MarketOpened { hot, warm, .. } => format!(
+            "Market: {} sells {} for 1, {} {} for 1",
+            hot.name(),
+            balance::MARKET_HOT_RATE,
+            warm.name(),
+            balance::MARKET_WARM_RATE
         ),
+        Event::BankTraded { player, give, get, rate } => {
+            format!("{} traded {rate} {} to the bank for 1 {}", n(*player), give.name(), get.name())
+        }
         Event::RoundEnded { .. } => return None,
         Event::Won { player, points } => format!("{} wins with {points} points!", n(*player)),
     })
@@ -1061,6 +1068,7 @@ fn spellbook(app: AppState) -> impl IntoElement {
                     );
                     row.child(view().gap(px(5.0)).child(lines))
                         .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
+                        .child(trade_for(app, g, seat, g.spell_price(seat, spell), close))
                         .child(cast)
                 })
                 .collect();
@@ -1145,6 +1153,7 @@ fn item_card(app: AppState) -> impl IntoElement {
                 )
                 .child(view().gap(px(6.0)).child(lines))
                 .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
+                .child(trade_for(app, g, seat, item.cost(), close))
                 .child(buy)
                 .child(pill("Close", 0x8a8070, 0xffffff, true, close)),
         )
@@ -1325,92 +1334,316 @@ fn big_button(fill: u32, enabled: bool, on: impl Fn() + 'static) -> View {
     if enabled { v.active(|s| s.opacity(0.8).scale(0.97)).on_press(on) } else { v }
 }
 
+/// What either side of a trade may hold at most: nine of each.
+const SIDE_MAX: Resources = Resources { wood: 9, stone: 9, food: 9, iron: 9 };
+
+/// The player's resources, tracked by whoever reads them.
+fn my_resources(app: AppState) -> Resources {
+    app.view.with(|v| {
+        v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.players[v.seat.index()].resources)).unwrap_or_default()
+    })
+}
+
+/// A short line a bot says about an answer it gave: its own words by style,
+/// one of three picked by `seed` so it stays the same while it is shown.
+fn banter(style: Style, countered: bool, seed: u64) -> &'static str {
+    let lines: [&str; 3] = match (style, countered) {
+        (Style::Friendly, true) => {
+            ["How about this instead?", "Close! Let's meet in the middle.", "Happy to, with a small tweak."]
+        }
+        (Style::Friendly, false) => ["Sorry, I can't spare that.", "Not this time, friend.", "I wish I could."],
+        (Style::Balanced, true) => {
+            ["Not quite fair. Try these terms.", "I can do it on these terms.", "Closer to even and we have a deal."]
+        }
+        (Style::Balanced, false) => ["No, that doesn't work for me.", "I'll pass.", "That doesn't help me."],
+        (Style::Ruthless, true) => ["Two of those. Take it or leave it.", "My price. Final.", "You ask too much. Pay up."],
+        (Style::Ruthless, false) => ["No.", "Not a chance.", "Find someone weaker."],
+    };
+    lines[(seed % 3) as usize]
+}
+
+/// One side of an offer as four big cells: tap a resource to add one, the
+/// minus beneath it takes one back. Adding to one side clears it from the
+/// `other`; `cap` is the most each resource may reach.
+fn trade_cells(
+    title: &'static str,
+    side: Signal<Resources>,
+    other: Signal<Resources>,
+    cap: impl Fn() -> Resources + Copy + 'static,
+) -> View {
+    let cells: Vec<View> = Resource::ALL
+        .iter()
+        .map(|&r| {
+            view().flex_1().items_center().child(dynamic(move || {
+                let n = side.get().get(r);
+                let can_add = n < cap().get(r);
+                let tile = view()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .rounded(px(12.0))
+                    .bg(hex(if n > 0 { 0xfff4d6 } else { 0xfffdf6 }))
+                    .border_2()
+                    .border_color(hex(if n > 0 { palette::GOLD } else { palette::PAPER_DIM }))
+                    .opacity(if can_add || n > 0 { 1.0 } else { 0.4 })
+                    .child(resource_icon(r, 28.0))
+                    .child(bold(n.to_string(), 16.0, palette::INK).min_w(px(12.0)).text_center());
+                let tile = if can_add {
+                    tile.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || {
+                        side.update(|s| *s.get_mut(r) += 1);
+                        other.update(|o| *o.get_mut(r) = 0);
+                    })
+                } else {
+                    tile
+                };
+                Some(view().items_center().gap(px(3.0)).child(tile).child(if n > 0 {
+                    step_button("−", true, move || side.update(|s| *s.get_mut(r) -= 1))
+                } else {
+                    view().size(px(26.0))
+                }))
+            }))
+        })
+        .collect();
+    view().gap(px(4.0)).child(label(title, 11.0, palette::MUTED)).child(view().flex_row().gap(px(4.0)).child(cells))
+}
+
+/// What a recipient has to say about an offer: its terms from their side,
+/// where they stand, and the ways to answer. Updates in place.
+fn answer_view(app: AppState, give: Resources, want: Resources) -> View {
+    view().child(dynamic(move || {
+        let (mine, have, from) = app.view.with(|v| {
+            let v = v.as_ref()?;
+            let g = v.game.as_ref()?;
+            let o = g.trade.as_ref()?;
+            Some((o.answer(v.seat), g.players[v.seat.index()].resources, name(&v.players, o.from)))
+        })?;
+        let busy = app.busy.get();
+        let accepted = matches!(mine, Some(Answer::Accept));
+        let status = match &mine {
+            Some(Answer::Accept) => {
+                Some(view().child(bold(format!("You accepted — waiting for {from} to pick"), 12.0, palette::GO)))
+            }
+            Some(Answer::Counter { give: cg, want: cw }) => Some(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(label("You countered: you get", 12.0, palette::MUTED))
+                    .child(cost_row(cg, None, 20.0, 14.0))
+                    .child(label("for", 12.0, palette::MUTED))
+                    .child(cost_row(cw, None, 20.0, 14.0))
+                    .child(label("· waiting", 12.0, palette::MUTED)),
+            ),
+            _ => None,
+        };
+        Some(
+            view()
+                .gap(px(8.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(label("You get", 12.0, palette::MUTED))
+                        .child(cost_row(&give, None, 22.0, 15.0))
+                        .child(label("for", 12.0, palette::MUTED))
+                        .child(cost_row(&want, Some(&have), 22.0, 15.0)),
+                )
+                .child(status)
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(8.0))
+                        .child((!accepted).then(|| {
+                            pill("Accept", palette::GO, 0xffffff, have.covers(&want) && !busy, move || {
+                                app.send(Action::AcceptTrade)
+                            })
+                        }))
+                        .child(pill("Counter", palette::GOLD, palette::INK, true, move || {
+                            app.counter.set(Some((give, want)))
+                        }))
+                        .child(pill("Decline", 0x8a8070, 0xffffff, true, move || app.send(Action::DeclineTrade))),
+                ),
+        )
+    }))
+}
+
+/// A counter to an offer, put together in the same cells as an offer: they
+/// start at the offer's terms, flipped to the recipient's side.
+fn counter_editor(app: AppState, give: Resources, want: Resources) -> View {
+    let (start_get, start_give) = app.counter.get_untracked().unwrap_or((give, want));
+    let my_get = signal(start_get);
+    let my_give = signal(start_give);
+    let have = move || my_resources(app);
+    view()
+        .gap(px(8.0))
+        .child(trade_cells("You give", my_give, my_get, have))
+        .child(trade_cells("You get", my_get, my_give, move || SIDE_MAX))
+        .child(
+            view()
+                .flex_row()
+                .gap(px(8.0))
+                .child(dynamic(move || {
+                    let (get, pay) = (my_get.get(), my_give.get());
+                    let ready = !get.is_empty()
+                        && !pay.is_empty()
+                        && (get, pay) != (give, want)
+                        && have().covers(&pay)
+                        && !app.busy.get();
+                    Some(pill("Send counter", palette::GO, 0xffffff, ready, move || {
+                        app.send(Action::CounterTrade { give: get, want: pay });
+                        app.counter.set(None);
+                    }))
+                }))
+                .child(pill("Back", 0x8a8070, 0xffffff, true, move || app.counter.set(None))),
+        )
+}
+
 /// The open offer: answer it, or watch it as its maker. Only a new offer
 /// makes the panel again (one to the player bounces in); what changes while
-/// it stands, who declined and what the player can pay, updates in place.
+/// it stands, the answers and what the player can pay, updates in place.
 fn trade_offer(app: AppState) -> impl IntoElement {
     let shown = computed(move || {
         app.view.with(|v| {
             let v = v.as_ref()?;
-            let o = v.game.as_ref()?.trade.as_ref()?;
-            let for_me = o.to.is_none_or(|p| p == v.seat) && !o.declined.contains(&v.seat);
+            let g = v.game.as_ref()?;
+            let o = g.trade.as_ref()?;
+            let for_me = o.recipients(g.players.len()).any(|p| p == v.seat)
+                && !matches!(o.answer(v.seat), Some(Answer::Decline));
             (o.from == v.seat || for_me).then_some((o.from == v.seat, o.from, o.give, o.want))
         })
     });
-    // The player's resources, tracked by whoever reads them.
-    let have = move || {
-        app.view.with(|v| {
-            v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.players[v.seat.index()].resources)).unwrap_or_default()
-        })
-    };
+    let editing = computed(move || app.counter.with(Option::is_some));
     dynamic(move || {
         let (mine, from, give, want) = shown.get()?;
         if mine {
-            let answers = dynamic(move || {
-                let text = app.view.with(|v| {
+            let body = dynamic(move || {
+                let (o, have, rows) = app.view.with(|v| {
                     let v = v.as_ref()?;
-                    let o = v.game.as_ref()?.trade.as_ref()?;
-                    Some(if o.declined.is_empty() {
-                        "Waiting for answers…".to_owned()
-                    } else {
-                        let names: Vec<String> = o.declined.iter().map(|&p| name(&v.players, p)).collect();
-                        format!("Declined by {}", names.join(", "))
-                    })
+                    let g = v.game.as_ref()?;
+                    let o = g.trade.as_ref()?.clone();
+                    let rows: Vec<_> = o
+                        .recipients(g.players.len())
+                        .map(|p| {
+                            let seed = g
+                                .events
+                                .iter()
+                                .rev()
+                                .find(|e| {
+                                    matches!(&e.event,
+                                        Event::TradeCountered { player, .. } | Event::TradeDeclined { player }
+                                            if *player == p)
+                                })
+                                .map_or(0, |e| e.seq);
+                            (
+                                name(&v.players, p),
+                                p,
+                                o.answer(p),
+                                v.bots.get(p.index()).copied().flatten(),
+                                seed,
+                                g.players[p.index()].resources,
+                            )
+                        })
+                        .collect();
+                    Some((o, g.players[v.seat.index()].resources, rows))
                 })?;
-                Some(label(text, 11.0, palette::MUTED))
-            });
-            return Some(
-                panel()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .child(
+                let busy = app.busy.get();
+                let rows: Vec<View> = rows
+                    .into_iter()
+                    .map(|(who, p, answer, style, seed, theirs)| {
+                        let line = style.zip(answer.as_ref()).and_then(|(style, a)| match a {
+                            Answer::Counter { .. } => Some(banter(style, true, seed)),
+                            Answer::Decline => Some(banter(style, false, seed)),
+                            Answer::Accept => None,
+                        });
+                        let (content, action) = match answer {
+                            None => (view().child(label("thinking…", 12.0, palette::MUTED)), None),
+                            Some(Answer::Accept) => (
+                                view().child(bold("accepts", 12.0, palette::GO)),
+                                Some(pill(
+                                    "Trade",
+                                    palette::GO,
+                                    0xffffff,
+                                    have.covers(&o.give) && theirs.covers(&o.want) && !busy,
+                                    move || app.send(Action::ConfirmTrade { with: p }),
+                                )),
+                            ),
+                            Some(Answer::Counter { give: cg, want: cw }) => (
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .child(label("you give", 12.0, palette::MUTED))
+                                    .child(cost_row(&cg, None, 18.0, 13.0))
+                                    .child(label("for", 12.0, palette::MUTED))
+                                    .child(cost_row(&cw, None, 18.0, 13.0)),
+                                Some(pill(
+                                    "Take it",
+                                    palette::GO,
+                                    0xffffff,
+                                    have.covers(&cg) && theirs.covers(&cw) && !busy,
+                                    move || app.send(Action::ConfirmTrade { with: p }),
+                                )),
+                            ),
+                            Some(Answer::Decline) => {
+                                (view().opacity(0.5).child(label("declined", 12.0, palette::MUTED)), None)
+                            }
+                        };
                         view()
-                            .flex_1()
-                            .gap(px(4.0))
-                            .child(bold("Your offer", 12.0, palette::MUTED))
+                            .gap(px(2.0))
                             .child(
                                 view()
                                     .flex_row()
                                     .items_center()
-                                    .gap(px(6.0))
-                                    .child(cost_row(&give, None, 20.0, 14.0))
-                                    .child(glyph_icon(Glyph::Trade, 0, 26.0, 20.0))
-                                    .child(cost_row(&want, None, 20.0, 14.0)),
+                                    .gap(px(8.0))
+                                    .child(bold(who, 13.0, palette::INK).min_w(px(56.0)))
+                                    .child(content.flex_1())
+                                    .child(action),
                             )
-                            .child(answers),
-                    )
-                    .child(pill("Withdraw", 0x8a8070, 0xffffff, true, move || app.send(Action::CancelTrade))),
-            );
+                            .child(line.map(|l| label(format!("\"{l}\""), 11.0, palette::MUTED)))
+                    })
+                    .collect();
+                let (give, want, to) = (o.give, o.want, o.to);
+                Some(
+                    view()
+                        .gap(px(8.0))
+                        .child(bold("Your offer", 12.0, palette::MUTED))
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(cost_row(&give, None, 20.0, 14.0))
+                                .child(glyph_icon(Glyph::Trade, 0, 26.0, 20.0))
+                                .child(cost_row(&want, None, 20.0, 14.0)),
+                        )
+                        .child(view().gap(px(6.0)).child(rows))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(pill("Edit", palette::GOLD, palette::INK, true, move || {
+                                    app.trade_give.set(give);
+                                    app.trade_want.set(want);
+                                    app.trade_to.set(to);
+                                    app.trade_open.set(true);
+                                    app.send(Action::CancelTrade)
+                                }))
+                                .child(pill("Withdraw", 0x8a8070, 0xffffff, true, move || {
+                                    app.send(Action::CancelTrade)
+                                })),
+                        ),
+                )
+            });
+            return Some(panel().px(px(12.0)).py(px(8.0)).child(body));
         }
         let from = untracked(move || app.view.with(|v| v.as_ref().map(|v| name(&v.players, from)))).unwrap_or_default();
         let answer = dynamic(move || {
-            let have = have();
-            Some(
-                view()
-                    .gap(px(8.0))
-                    .child(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(label("You get", 12.0, palette::MUTED))
-                            .child(cost_row(&give, None, 22.0, 15.0))
-                            .child(label("for", 12.0, palette::MUTED))
-                            .child(cost_row(&want, Some(&have), 22.0, 15.0)),
-                    )
-                    .child(
-                        view()
-                            .flex_row()
-                            .gap(px(8.0))
-                            .child(pill("Accept", palette::GO, 0xffffff, have.covers(&want), move || {
-                                app.send(Action::AcceptTrade)
-                            }))
-                            .child(pill("Decline", 0x8a8070, 0xffffff, true, move || app.send(Action::DeclineTrade))),
-                    ),
-            )
+            Some(if editing.get() { counter_editor(app, give, want) } else { answer_view(app, give, want) })
         });
         Some(
             panel()
@@ -1426,15 +1659,13 @@ fn trade_offer(app: AppState) -> impl IntoElement {
     })
 }
 
-/// Trading: four of a kind for one with the bank, or an offer to the other
-/// players. Only opening and closing rebuild the panel; each part tracks
-/// what it shows, so steppers and choices update without a flash.
+/// Trading: the bank's rates this round, or an offer to the other players.
+/// Only opening and closing rebuild the panel; each part tracks what it
+/// shows, so counts and choices update without a flash. The draft lives in
+/// the app state, so it survives closing the panel.
 fn trade_composer(app: AppState) -> impl IntoElement {
-    let give = signal(Resources::ZERO);
-    let want = signal(Resources::ZERO);
-    let to = signal(None::<PlayerId>);
-    let bank_give = signal(None::<Resource>);
-    let bank_get = signal(None::<Resource>);
+    let (give, want, to) = (app.trade_give, app.trade_want, app.trade_to);
+    let bank_pick = signal(None::<Resource>);
     let open = computed(move || {
         app.trade_open.get()
             && app.view.with(|v| {
@@ -1443,92 +1674,112 @@ fn trade_composer(app: AppState) -> impl IntoElement {
                     .is_some_and(|(g, seat)| g.is_active(seat) && g.dice.is_some() && g.trade.is_none())
             })
     });
-    // The player's resources, tracked by whoever reads them.
-    let mine = move || {
-        app.view.with(|v| {
-            v.as_ref().and_then(|v| v.game.as_ref().map(|g| g.players[v.seat.index()].resources)).unwrap_or_default()
-        })
-    };
-    let stepper_row = move |title: &'static str, side: Signal<Resources>, limited: bool| {
-        let cells: Vec<View> = Resource::ALL
-            .iter()
-            .map(|&r| {
-                view().flex_1().items_center().gap(px(3.0)).child(resource_icon(r, 22.0)).child(dynamic(move || {
-                    let n = side.get().get(r);
-                    let max = if limited { mine().get(r) } else { 9 };
-                    Some(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(3.0))
-                            .child(step_button("−", n > 0, move || side.update(|s| *s.get_mut(r) -= 1)))
-                            .child(bold(n.to_string(), 15.0, palette::INK).min_w(px(14.0)).text_center())
-                            .child(step_button("+", n < max, move || side.update(|s| *s.get_mut(r) += 1))),
-                    )
-                }))
+    let mine = move || my_resources(app);
+    let market = move || {
+        dynamic(move || {
+            let market = app.view.with(|v| {
+                let g = v.as_ref()?.game.as_ref()?;
+                Some(g.market.as_ref().map(|m| (m.hot, m.warm)))
+            })?;
+            let strip =
+                view().flex_row().flex_wrap().items_center().gap(px(5.0)).child(bold("Market:", 12.0, palette::MUTED));
+            Some(match market {
+                Some((hot, warm)) => strip
+                    .child(resource_icon(hot, 18.0))
+                    .child(bold(format!("{} for 1", balance::MARKET_HOT_RATE), 12.0, palette::INK))
+                    .child(label("·", 12.0, palette::MUTED))
+                    .child(resource_icon(warm, 18.0))
+                    .child(bold(format!("{} for 1", balance::MARKET_WARM_RATE), 12.0, palette::INK))
+                    .child(label("·", 12.0, palette::MUTED))
+                    .child(label(format!("others {} for 1", balance::BANK_TRADE_RATE), 12.0, palette::INK)),
+                None => strip.child(label(format!("all {} for 1", balance::BANK_TRADE_RATE), 12.0, palette::INK)),
             })
-            .collect();
-        view().gap(px(4.0)).child(label(title, 11.0, palette::MUTED)).child(view().flex_row().child(cells))
-    };
-    let choice = |r: Resource, selected: bool, enabled: bool, count: u32| {
-        view()
-            .flex_1()
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .gap(px(3.0))
-            .py(px(4.0))
-            .rounded(px(10.0))
-            .bg(hex(if selected { palette::GOLD } else { 0xfffdf6 }))
-            .border_2()
-            .border_color(hex(if selected { 0xb8860b } else { palette::PAPER_DIM }))
-            .opacity(if enabled { 1.0 } else { 0.35 })
-            .pointer_events(if enabled { PointerEvents::Auto } else { PointerEvents::None })
-            .child(resource_icon(r, 24.0))
-            .child(bold(format!("×{count}"), 13.0, palette::INK))
+        })
     };
     let bank = move || {
         dynamic(move || {
-            let have = mine();
-            let (picked_give, picked_get) = (bank_give.get(), bank_get.get());
-            let rate = balance::BANK_TRADE_RATE;
-            let gives: Vec<View> = Resource::ALL
+            let (have, rates, market) = app.view.with(|v| {
+                let v = v.as_ref()?;
+                let g = v.game.as_ref()?;
+                let rates: Vec<(Resource, u32)> = Resource::ALL.iter().map(|&r| (r, g.bank_rate(r))).collect();
+                Some((g.players[v.seat.index()].resources, rates, g.market.as_ref().map(|m| (m.hot, m.warm))))
+            })?;
+            let pick = bank_pick.get().filter(|&p| rates.iter().any(|&(r, rate)| r == p && have.get(r) >= rate));
+            let tiles: Vec<View> = rates
                 .iter()
-                .map(|&r| {
-                    choice(r, picked_give == Some(r), have.get(r) >= rate, rate).on_press(move || {
-                        bank_give.set(Some(r));
-                        if bank_get.get_untracked() == Some(r) {
-                            bank_get.set(None);
-                        }
+                .map(|&(r, rate)| {
+                    let affordable = have.get(r) >= rate;
+                    let selected = pick == Some(r);
+                    let special = market.is_some_and(|(hot, warm)| r == hot || r == warm);
+                    let tile = view()
+                        .flex_1()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(3.0))
+                        .py(px(6.0))
+                        .rounded(px(10.0))
+                        .bg(hex(if selected {
+                            palette::GOLD
+                        } else if special {
+                            0xfff4d6
+                        } else {
+                            0xfffdf6
+                        }))
+                        .border_2()
+                        .border_color(hex(if selected {
+                            0xb8860b
+                        } else if special {
+                            palette::GOLD
+                        } else {
+                            palette::PAPER_DIM
+                        }))
+                        .opacity(if affordable { 1.0 } else { 0.35 })
+                        .child(resource_icon(r, 24.0))
+                        .child(bold(format!("×{rate}"), 13.0, palette::INK));
+                    if affordable {
+                        tile.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || bank_pick.set(Some(r)))
+                    } else {
+                        tile
+                    }
+                })
+                .collect();
+            let gets = pick.map(|p| {
+                let gets: Vec<View> = Resource::ALL
+                    .iter()
+                    .filter(|&&r| r != p)
+                    .map(|&r| {
+                        view()
+                            .flex_1()
+                            .items_center()
+                            .justify_center()
+                            .py(px(6.0))
+                            .rounded(px(10.0))
+                            .bg(hex(0xfffdf6))
+                            .border_2()
+                            .border_color(hex(palette::PAPER_DIM))
+                            .active(|s| s.opacity(0.7).scale(0.96))
+                            .on_press(move || {
+                                if !app.busy.get_untracked() {
+                                    app.send(Action::TradeWithBank { give: p, get: r })
+                                }
+                            })
+                            .child(resource_icon(r, 24.0))
                     })
-                })
-                .collect();
-            let gets: Vec<View> = Resource::ALL
-                .iter()
-                .map(|&r| {
-                    choice(r, picked_get == Some(r), picked_give != Some(r), 1).on_press(move || bank_get.set(Some(r)))
-                })
-                .collect();
-            let ready = picked_give.zip(picked_get).is_some_and(|(g, w)| g != w && have.get(g) >= rate);
+                    .collect();
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(bold("for 1:", 12.0, palette::MUTED))
+                    .child(view().flex_1().flex_row().gap(px(4.0)).child(gets))
+            });
             Some(
                 view()
                     .gap(px(6.0))
-                    .child(bold(format!("Bank: {rate} of a kind for 1"), 12.0, palette::MUTED))
-                    .child(view().flex_row().gap(px(4.0)).child(gives))
-                    .child(view().flex_row().gap(px(4.0)).child(gets))
-                    .child(pill(
-                        format!("Trade {rate} for 1"),
-                        palette::GO,
-                        0xffffff,
-                        ready && !app.busy.get(),
-                        move || {
-                            if let (Some(give), Some(get)) = (bank_give.get_untracked(), bank_get.get_untracked()) {
-                                app.send(Action::TradeWithBank { give, get });
-                            }
-                            bank_give.set(None);
-                            bank_get.set(None);
-                        },
-                    )),
+                    .child(bold("Bank: tap what to sell", 12.0, palette::MUTED))
+                    .child(view().flex_row().gap(px(4.0)).child(tiles))
+                    .child(gets),
             )
         })
     };
@@ -1553,19 +1804,27 @@ fn trade_composer(app: AppState) -> impl IntoElement {
             Some(view().flex_row().flex_wrap().gap(px(5.0)).child(chips))
         })
     };
-    let propose = move || {
+    let actions = move || {
         dynamic(move || {
-            let ready = !give.get().is_empty() && !want.get().is_empty() && mine().covers(&give.get());
-            Some(pill("Propose", palette::GO, 0xffffff, ready, move || {
-                app.send(Action::ProposeTrade {
-                    to: to.get_untracked(),
-                    give: give.get_untracked(),
-                    want: want.get_untracked(),
-                });
-                give.set(Resources::ZERO);
-                want.set(Resources::ZERO);
-                app.trade_open.set(false);
-            }))
+            let (g, w) = (give.get(), want.get());
+            let ready = !g.is_empty() && !w.is_empty() && mine().covers(&g) && !app.busy.get();
+            let dirty = !g.is_empty() || !w.is_empty();
+            Some(
+                view()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(pill("Offer", palette::GO, 0xffffff, ready, move || {
+                        app.send(Action::ProposeTrade { to: to.get_untracked(), give: g, want: w });
+                        app.trade_open.set(false);
+                    }))
+                    .child(dirty.then(|| {
+                        pill("Clear", palette::GOLD, palette::INK, true, move || {
+                            give.set(Resources::ZERO);
+                            want.set(Resources::ZERO);
+                        })
+                    }))
+                    .child(pill("Close", 0x8a8070, 0xffffff, true, move || app.trade_open.set(false))),
+            )
         })
     };
     dynamic(move || {
@@ -1578,21 +1837,64 @@ fn trade_composer(app: AppState) -> impl IntoElement {
                 .py(px(10.0))
                 .gap(px(8.0))
                 .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                .child(market())
                 .child(bank())
                 .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
                 .child(bold("Offer to players", 12.0, palette::MUTED))
-                .child(stepper_row("You give", give, true))
-                .child(stepper_row("You get", want, false))
+                .child(trade_cells("You give", give, want, mine))
+                .child(trade_cells("You get", want, give, move || SIDE_MAX))
                 .child(targets())
-                .child(view().flex_row().gap(px(8.0)).child(propose()).child(pill(
-                    "Close",
-                    0x8a8070,
-                    0xffffff,
-                    true,
-                    move || app.trade_open.set(false),
-                ))),
+                .child(actions()),
         )
     })
+}
+
+/// "Short: …" with ways to cover `cost` from the table or the bank, when
+/// it is the player's turn to trade and they cannot pay it. `leave` closes
+/// the card it sits in when the table is asked.
+fn trade_for(app: AppState, g: &Game, seat: PlayerId, cost: Resources, leave: impl Fn() + 'static) -> Option<View> {
+    let have = g.players[seat.index()].resources;
+    let can_trade = g.is_active(seat) && g.dice.is_some() && matches!(g.phase, Phase::Playing) && g.trade.is_none();
+    if !can_trade || have.covers(&cost) {
+        return None;
+    }
+    let bank = g.bank_step(&have, &cost).map(|(give, get)| (give, get, g.bank_rate(give)));
+    let busy = app.busy.get();
+    Some(
+        view()
+            .gap(px(6.0))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(bold("Short", 13.0, palette::MUTED))
+                    .child(cost_row(&have.shortfall(&cost), None, 22.0, 15.0)),
+            )
+            .child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(8.0))
+                    .child(pill("Ask the table", palette::GOLD, palette::INK, !busy, move || {
+                        let (give, want) = suggest_offer(&have, &cost);
+                        app.trade_give.set(give);
+                        app.trade_want.set(want);
+                        app.trade_to.set(None);
+                        leave();
+                        app.trade_open.set(true);
+                    }))
+                    .child(bank.map(|(give, get, rate)| {
+                        pill(
+                            format!("Bank {rate} {} → 1 {}", give.name(), get.name()),
+                            palette::INK,
+                            0xffffff,
+                            !busy,
+                            move || app.send(Action::TradeWithBank { give, get }),
+                        )
+                    })),
+            ),
+    )
 }
 
 fn step_button(t: &'static str, enabled: bool, on: impl Fn() + 'static) -> View {

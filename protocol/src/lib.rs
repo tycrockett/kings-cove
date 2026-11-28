@@ -197,4 +197,8 @@ pub struct MatchView {
     /// The latest reactions, oldest first, at most [`RECENT_REACTIONS`].
     #[serde(default)]
     pub reactions: Vec<SentReaction>,
+    /// Per seat, how the server plays it: a bot's style, `None` for people
+    /// (and a practice rival, which only passes).
+    #[serde(default)]
+    pub bots: Vec<Option<Style>>,
 }

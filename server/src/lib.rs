@@ -121,12 +121,13 @@ impl Match {
             mills: self.mills,
             random: self.random,
             reactions: self.reactions.clone(),
+            bots: self.seats.iter().map(|s| (s.bot && !s.passive).then_some(s.style)).collect(),
         }
     }
 
     /// The seats the server plays answer the open trade offer, then take
-    /// their turns, until it is a person's turn, a person is to answer the
-    /// offer of the bot whose turn it is, or the game is over.
+    /// their turns, until it is a person's turn, the bot whose turn it is
+    /// waits on a person's answer to its offer, or the game is over.
     fn play_bots(&mut self) {
         let Match { seats, game, rng, .. } = self;
         let Some(game) = game.as_mut() else {
@@ -145,7 +146,12 @@ impl Match {
             let Some(seat) = seats.get(p.index()).filter(|s| s.bot) else {
                 break;
             };
-            if game.winner().is_some() || game.trade.as_ref().is_some_and(|t| t.from == p) {
+            // Its own offer, until every person it was made to answers it.
+            let players = seats.len();
+            let awaits_person = game.trade.as_ref().is_some_and(|t| {
+                t.from == p && t.recipients(players).any(|r| t.answer(r).is_none() && !seats[r.index()].bot)
+            });
+            if game.winner().is_some() || awaits_person {
                 break;
             }
             let played = if seat.passive {
@@ -707,6 +713,18 @@ mod tests {
         assert_eq!(store.view(&host.code, &host.token).unwrap().game.unwrap().current, PlayerId(1), "it waits");
         let after = store.act(&host.code, &host.token, Action::AcceptTrade).unwrap().game.unwrap();
         assert!(after.events.iter().any(|e| matches!(e.event, Event::Traded { from: PlayerId(1), .. })), "traded");
+        assert_eq!((after.current, after.trade), (PlayerId(0), None), "the bot finished its turn");
+    }
+
+    #[test]
+    fn a_bot_takes_a_counter_to_its_offer_it_finds_worth_it_and_plays_on() {
+        let (mut store, host) = bot_offers_the_host(4);
+        let offer = store.view(&host.code, &host.token).unwrap().game.unwrap().trade.unwrap();
+        assert_eq!(offer.give, balance::res(1, 0, 0, 0), "it offers one wood");
+        let (give, want) = (balance::res(2, 0, 0, 0), offer.want);
+        let after = store.act(&host.code, &host.token, Action::CounterTrade { give, want }).unwrap().game.unwrap();
+        let traded = Event::Traded { from: PlayerId(1), to: PlayerId(0), give, want };
+        assert!(after.events.iter().any(|e| e.event == traded), "traded on the counter");
         assert_eq!((after.current, after.trade), (PlayerId(0), None), "the bot finished its turn");
     }
 

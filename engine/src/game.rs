@@ -361,6 +361,18 @@ pub struct Player {
     pub scrolls: Vec<Spell>,
 }
 
+/// How a player answered an open offer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Answer {
+    /// Takes it as offered; with others to choose from, the maker picks.
+    Accept,
+    /// Would trade on these terms instead, from the maker's side: the
+    /// maker gives `give` for `want`.
+    Counter { give: Resources, want: Resources },
+    /// Out of this offer for good.
+    Decline,
+}
+
 /// The active player's open offer: they give `give` for `want`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TradeOffer {
@@ -369,7 +381,56 @@ pub struct TradeOffer {
     pub to: Option<PlayerId>,
     pub give: Resources,
     pub want: Resources,
-    pub declined: Vec<PlayerId>,
+    /// One answer per player who answered, the latest kept.
+    #[serde(default)]
+    pub answers: Vec<(PlayerId, Answer)>,
+}
+
+impl TradeOffer {
+    pub fn answer(&self, player: PlayerId) -> Option<Answer> {
+        self.answers.iter().find(|(p, _)| *p == player).map(|&(_, a)| a)
+    }
+
+    /// The players it is offered to, in seat order, of `players` seated.
+    pub fn recipients(&self, players: usize) -> impl Iterator<Item = PlayerId> + '_ {
+        (0..players as u8).map(PlayerId).filter(move |&p| p != self.from && self.to.is_none_or(|to| to == p))
+    }
+
+    /// Only one player can take it: their accepting trades at once.
+    pub fn single_recipient(&self, players: usize) -> bool {
+        self.recipients(players).count() == 1
+    }
+
+    fn set_answer(&mut self, player: PlayerId, answer: Answer) {
+        self.answers.retain(|(p, _)| *p != player);
+        self.answers.push((player, answer));
+    }
+}
+
+/// This round's bank rates: `hot` sells [`balance::MARKET_HOT_RATE`] for 1,
+/// `warm` [`balance::MARKET_WARM_RATE`] for 1, the others
+/// [`balance::BANK_TRADE_RATE`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Market {
+    pub hot: Resource,
+    pub warm: Resource,
+}
+
+/// A table offer toward `cost` from `have`: what it lacks, for as many of
+/// what it holds beyond the cost, the most plentiful first (fewer when it
+/// has fewer to spare).
+pub fn suggest_offer(have: &Resources, cost: &Resources) -> (Resources, Resources) {
+    let want = have.shortfall(cost);
+    let mut spare = have.beyond(cost);
+    let mut give = Resources::ZERO;
+    for _ in 0..want.total() {
+        let Some(r) = Resource::ALL.into_iter().filter(|&r| spare.get(r) > 0).max_by_key(|&r| spare.get(r)) else {
+            break;
+        };
+        *spare.get_mut(r) -= 1;
+        *give.get_mut(r) += 1;
+    }
+    (give, want)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,10 +499,22 @@ pub enum Action {
         want: Resources,
     },
     CancelTrade,
+    /// Takes the open offer: at once when only one player can take it,
+    /// else the maker picks among those who accepted or countered.
     AcceptTrade,
     DeclineTrade,
-    /// `balance::BANK_TRADE_RATE` of one resource for one of another, with
-    /// no other player involved.
+    /// A recipient would trade on other terms, from the maker's side.
+    CounterTrade {
+        give: Resources,
+        want: Resources,
+    },
+    /// The maker trades with a player who accepted or countered, on that
+    /// player's terms.
+    ConfirmTrade {
+        with: PlayerId,
+    },
+    /// One of a resource for one of another with the bank, at the market's
+    /// rate for what is given, with no other player involved.
     TradeWithBank {
         give: Resource,
         get: Resource,
@@ -491,6 +564,7 @@ pub enum RuleError {
     InvalidTrade,
     NotTradeRecipient,
     TraderCannotPay,
+    NotAnswered,
     NoSuchPlayer,
     ManaEmpty,
     SpellTarget,
@@ -529,7 +603,8 @@ impl fmt::Display for RuleError {
             RuleError::TradeAlreadyOpen => "A trade is already open",
             RuleError::InvalidTrade => "A trade must give and ask for something",
             RuleError::NotTradeRecipient => "That trade is not offered to you",
-            RuleError::TraderCannotPay => "The offering player no longer has those resources",
+            RuleError::TraderCannotPay => "They no longer have those resources",
+            RuleError::NotAnswered => "They haven't accepted or countered",
             RuleError::NoSuchPlayer => "No such player",
             RuleError::ManaEmpty => "Your mana is still recharging",
             RuleError::SpellTarget => "That spell cannot be cast there",
@@ -747,16 +822,35 @@ pub enum Event {
     TradeDeclined {
         player: PlayerId,
     },
+    /// A player took an offer others could take too: the maker picks.
+    TradeAccepted {
+        player: PlayerId,
+    },
+    /// A player would trade on these terms instead, from the maker's side.
+    TradeCountered {
+        player: PlayerId,
+        give: Resources,
+        want: Resources,
+    },
     Traded {
         from: PlayerId,
         to: PlayerId,
         give: Resources,
         want: Resources,
     },
+    /// `rate` of `give` for one `get`.
     BankTraded {
         player: PlayerId,
         give: Resource,
         get: Resource,
+        #[serde(default = "classic_bank_rate")]
+        rate: u32,
+    },
+    /// The bank's rates for the round starting.
+    MarketOpened {
+        round: u32,
+        hot: Resource,
+        warm: Resource,
     },
     RoundEnded {
         round: u32,
@@ -811,6 +905,10 @@ pub struct Game {
     #[serde(default = "classic_goal")]
     pub victory_points: u32,
     pub trade: Option<TradeOffer>,
+    /// This round's bank rates; `None` (matches saved before markets) is
+    /// [`balance::BANK_TRADE_RATE`] for everything.
+    #[serde(default)]
+    pub market: Option<Market>,
     pub next_piece_id: u32,
     /// The latest events, oldest first.
     pub events: Vec<LoggedEvent>,
@@ -880,6 +978,7 @@ impl Game {
             structures: Vec::new(),
             victory_points: classic_goal(),
             trade: None,
+            market: None,
             next_piece_id: 1,
             events: Vec::new(),
             event_seq: 0,
@@ -1437,14 +1536,42 @@ impl Game {
         self.log(Event::SpellFaded { tile: e.tile, spell: e.spell });
     }
 
-    /// Trading `balance::BANK_TRADE_RATE` of `give` for one `get` with the bank.
+    /// How many of `give` the bank takes for one of another this round.
+    pub fn bank_rate(&self, give: Resource) -> u32 {
+        match self.market {
+            Some(m) if m.hot == give => balance::MARKET_HOT_RATE,
+            Some(m) if m.warm == give => balance::MARKET_WARM_RATE,
+            _ => balance::BANK_TRADE_RATE,
+        }
+    }
+
+    /// One bank trade toward `cost`, when bank trades from what `have`
+    /// holds beyond it can make up all of it: the cheapest resource to sell
+    /// (the most plentiful among equals) for the one most short.
+    pub fn bank_step(&self, have: &Resources, cost: &Resources) -> Option<(Resource, Resource)> {
+        let short = have.shortfall(cost);
+        let spare = have.beyond(cost);
+        let trades = |r: Resource| spare.get(r) / self.bank_rate(r);
+        let tradable: u32 = Resource::ALL.iter().map(|&r| trades(r)).sum();
+        if short.is_empty() || tradable < short.total() {
+            return None;
+        }
+        let give = Resource::ALL
+            .into_iter()
+            .filter(|&r| trades(r) > 0)
+            .min_by_key(|&r| (self.bank_rate(r), std::cmp::Reverse(spare.get(r))))?;
+        let get = Resource::ALL.into_iter().max_by_key(|&r| short.get(r))?;
+        Some((give, get))
+    }
+
+    /// Trading [`Self::bank_rate`] of `give` for one `get` with the bank.
     pub fn can_trade_with_bank(&self, player: PlayerId, give: Resource, get: Resource) -> Result<(), RuleError> {
         self.require_main_action(player)?;
         if give == get {
             return Err(RuleError::InvalidTrade);
         }
         let mut cost = Resources::ZERO;
-        *cost.get_mut(give) = balance::BANK_TRADE_RATE;
+        *cost.get_mut(give) = self.bank_rate(give);
         self.require_funds(player, &cost)
     }
 
@@ -1538,16 +1665,17 @@ impl Game {
                     return Err(RuleError::NoSuchPlayer);
                 }
                 self.require_funds(player, &give)?;
-                self.trade = Some(TradeOffer { from: player, to, give, want, declined: Vec::new() });
+                self.trade = Some(TradeOffer { from: player, to, give, want, answers: Vec::new() });
                 self.log(Event::TradeProposed { from: player, to, give, want });
                 Ok(())
             }
             Action::TradeWithBank { give, get } => {
                 self.can_trade_with_bank(player, give, get)?;
+                let rate = self.bank_rate(give);
                 let r = &mut self.players[player.index()].resources;
-                *r.get_mut(give) -= balance::BANK_TRADE_RATE;
+                *r.get_mut(give) -= rate;
                 *r.get_mut(get) += 1;
-                self.log(Event::BankTraded { player, give, get });
+                self.log(Event::BankTraded { player, give, get, rate });
                 Ok(())
             }
             Action::CancelTrade => {
@@ -1559,26 +1687,56 @@ impl Game {
                 Ok(())
             }
             Action::AcceptTrade => {
-                let offer = self.trade_for(player)?.clone();
-                if !self.players[offer.from.index()].resources.covers(&offer.give) {
+                let offer = self.trade_for(player)?;
+                let (from, give, want) = (offer.from, offer.give, offer.want);
+                let single = offer.single_recipient(self.players.len());
+                if !self.players[from.index()].resources.covers(&give) {
                     return Err(RuleError::TraderCannotPay);
                 }
-                self.require_funds(player, &offer.want)?;
-                let (from, to) = (offer.from.index(), player.index());
-                self.players[from].resources.remove(&offer.give);
-                self.players[to].resources.add(&offer.give);
-                self.players[to].resources.remove(&offer.want);
-                self.players[from].resources.add(&offer.want);
-                self.trade = None;
-                self.log(Event::Traded { from: offer.from, to: player, give: offer.give, want: offer.want });
+                self.require_funds(player, &want)?;
+                if single {
+                    self.settle_trade(from, player, give, want);
+                } else {
+                    self.trade.as_mut().expect("checked").set_answer(player, Answer::Accept);
+                    self.log(Event::TradeAccepted { player });
+                }
+                Ok(())
+            }
+            Action::CounterTrade { give, want } => {
+                let offer = self.trade_for(player)?;
+                if give.is_empty() || want.is_empty() || (give == offer.give && want == offer.want) {
+                    return Err(RuleError::InvalidTrade);
+                }
+                if !self.players[offer.from.index()].resources.covers(&give) {
+                    return Err(RuleError::TraderCannotPay);
+                }
+                self.require_funds(player, &want)?;
+                self.trade.as_mut().expect("checked").set_answer(player, Answer::Counter { give, want });
+                self.log(Event::TradeCountered { player, give, want });
+                Ok(())
+            }
+            Action::ConfirmTrade { with } => {
+                self.require_turn(player)?;
+                let offer = self.trade.as_ref().filter(|t| t.from == player).ok_or(RuleError::NoTrade)?;
+                let (give, want) = match offer.answer(with) {
+                    Some(Answer::Accept) => (offer.give, offer.want),
+                    Some(Answer::Counter { give, want }) => (give, want),
+                    _ => return Err(RuleError::NotAnswered),
+                };
+                self.require_funds(player, &give)?;
+                if !self.players[with.index()].resources.covers(&want) {
+                    return Err(RuleError::TraderCannotPay);
+                }
+                self.settle_trade(player, with, give, want);
                 Ok(())
             }
             Action::DeclineTrade => {
                 self.trade_for(player)?;
-                let others = self.players.len() - 1;
+                let players = self.players.len();
                 let offer = self.trade.as_mut().expect("checked");
-                offer.declined.push(player);
-                if offer.to.is_some() || offer.declined.len() >= others {
+                offer.set_answer(player, Answer::Decline);
+                let offer = &*offer;
+                if offer.recipients(players).all(|p| offer.answer(p) == Some(Answer::Decline)) {
                     self.trade = None;
                 }
                 self.log(Event::TradeDeclined { player });
@@ -1611,16 +1769,29 @@ impl Game {
         }
     }
 
-    /// The open offer `player` may answer.
+    /// The open offer `player` may answer: offered to them, not declined.
     pub(crate) fn trade_for(&self, player: PlayerId) -> Result<&TradeOffer, RuleError> {
         if matches!(self.phase, Phase::Finished { .. }) {
             return Err(RuleError::GameOver);
         }
         let offer = self.trade.as_ref().ok_or(RuleError::NoTrade)?;
-        if offer.from == player || offer.to.is_some_and(|p| p != player) || offer.declined.contains(&player) {
+        if offer.from == player
+            || offer.to.is_some_and(|p| p != player)
+            || offer.answer(player) == Some(Answer::Decline)
+        {
             return Err(RuleError::NotTradeRecipient);
         }
         Ok(offer)
+    }
+
+    /// `from` gives `give` to `to` for `want`, and the offer closes.
+    fn settle_trade(&mut self, from: PlayerId, to: PlayerId, give: Resources, want: Resources) {
+        self.players[from.index()].resources.remove(&give);
+        self.players[to.index()].resources.add(&give);
+        self.players[to.index()].resources.remove(&want);
+        self.players[from.index()].resources.add(&want);
+        self.trade = None;
+        self.log(Event::Traded { from, to, give, want });
     }
 
     fn setup_building(&mut self, player: PlayerId, v: VertexId) -> Result<(), RuleError> {
@@ -1681,6 +1852,7 @@ impl Game {
             self.top_up_items(0, rng);
             self.phase = Phase::Playing;
             self.round = 1;
+            self.open_market(rng);
             self.begin_turn(PlayerId(0), rng);
         }
         Ok(())
@@ -1973,8 +2145,19 @@ impl Game {
         if next == 0 {
             self.end_round(rng);
             self.round += 1;
+            self.open_market(rng);
         }
         self.begin_turn(PlayerId(next as u8), rng);
+    }
+
+    /// The bank's rates for the round starting: one resource drawn to sell
+    /// cheapest, another next cheapest.
+    fn open_market(&mut self, rng: &mut Rng) {
+        let hot = rng.pick(&Resource::ALL).expect("four resources");
+        let rest: Vec<Resource> = Resource::ALL.into_iter().filter(|&r| r != hot).collect();
+        let warm = rng.pick(&rest).expect("three left");
+        self.market = Some(Market { hot, warm });
+        self.log(Event::MarketOpened { round: self.round, hot, warm });
     }
 
     /// The player's knights stand ready; every tile they ring with a city
@@ -2290,6 +2473,11 @@ const STRUCTURE_LAYOUTS: usize = 8;
 /// The goal of games saved before goals could be chosen.
 fn classic_goal() -> u32 {
     10
+}
+
+/// The bank's rate in events saved before markets.
+fn classic_bank_rate() -> u32 {
+    balance::BANK_TRADE_RATE
 }
 
 /// An item kind, as often as `balance::ITEM_WEIGHTS` says.

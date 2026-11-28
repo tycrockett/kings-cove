@@ -315,8 +315,13 @@ pub const BLOCKADE_LIFT_ROUNDS: u32 = 2;
 /// buildings, a city among them.
 pub const RING_INCOME: u32 = 1;
 
-/// How many of one resource the bank takes for one of another.
+/// How many of one resource the bank takes for one of another, outside
+/// this round's market.
 pub const BANK_TRADE_RATE: u32 = 4;
+/// What the bank takes of this round's hot resource for one of another.
+pub const MARKET_HOT_RATE: u32 = 2;
+/// What the bank takes of this round's warm resource for one of another.
+pub const MARKET_WARM_RATE: u32 = 3;
 
 /// How many events the game keeps for the history and animations.
 pub const EVENT_HISTORY: usize = 80;

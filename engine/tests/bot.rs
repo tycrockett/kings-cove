@@ -1,5 +1,5 @@
 use kings_cove_engine::{
-    Action, Board, Event, Game, Phase, PlayerId, Resources, Rng, TileId, Unit, UnitId, UnitKind, balance,
+    Action, Answer, Board, Event, Game, Phase, PlayerId, Resources, Rng, TileId, Unit, UnitId, UnitKind, balance,
     balance::{Amount, MapShape, MapSize, Settings},
     bot::{self, Style, Turn},
 };
@@ -12,7 +12,8 @@ fn names(n: usize) -> Vec<String> {
 }
 
 /// Plays `g` as the server does: the bot whose turn it is plays, and when it
-/// waits on an offer the others answer it. Counts the events it saw.
+/// waits on an offer the others answer it, for it to settle as it goes on.
+/// Counts the events it saw.
 fn play_out(g: &mut Game, styles: &[Style], rng: &mut Rng, seen: &mut Vec<Event>) {
     let mut turns = 0;
     let mut last_seq = 0;
@@ -24,7 +25,11 @@ fn play_out(g: &mut Game, styles: &[Style], rng: &mut Rng, seen: &mut Vec<Event>
                 for (i, &style) in styles.iter().enumerate() {
                     bot::answer_trade(g, PlayerId(i as u8), style, rng);
                 }
-                assert!(g.trade.is_none(), "every bot answers an offer made to it");
+                let players = styles.len();
+                assert!(
+                    g.trade.as_ref().is_none_or(|t| t.recipients(players).all(|p| t.answer(p).is_some())),
+                    "every bot answers an offer made to it"
+                );
             }
         }
         seen.extend(g.events.iter().filter(|e| e.seq > last_seq).map(|e| e.event.clone()));
@@ -97,32 +102,64 @@ fn a_ruthless_bot_attacks_a_knight_a_friendly_one_leaves_alone() {
 }
 
 #[test]
-fn a_bot_takes_a_trade_its_style_finds_worth_it() {
+fn a_bot_takes_a_trade_its_style_finds_worth_it_and_haggles_over_the_rest() {
     let mut rng = Rng::new(3);
-    let settings = Settings { map_size: MapSize::ExtraSmall, ..Settings::default() };
-    let mut g = Game::new(&names(2), &settings, &mut rng);
-    while matches!(g.phase, Phase::Setup { .. }) {
-        let current = g.current;
-        bot::play_turn(&mut g, current, Style::Balanced, &mut rng).unwrap();
-    }
+    let mut g = after_setup(&mut rng);
     g.apply(P0, Action::Roll, &mut rng).unwrap();
-    let wood = balance::res(1, 0, 0, 0);
+    let wood = |n| balance::res(n, 0, 0, 0);
     let iron = |n| balance::res(0, 0, 0, n);
-    // What the bot holds, the wood it is offered for some iron, and whether
-    // a friendly, balanced and ruthless bot take it.
+    // What the bot holds, the wood it is offered for some iron, and what a
+    // friendly, balanced and ruthless bot answer: `None` takes it, `Some`
+    // counters with those terms (from the maker's side).
     let cases = [
-        (balance::res(1, 0, 0, 1), iron(1), [true, false, false]),
-        (iron(3), iron(3), [true, true, false]),
-        (iron(3), iron(1), [true, true, true]),
+        (balance::res(1, 0, 0, 1), iron(1), [None, Some((wood(2), iron(1))), Some((wood(2), iron(1)))]),
+        (iron(3), iron(3), [None, None, Some((wood(1), iron(2)))]),
+        (iron(3), iron(1), [None, None, None]),
     ];
-    for (holds, want, takes) in cases {
-        for (style, takes) in Style::ALL.into_iter().zip(takes) {
-            g.players[0].resources = balance::res(5, 0, 0, 0);
+    for (holds, want, answers) in cases {
+        for (style, answer) in Style::ALL.into_iter().zip(answers) {
+            g.players[0].resources = wood(5);
             g.players[1].resources = holds;
-            g.apply(P0, Action::ProposeTrade { to: Some(P1), give: wood, want }, &mut rng).unwrap();
+            g.apply(P0, Action::ProposeTrade { to: Some(P1), give: wood(1), want }, &mut rng).unwrap();
             bot::answer_trade(&mut g, P1, style, &mut rng);
-            assert_eq!(g.players[0].resources.wood == 4, takes, "{style:?} offered {want:?} for {holds:?}");
-            assert!(g.trade.is_none(), "{style:?} answered");
+            let case = format!("{style:?} offered {want:?} for {holds:?}");
+            match answer {
+                None => assert_eq!((g.players[0].resources.wood, g.trade.as_ref()), (4, None), "{case}"),
+                Some((give, want)) => {
+                    let offer = g.trade.as_ref().expect("still open");
+                    assert_eq!(offer.answer(P1), Some(Answer::Counter { give, want }), "{case}");
+                    g.apply(P0, Action::ConfirmTrade { with: P1 }, &mut rng).unwrap();
+                    assert_eq!(g.players[1].resources.wood, holds.wood + give.wood, "{case}: traded on the counter");
+                }
+            }
         }
     }
+}
+
+#[test]
+fn a_bot_trades_on_a_counter_to_its_own_offer_it_finds_worth_it() {
+    let mut rng = Rng::new(3);
+    let mut g = after_setup(&mut rng);
+    g.apply(P0, Action::Roll, &mut rng).unwrap();
+    g.apply(P0, Action::EndTurn, &mut rng).unwrap();
+    g.apply(P1, Action::Roll, &mut rng).unwrap();
+    g.players[0].resources = balance::res(0, 0, 0, 3);
+    g.players[1].resources = balance::res(4, 0, 0, 0);
+    let (give, want) = (balance::res(1, 0, 0, 0), balance::res(0, 0, 0, 1));
+    g.apply(P1, Action::ProposeTrade { to: Some(P0), give, want }, &mut rng).unwrap();
+    let counter = Action::CounterTrade { give: balance::res(2, 0, 0, 0), want };
+    g.apply(P0, counter, &mut rng).unwrap();
+    bot::play_turn(&mut g, P1, Style::Balanced, &mut rng).unwrap();
+    assert!(g.events.iter().any(|e| matches!(e.event, Event::Traded { from: P1, give, .. } if give.wood == 2)));
+}
+
+/// Two balanced bots' match on the smallest island, set up.
+fn after_setup(rng: &mut Rng) -> Game {
+    let settings = Settings { map_size: MapSize::ExtraSmall, ..Settings::default() };
+    let mut g = Game::new(&names(2), &settings, rng);
+    while matches!(g.phase, Phase::Setup { .. }) {
+        let current = g.current;
+        bot::play_turn(&mut g, current, Style::Balanced, rng).unwrap();
+    }
+    g
 }

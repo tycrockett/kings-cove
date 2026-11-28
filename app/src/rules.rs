@@ -448,10 +448,17 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
             Some(Glyph::Trade),
             vec![
                 format!(
-                    "On your turn, trade {} of one resource for 1 of any other with the bank, as often as you like.",
+                    "The bank trades {} of one resource for 1 of any other. Each round the market changes: one resource sells {} for 1, another {} for 1, and the rest stay at {} for 1. The market is shown when you open trading.",
+                    balance::BANK_TRADE_RATE,
+                    balance::MARKET_HOT_RATE,
+                    balance::MARKET_WARM_RATE,
                     balance::BANK_TRADE_RATE
                 ),
-                "Or offer resources to everyone or to one player. The first player to accept trades with you; anyone can decline.".to_owned(),
+                "Tap a resource to sell, then the one you want: two taps trade with the bank, as often as you like.".to_owned(),
+                "Or offer resources to everyone or to one player: tap resources to fill what you give and what you get, then Offer.".to_owned(),
+                "Each player you offer to can Accept, Counter with terms of their own, or Decline.".to_owned(),
+                "You pick: take an Accept or a Counter and the trade happens. When only one player can take your offer, their Accept trades at once.".to_owned(),
+                "Edit takes your offer back to change it and send it again. Short of a building, card or spell? Its card offers to ask the table or use the bank.".to_owned(),
             ],
         ),
         page(

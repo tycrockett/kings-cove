@@ -127,6 +127,20 @@ impl Resources {
             *self.get_mut(r) -= other.get(r);
         }
     }
+
+    /// What `self` lacks of `cost`.
+    pub fn shortfall(&self, cost: &Resources) -> Resources {
+        let mut r = Resources::ZERO;
+        for k in Resource::ALL {
+            *r.get_mut(k) = cost.get(k).saturating_sub(self.get(k));
+        }
+        r
+    }
+
+    /// What `self` holds beyond `cost`.
+    pub fn beyond(&self, cost: &Resources) -> Resources {
+        cost.shortfall(self)
+    }
 }
 
 impl fmt::Display for Resources {

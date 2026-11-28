@@ -2,14 +2,15 @@
 //! corners whose numbers come up most. On its turns it rolls, moves a bandit
 //! after a 7, sends its knights after items and bandits, builds what it can
 //! (castle, town, outpost, then road), offering another player a 1:1 trade
-//! or the bank 4:1 to get there, recruits and deploys knights, casts a spell
-//! and ends the turn. Its [`Style`] decides whom it works against and which
-//! trades it takes. It never reads what a hidden item is.
+//! or the bank its market rate to get there, recruits and deploys knights,
+//! casts a spell and ends the turn. Its [`Style`] decides whom it works
+//! against and which trades and counters it takes. It never reads what a
+//! hidden item is.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Action, Blockade, BuildingKind, EdgeId, Event, Game, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
+    Action, Answer, Blockade, BuildingKind, EdgeId, Event, Game, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
     RuleError, SetupPlacing, Spell, StructureKind, Target, TileId, Unit, UnitKind, VertexId, balance,
 };
 
@@ -136,18 +137,103 @@ pub fn play_turn(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) ->
     }
 }
 
-/// Answers the open trade offer when it is `player`'s to answer: accepts
-/// one its style takes, from someone it trades with, and declines the rest.
+/// Answers the open trade offer when it is `player`'s to answer and it has
+/// not yet: from someone it trades with, accepts one its style takes;
+/// short of that, counters with the change its style takes that gains it
+/// least; and declines the rest.
 pub fn answer_trade(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) {
     let Ok(offer) = g.trade_for(player) else {
         return;
     };
+    if offer.answer(player).is_some() {
+        return;
+    }
+    let (from, give, want) = (offer.from, offer.give, offer.want);
     let have = g.players[player.index()].resources;
-    let accept = have.covers(&offer.want)
-        && g.players[offer.from.index()].resources.covers(&offer.give)
-        && style.trades_with(g, player, offer.from)
-        && style.accepts(worth(&have, &offer.give), worth(&have, &offer.want));
-    let action = if accept { Action::AcceptTrade } else { Action::DeclineTrade };
+    let theirs = g.players[from.index()].resources;
+    // What a trade of `give` for `want` (the maker's side) gains the bot,
+    // when its style takes it.
+    let gain = |give: &Resources, want: &Resources| {
+        let (got, paid) = (worth(&have, give), worth(&have, want));
+        (have.covers(want) && theirs.covers(give) && style.accepts(got, paid)).then(|| i64::from(got) - i64::from(paid))
+    };
+    let action = if !style.trades_with(g, player, from) {
+        Action::DeclineTrade
+    } else if gain(&give, &want).is_some() {
+        Action::AcceptTrade
+    } else if let Some((give, want)) = counter(give, want, &theirs, gain) {
+        Action::CounterTrade { give, want }
+    } else {
+        Action::DeclineTrade
+    };
+    let _ = g.apply(player, action, rng);
+}
+
+/// The change to an offer of `give` for `want` (the maker's side) that
+/// `gain` takes and that gains least: one fewer of what is asked, or one
+/// more of what the maker (holding `theirs`) gives; two such steps if one
+/// will not do.
+fn counter(
+    give: Resources,
+    want: Resources,
+    theirs: &Resources,
+    gain: impl Fn(&Resources, &Resources) -> Option<i64>,
+) -> Option<(Resources, Resources)> {
+    let steps = |(give, want): (Resources, Resources)| {
+        let mut next = Vec::new();
+        for r in Resource::ALL {
+            if want.get(r) > 0 && want.total() > 1 {
+                let mut fewer = want;
+                *fewer.get_mut(r) -= 1;
+                next.push((give, fewer));
+            }
+            if want.get(r) == 0 && theirs.get(r) > give.get(r) {
+                let mut more = give;
+                *more.get_mut(r) += 1;
+                next.push((more, want));
+            }
+        }
+        next
+    };
+    let least = |terms: &[(Resources, Resources)]| {
+        terms.iter().filter_map(|&(g, w)| gain(&g, &w).map(|v| (v, (g, w)))).min_by_key(|&(v, _)| v).map(|(_, t)| t)
+    };
+    let one = steps((give, want));
+    least(&one).or_else(|| least(&one.into_iter().flat_map(steps).collect::<Vec<_>>()))
+}
+
+/// The bot's own open offer, as answers come in: trades with whoever
+/// accepted or countered on terms its style takes, the best for it first;
+/// once every answer is in and none suits, withdraws it.
+fn settle_offer(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) {
+    let Some(offer) = g.trade.as_ref().filter(|t| t.from == player) else {
+        return;
+    };
+    let have = g.players[player.index()].resources;
+    let mut waiting = false;
+    let mut best: Option<(i64, PlayerId)> = None;
+    for p in offer.recipients(g.players.len()) {
+        let (give, want) = match offer.answer(p) {
+            None => {
+                waiting = true;
+                continue;
+            }
+            Some(Answer::Decline) => continue,
+            Some(Answer::Accept) => (offer.give, offer.want),
+            Some(Answer::Counter { give, want }) => (give, want),
+        };
+        let (got, paid) = (worth(&have, &want), worth(&have, &give));
+        let fits = have.covers(&give) && g.players[p.index()].resources.covers(&want) && style.accepts(got, paid);
+        let value = i64::from(got) - i64::from(paid);
+        if fits && best.is_none_or(|(v, _)| value > v) {
+            best = Some((value, p));
+        }
+    }
+    let action = match best {
+        Some((_, with)) => Action::ConfirmTrade { with },
+        None if !waiting => Action::CancelTrade,
+        None => return,
+    };
     let _ = g.apply(player, action, rng);
 }
 
@@ -171,6 +257,7 @@ fn setup(g: &mut Game, player: PlayerId, rng: &mut Rng) -> Result<Turn, RuleErro
 }
 
 fn turn(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) -> Result<Turn, RuleError> {
+    settle_offer(g, player, style, rng);
     if g.trade.as_ref().is_some_and(|t| t.from == player) {
         return Ok(Turn::Waiting);
     }
@@ -296,7 +383,7 @@ fn build_one(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) -> Ste
     {
         return Step::Offered;
     }
-    match plans.iter().find_map(|(_, cost)| bank_trade(&have, cost)) {
+    match plans.iter().find_map(|(_, cost)| g.bank_step(&have, cost)) {
         Some((give, get)) if g.apply(player, Action::TradeWithBank { give, get }, rng).is_ok() => Step::Done,
         _ => Step::Stuck,
     }
@@ -363,22 +450,6 @@ fn plans(g: &Game, player: PlayerId) -> Vec<(Action, Resources)> {
         }
     }
     plans
-}
-
-/// One bank trade toward `cost`, when the bank can make up all of it from
-/// what `have` holds beyond it: the most plentiful resource for the one
-/// most short.
-fn bank_trade(have: &Resources, cost: &Resources) -> Option<(Resource, Resource)> {
-    let short = |r: Resource| cost.get(r).saturating_sub(have.get(r));
-    let spare = |r: Resource| have.get(r).saturating_sub(cost.get(r)) / balance::BANK_TRADE_RATE;
-    let missing: u32 = Resource::ALL.iter().map(|&r| short(r)).sum();
-    let tradable: u32 = Resource::ALL.iter().map(|&r| spare(r)).sum();
-    if missing == 0 || tradable < missing {
-        return None;
-    }
-    let give = Resource::ALL.into_iter().max_by_key(|&r| spare(r))?;
-    let get = Resource::ALL.into_iter().max_by_key(|&r| short(r))?;
-    Some((give, get))
 }
 
 /// Each ready knight attacks, blockades or walks toward its best goal.

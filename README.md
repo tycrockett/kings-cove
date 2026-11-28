@@ -37,12 +37,17 @@ them as the match starts, to suit the number of players, and nobody sees them be
 | Balanced | `Bot 1` | takes offers it gains from | whoever leads it or is 3 points from winning |
 | Ruthless | `Ruthless Bot 1` | takes offers worth 150% of what it gives, only from players not ahead of it | everyone, leaders most |
 
+An offer a bot won't take as it stands, from a player it trades with, it counters with the smallest change it would
+take (one fewer of what is asked, or one more of what is given, or two such steps), and it takes a counter to its own
+offer on the same terms.
+
 A bot takes its starting corners by how often their numbers come up. On its turns it rolls, sends a bandit where it
 hurts those it works against after a 7 (or just off its own tiles), sends its knights for items, onto empty shrines,
 mines and lumber mills (where they stay) and against bandits on its tiles or on those structures, attacks knights and
 blockades tiles of those it works against, casts a ward where it fells bandits or rivals' knights, builds a castle, a
 town, an outpost or a
-road, offers a player one of what it has most for one of what it lacks (once a turn), trades 4:1 with the bank, keeps
+road, offers a player one of what it has most for one of what it lacks (once a turn), trades with the bank at the
+market's rates, keeps
 one knight (a ruthless bot two) and casts a spell when a castle or a scroll makes it free, or when it is worth its
 price. Its turns happen as soon as the turn passes to it; an offer it makes to a person waits up to 30 seconds for an
 answer, then the bot withdraws it and plays on. A bot never reads what a hidden item is. The home screen shows the
@@ -120,8 +125,13 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 - **Setup**: in snake order each player places a starting town with a road, then an outpost with a road, and starts
   with a small stock of resources and one knight token.
 - **Turns**: roll two dice; every player's buildings on tiles showing the total collect, unless a bandit or a blockade
-  stands there. Then trade (with players, or 4 of a kind for 1 of anything with the bank), build, buy knight tokens,
-  cast a spell, deploy, and move, attack or blockade with knights, and end the turn.
+  stands there. Then trade, build, buy knight tokens, cast a spell, deploy, and move, attack or blockade with knights,
+  and end the turn.
+- **Trading**: with the bank, 4 of a resource for 1 of any other, except this round's *market*: each round one
+  resource drawn at random sells 2 for 1 and another 3 for 1. With players, the active player offers resources to
+  everyone or to one player; each answers *Accept*, *Counter* (other terms) or *Decline* (final). When only one player
+  can take the offer, their accepting trades at once; otherwise the maker picks whom to trade with among those who
+  accepted or countered, on their terms. One offer stands at a time; withdrawing it and offering again revises it.
 - **Knights**: a knight token deploys onto a free tile next to the owner's town or castle (not an outpost). Knights move
   one tile or attack once per turn, not both, and rest the turn they arrive. A knight that attacks a bandit or an enemy
   knight falls with it. One knight or bandit per tile. Instead of acting, a knight can *blockade* its tile: the tile
@@ -173,6 +183,10 @@ Costs (all in `engine/src/balance.rs`):
 
 - Drag to pan, pinch to zoom (trackpad pinch, scroll and Ctrl+scroll on desktops).
 - Tap a tray action (Road, Outpost, Town ↑, Castle ↑) or a unit token in your hand: legal spots glow; tap one to build.
+- The trade button right of your resources opens trading: tap a resource you can sell at the market's rate, then what
+  you want for it; or tap resources into *You give* and *You get* (− takes one back) and offer them. A card you can't
+  afford yet shows what you're short, with *Ask the table* (an offer filled in for you) and, when the bank can cover
+  it, a one-tap bank trade. An offer everyone declined comes back to sweeten and send again.
 - Tap one of your ready units (gold dot) to see gold moves and red attacks.
 - Tap any tile, building or road to inspect it. The dark strip over the dock shows what to do, or the latest action,
   and your points; tap it for the event history.

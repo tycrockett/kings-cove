@@ -1,8 +1,9 @@
 use kings_cove_engine::{
-    Action, Board, Building, BuildingKind, Event, Game, Item, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
-    Robber, RobberId, RuleError, SetupPlacing, Spell, Structure, StructureKind, Target, TileId, Unit, UnitId, UnitKind,
-    VertexId, balance,
+    Action, Board, Building, BuildingKind, Event, Game, Item, ItemKind, Market, Phase, PlayerId, Resource, Resources,
+    Rng, Robber, RobberId, RuleError, SetupPlacing, Spell, Structure, StructureKind, Target, TileId, Unit, UnitId,
+    UnitKind, VertexId, balance,
     balance::{Amount, MapShape, MapSize, Settings},
+    suggest_offer,
 };
 
 const P0: PlayerId = PlayerId(0);
@@ -386,21 +387,29 @@ fn only_the_active_player_acts_and_must_roll_first() {
     }
     assert_eq!((g.current, g.round), (P0, 2), "a round is every player's turn");
     assert!(g.events.iter().any(|e| e.event == Event::RoundEnded { round: 1 }));
+    let market = g.market.expect("a market opens with the round");
+    assert_ne!(market.hot, market.warm);
+    assert!(g.events.iter().any(|e| e.event == Event::MarketOpened { round: 2, hot: market.hot, warm: market.warm }));
 }
 
 #[test]
-fn trades_move_resources_between_players() {
+fn the_maker_picks_among_players_who_accept_an_open_offer() {
     let mut g = playing(3);
     let mut r = rng();
     g.players[0].resources.wood = 2;
     g.players[1].resources.iron = 1;
+    g.players[2].resources.iron = 1;
     let give = Resources::one(Resource::Wood);
     let want = Resources::one(Resource::Iron);
     assert_eq!(g.apply(P1, Action::ProposeTrade { to: None, give, want }, &mut r), Err(RuleError::NotYourTurn));
     g.apply(P0, Action::ProposeTrade { to: None, give, want }, &mut r).unwrap();
-    assert_eq!(g.apply(PlayerId(2), Action::AcceptTrade, &mut r), Err(RuleError::CannotAfford));
     assert_eq!(g.apply(P0, Action::AcceptTrade, &mut r), Err(RuleError::NotTradeRecipient));
     g.apply(P1, Action::AcceptTrade, &mut r).unwrap();
+    assert!(g.trade.is_some(), "others could still take it: the maker picks");
+    assert_eq!(g.players[0].resources.wood, 2, "nothing moves before the pick");
+    assert_eq!(g.apply(P0, Action::ConfirmTrade { with: PlayerId(2) }, &mut r), Err(RuleError::NotAnswered));
+    assert_eq!(g.apply(P1, Action::ConfirmTrade { with: P1 }, &mut r), Err(RuleError::NotYourTurn));
+    g.apply(P0, Action::ConfirmTrade { with: P1 }, &mut r).unwrap();
     assert_eq!((g.players[0].resources.wood, g.players[0].resources.iron), (1, 1));
     assert_eq!((g.players[1].resources.wood, g.players[1].resources.iron), (1, 0));
     assert!(g.trade.is_none());
@@ -408,8 +417,42 @@ fn trades_move_resources_between_players() {
     // Declined by everyone it was offered to: closed.
     g.apply(P0, Action::ProposeTrade { to: None, give, want }, &mut r).unwrap();
     g.apply(P1, Action::DeclineTrade, &mut r).unwrap();
+    assert_eq!(g.apply(P1, Action::AcceptTrade, &mut r), Err(RuleError::NotTradeRecipient), "declining is final");
     assert!(g.trade.is_some());
     g.apply(PlayerId(2), Action::DeclineTrade, &mut r).unwrap();
+    assert!(g.trade.is_none());
+}
+
+#[test]
+fn an_offer_only_one_player_can_take_trades_as_soon_as_they_accept() {
+    let mut g = playing(3);
+    let mut r = rng();
+    g.players[0].resources.wood = 1;
+    g.players[2].resources.iron = 1;
+    let (give, want) = (Resources::one(Resource::Wood), Resources::one(Resource::Iron));
+    g.apply(P0, Action::ProposeTrade { to: Some(PlayerId(2)), give, want }, &mut r).unwrap();
+    assert_eq!(g.apply(P1, Action::AcceptTrade, &mut r), Err(RuleError::NotTradeRecipient));
+    g.apply(PlayerId(2), Action::AcceptTrade, &mut r).unwrap();
+    assert_eq!((g.players[0].resources.iron, g.players[2].resources.wood, g.trade.as_ref()), (1, 1, None));
+}
+
+#[test]
+fn a_counter_offer_trades_on_its_terms_once_the_maker_takes_it() {
+    let mut g = playing(3);
+    let mut r = rng();
+    g.players[0].resources.wood = 3;
+    g.players[1].resources.iron = 1;
+    let (wood, iron) = (|n| balance::res(n, 0, 0, 0), |n| balance::res(0, 0, 0, n));
+    let counter = |give, want| Action::CounterTrade { give, want };
+    g.apply(P0, Action::ProposeTrade { to: None, give: wood(1), want: iron(1) }, &mut r).unwrap();
+    assert_eq!(g.apply(P1, counter(wood(1), iron(1)), &mut r), Err(RuleError::InvalidTrade), "the same terms");
+    assert_eq!(g.apply(P1, counter(wood(4), iron(1)), &mut r), Err(RuleError::TraderCannotPay));
+    assert_eq!(g.apply(P1, counter(wood(2), iron(2)), &mut r), Err(RuleError::CannotAfford));
+    g.apply(P1, counter(wood(2), iron(1)), &mut r).unwrap();
+    assert!(g.events.iter().any(|e| e.event == Event::TradeCountered { player: P1, give: wood(2), want: iron(1) }));
+    g.apply(P0, Action::ConfirmTrade { with: P1 }, &mut r).unwrap();
+    assert_eq!((g.players[0].resources.wood, g.players[0].resources.iron), (1, 1));
+    assert_eq!((g.players[1].resources.wood, g.players[1].resources.iron), (2, 0));
     assert!(g.trade.is_none());
 }
 
@@ -425,6 +468,33 @@ fn the_bank_trades_four_of_a_kind_for_one() {
     g.apply(P0, trade(Resource::Wood, Resource::Iron), &mut r).unwrap();
     assert_eq!((g.players[0].resources.wood, g.players[0].resources.iron), (1, 1));
     assert_eq!(g.apply(P0, trade(Resource::Wood, Resource::Iron), &mut r), Err(RuleError::CannotAfford));
+}
+
+#[test]
+fn the_market_sells_its_hot_resource_two_for_one_and_its_warm_one_three_for_one() {
+    let mut g = playing(2);
+    let mut r = rng();
+    g.market = Some(Market { hot: Resource::Wood, warm: Resource::Stone });
+    g.players[0].resources = balance::res(2, 3, 0, 3);
+    let trade = |give, get| Action::TradeWithBank { give, get };
+    g.apply(P0, trade(Resource::Wood, Resource::Food), &mut r).unwrap();
+    g.apply(P0, trade(Resource::Stone, Resource::Food), &mut r).unwrap();
+    assert_eq!(g.apply(P0, trade(Resource::Iron, Resource::Food), &mut r), Err(RuleError::CannotAfford));
+    assert_eq!(g.players[0].resources, balance::res(0, 0, 2, 3));
+    assert!(g.events.iter().any(|e| matches!(e.event, Event::BankTraded { give: Resource::Wood, rate: 2, .. })));
+}
+
+#[test]
+fn a_suggested_offer_asks_for_the_shortfall_and_gives_what_is_spare() {
+    let cost = balance::CITY_UPGRADE_COST;
+    let have = cost.beyond(&Resources::ZERO);
+    assert_eq!(suggest_offer(&have, &cost), (Resources::ZERO, Resources::ZERO), "nothing short");
+    let have = balance::res(4, 1, 2, 0);
+    let (give, want) = suggest_offer(&have, &cost);
+    assert_eq!(want, have.shortfall(&cost));
+    assert_eq!(give.total(), want.total());
+    assert!(have.beyond(&cost).covers(&give), "only what the build doesn't need");
+    assert_eq!(give.wood, give.total(), "the most plentiful first");
 }
 
 // ----- Units -----
