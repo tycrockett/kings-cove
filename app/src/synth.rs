@@ -3,8 +3,8 @@
 //! hammer, a soft mallet) sets the modes of wood, skin or metal ringing in a
 //! bank of resonators, each drifting a little from strike to strike as real
 //! ones do. Beside them: plucked lyre strings (Karplus–Strong), a war horn, a
-//! bowed drone, and a hall to put them in. Each comes out as mono 16-bit WAV
-//! at [`RATE`], kept low and warm.
+//! soft pop, a bowed drone, and a hall to put them in. Each comes out as
+//! mono 16-bit WAV at [`RATE`], kept low and warm.
 //!
 //! The music is cut into bars, each a sound of its own (the engine plays
 //! sounds of at most 5 s): a bar rings on over the next one, and the drone is
@@ -318,6 +318,24 @@ fn pluck(freq: f32, dur: f32, bright: f32, noise: &mut Noise) -> Vec<f32> {
     out
 }
 
+/// A cartoon mouth pop (a finger flicked out of a cheek): a pure tone from
+/// `freq`, rising a sixth of it, gone within 60 ms; no breath, no snap.
+fn pop(freq: f32) -> Vec<f32> {
+    let mut phase = 0.0_f32;
+    let mut out: Vec<f32> = (0..secs(0.07))
+        .map(|i| {
+            let t = i as f32 / SR;
+            let f = freq * (1.0 + 0.18 * (1.0 - (-t / 0.02).exp()));
+            phase = (phase + f / SR).fract();
+            let env = (t / 0.001).min(1.0) * (-t * 25.0 - (t / 0.045).powi(2)).exp();
+            (TAU * phase).sin() * env
+        })
+        .collect();
+    fade_out(&mut out, secs(0.01));
+    normalize(&mut out, 1.0);
+    out
+}
+
 /// A two-pole resonance with unity gain at its peak: a horn's body.
 struct Resonance {
     a1: f32,
@@ -414,11 +432,7 @@ pub fn cue(cue: Cue) -> Vec<f32> {
             }
             finish(out, 0.03, 0.08)
         }
-        Cue::Harvest => {
-            add(&mut out, &pluck(note(0), 0.9, 0.3, n), 0, 1.0);
-            add(&mut out, &pluck(note(4), 0.9, 0.3, n), secs(0.08), 0.8);
-            finish(out, 0.3, 0.4)
-        }
+        Cue::Harvest => finish(pop(note(5)), 0.05, 0.05),
         Cue::Horn => finish(horn(&[(0.0, 0.3, D2 * 1.5), (0.3, 1.1, D2 * 2.0)], n), 0.6, 1.0),
         Cue::TurnOther => finish(skin(52.0, 3.0, 8.0, n), 0.5, 0.8),
         Cue::Build => {
@@ -429,12 +443,12 @@ pub fn cue(cue: Cue) -> Vec<f32> {
             finish(out, 0.04, 0.1)
         }
         Cue::Coins => {
-            // Heavy coins dropped on a pile.
-            const COIN: [(f32, f32, f32); 3] = [(1.0, 1.0, 25.0), (2.29, 0.5, 35.0), (3.9, 0.25, 45.0)];
-            for (t, f, gain) in [(0.0, 1500.0, 1.0), (0.08, 1750.0, 0.7), (0.17, 1350.0, 0.85)] {
-                add(&mut out, &metal(f, &COIN, 0.5, n), secs(t), gain);
+            // The find's chimes (Item), struck closer and gone sooner.
+            const CHIME: [(f32, f32, f32); 3] = [(1.0, 1.0, 10.0), (2.76, 0.3, 17.5), (5.40, 0.1, 25.0)];
+            for (t, degree) in [(0.0, 0), (0.05, 4), (0.10, 7)] {
+                add(&mut out, &metal(note(degree), &CHIME, 0.4, n), secs(t), 1.0);
             }
-            finish(out, 0.2, 0.3)
+            finish(out, 0.25, 0.25)
         }
         Cue::Clash => {
             const BLADE: [(f32, f32, f32); 6] = [

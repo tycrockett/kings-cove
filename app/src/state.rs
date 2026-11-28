@@ -31,6 +31,14 @@ const MAX_BACKLOG_MS: f64 = 10_000.0;
 const MOVE_STEP_MS: f64 = 450.0;
 /// The pause between the board settling and the next turn's banner (ms).
 const SETTLE_MS: f64 = 250.0;
+/// A roll's tiles light up one after another in an order drawn for the roll:
+/// this far apart (ms), each up to `WAVE_JITTER_MS` late, so their badges
+/// and pops never land together.
+const WAVE_STEP_MS: f64 = 55.0;
+const WAVE_JITTER_MS: f64 = 10.0;
+/// How soon after a tile starts to wobble its badges (or its "Blocked")
+/// show, and it pops (ms).
+const YIELD_MS: f64 = 100.0;
 /// The clock's period while something animates: every display frame, up to
 /// 60 a second (a 120 Hz screen gets every other one).
 const FRAME_MS: u64 = 16;
@@ -689,7 +697,7 @@ impl AppState {
         // The sounds that go with them, and when.
         let mut cues: Vec<(f64, (Cue, f32, f32))> = Vec::new();
         let turn_cue = |player: PlayerId| {
-            if player == seat { (Cue::Horn, 0.7, 1.0) } else { (Cue::TurnOther, 0.5, 1.0) }
+            if player == seat { (Cue::Horn, 0.25, 1.0) } else { (Cue::TurnOther, 0.5, 1.0) }
         };
         // Effects play one after another, after those already queued; when
         // the queue falls far behind the game, what is stale is dropped.
@@ -709,8 +717,11 @@ impl AppState {
         // A turn's banner waits for the board to settle, so it hides none of it.
         let queued = self.anims.with_untracked(|a| a.iter().map(Anim::end).fold(0.0, f64::max));
         let calm = |anims: &[Anim]| anims.iter().map(Anim::end).fold(queued, f64::max) + SETTLE_MS;
-        // When this batch's tiles light up, and how many badges each has had.
+        // When this batch's tiles light up, each one's place in the wave, and
+        // how many badges each has had.
         let mut harvest = cursor;
+        let mut wave: Vec<(TileId, f64)> = Vec::new();
+        let lag = |wave: &[(TileId, f64)], tile: TileId| wave.iter().find(|w| w.0 == tile).map_or(0.0, |w| w.1);
         let mut badges: Vec<(TileId, u32)> = Vec::new();
         for event in events {
             match *event {
@@ -738,6 +749,20 @@ impl AppState {
                     self.dice_until.replace(cursor + fx::DICE_LANDED_MS);
                     harvest = cursor + fx::DICE_LANDED_MS - 100.0;
                     cues.push((cursor, (Cue::Dice, 0.45, 1.0)));
+                    let seed = now as u64 as u32;
+                    let mut hit: Vec<(TileId, f32)> = after
+                        .board
+                        .tiles
+                        .iter()
+                        .filter(|t| t.number == sum)
+                        .map(|t| (t.id, crate::art::hash01(seed.wrapping_add(t.id.0 as u32 * 7919))))
+                        .collect();
+                    hit.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    wave = hit
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &(tile, r))| (tile, i as f64 * WAVE_STEP_MS + r as f64 * WAVE_JITTER_MS))
+                        .collect();
                     for t in after.board.tiles.iter().filter(|t| t.number == sum) {
                         let spell = before.and_then(|b| b.enchantment_at(t.id)).map(|e| e.spell);
                         let mood = match (after.robber_at(t.id).is_some() || after.blockaded(t.id), spell) {
@@ -747,10 +772,17 @@ impl AppState {
                             _ => Mood::Normal,
                         };
                         let kind = AnimKind::Jelly { tile: t.id, mood };
-                        anims.push(Anim { start: harvest, dur: board::JELLY_MS, kind });
+                        let start = harvest + lag(&wave, t.id);
+                        anims.push(Anim { start, dur: board::JELLY_MS, kind });
+                        // Every tile hit pops as its badges (or its "Blocked")
+                        // show, each a step up a major pentatonic on the last.
+                        const STEPS: [f32; 6] = [0.0, 2.0, 4.0, 7.0, 9.0, 12.0];
+                        let place = wave.iter().position(|w| w.0 == t.id).unwrap_or(0).min(STEPS.len() - 1);
+                        let rate = 2f32.powf(STEPS[place] / 12.0);
+                        cues.push((start + YIELD_MS, (Cue::Harvest, 1.0, rate)));
                     }
                     badges.clear();
-                    cursor = harvest + 300.0;
+                    cursor = harvest + 300.0 + wave.last().map_or(0.0, |w| w.1);
                     if mine {
                         haptic(Haptic::Impact(HapticImpact::Medium));
                     }
@@ -768,15 +800,14 @@ impl AppState {
                             0
                         }
                     };
-                    let start = harvest + 250.0 + slot as f64 * 120.0;
+                    let start = harvest + lag(&wave, tile) + YIELD_MS + slot as f64 * 120.0;
                     let mine = player == seat;
                     let color = palette::player(player);
                     let kind = AnimKind::Gain { tile, resource, amount, color, mine, slot, of: of as u32 };
                     anims.push(Anim { start, dur: board::GAIN_MS, kind });
                     if mine {
-                        self.gains_at.replace(start + 500.0);
-                        // Each badge a step higher.
-                        cues.push((start, (Cue::Harvest, 0.6, 1.0 + 0.06 * slot as f32)));
+                        // The wave lands out of order: bounce after the last.
+                        self.gains_at.replace(self.gains_at.get().max(start + 500.0));
                     }
                 }
                 Event::TurnStarted { player, round } => {
@@ -795,9 +826,9 @@ impl AppState {
                 | Event::ProductionStopped { tile, .. }
                 | Event::SpellFaded { tile, .. } => {
                     let (label, delay) = match *event {
-                        Event::ProductionBlocked { .. } => ("Blocked", 250.0),
-                        Event::ProductionBlockaded { .. } => ("Blockaded!", 250.0),
-                        Event::ProductionStopped { .. } => ("Frozen!", 250.0),
+                        Event::ProductionBlocked { .. } => ("Blocked", YIELD_MS),
+                        Event::ProductionBlockaded { .. } => ("Blockaded!", YIELD_MS),
+                        Event::ProductionStopped { .. } => ("Frozen!", YIELD_MS),
                         Event::SpellFaded { spell, .. } => (
                             match spell {
                                 Spell::Frost => "The frost melts",
@@ -817,7 +848,7 @@ impl AppState {
                         _ => 0x2b2b2e,
                     };
                     let kind = AnimKind::Float { at: board::tile_pos(after, tile), color, label: label.to_owned() };
-                    anims.push(Anim { start: harvest + delay, dur: 1300.0, kind });
+                    anims.push(Anim { start: harvest + lag(&wave, tile) + delay, dur: 1300.0, kind });
                 }
                 Event::WindfallPaid { player, gained } => {
                     let label = format!("{} windfall: +{}", if player == seat { "Your" } else { "A" }, gained.total());

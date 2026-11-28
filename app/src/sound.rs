@@ -18,7 +18,7 @@ pub enum Cue {
     /// A button pressed.
     Tap,
     Dice,
-    /// Resources of the player's own coming in.
+    /// A tile a roll hits, as it shows what it yields.
     Harvest,
     /// The player's own turn starting.
     Horn,
