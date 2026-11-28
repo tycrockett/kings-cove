@@ -366,7 +366,16 @@ fn turn_queue(app: AppState) -> impl IntoElement {
         .child(each(
             queue,
             |w: &Waiting| w.id,
-            move |w, _| view().bind_motion(&motion().entering(MotionPreset::FadeInUp)).child(card(w)),
+            move |w, _| {
+                let id = w.get_untracked().id;
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .bind_motion(&motion().entering(MotionPreset::FadeInUp))
+                    .child(card(w))
+                    .child(reaction_bubbles(app, move || Some(id)))
+            },
         ))
 }
 
@@ -436,20 +445,29 @@ fn players_bar(app: AppState) -> impl IntoElement {
             g.players.iter().map(|p| player_chip(g, p, p.id == mv.seat, p.id == g.current && !finished)).collect();
         Some(view().gap(px(5.0)).items_start().child(chips))
     };
+    let current = move || app.view.with(|v| v.as_ref().and_then(|v| v.game.as_ref()).map(|g| g.current));
     view()
         .flex_1()
         .items_start()
-        .child(dynamic(move || {
-            let mv = app.view.get()?;
-            let g = mv.game.as_ref()?;
-            let finished = matches!(g.phase, Phase::Finished { .. });
-            let current = &g.players[g.current.index()];
-            Some(
-                player_chip(g, current, current.id == mv.seat, !finished)
-                    .active(|s| s.opacity(0.8))
-                    .on_press(move || app.players_open.update(|o| *o = !*o)),
-            )
-        }))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .pointer_events(PointerEvents::BoxNone)
+                .child(dynamic(move || {
+                    let mv = app.view.get()?;
+                    let g = mv.game.as_ref()?;
+                    let finished = matches!(g.phase, Phase::Finished { .. });
+                    let current = &g.players[g.current.index()];
+                    Some(
+                        player_chip(g, current, current.id == mv.seat, !finished)
+                            .active(|s| s.opacity(0.8))
+                            .on_press(move || app.players_open.update(|o| *o = !*o)),
+                    )
+                }))
+                .child(reaction_bubbles(app, current)),
+        )
         .child(turn_queue(app))
         // Out of the column's flow, so opening it moves nothing else; made
         // once per opening, so it slides in only then.
@@ -1795,47 +1813,44 @@ fn reaction_picker(app: AppState) -> impl IntoElement {
     })
 }
 
-/// Reactions just sent, each with its sender's name, in the middle of the
-/// screen for a moment.
-fn reactions_layer(app: AppState) -> impl IntoElement {
-    // One row per reaction, kept while it shows, so each pops in only once.
-    let rows = each(
-        app.reactions_shown,
+/// The reactions `seat` (read reactively) just sent, each a chat bubble to
+/// the right of their chip for a moment.
+fn reaction_bubbles(app: AppState, seat: impl Fn() -> Option<PlayerId> + 'static) -> impl IntoElement {
+    let theirs = computed(move || {
+        let seat = seat();
+        app.reactions_shown.with(|s| s.iter().filter(|r| Some(r.seat) == seat).copied().collect::<Vec<_>>())
+    });
+    // One bubble per reaction, kept while it shows, so each pops in only once.
+    let bubbles = each(
+        theirs,
         |r: &SentReaction| r.seq,
         move |r, _| {
             let r = r.get_untracked();
-            let color = palette::player(r.seat);
-            let who = app.view.with_untracked(|v| v.as_ref().map(|v| name(&v.players, r.seat))).unwrap_or_default();
-            // A card in the sender's color pops in; the emoji in it does a
-            // little dance and keeps bobbing while it shows.
+            // The emoji in it does a little dance and keeps bobbing while it
+            // shows.
             let emoji = view().bind_motion(&motion().entering(MotionPreset::Float)).child(
-                text(r.reaction.emoji()).text_size(px(56.0)).bind_motion(&motion().entering(MotionPreset::Tada)),
+                text(r.reaction.emoji()).text_size(px(26.0)).bind_motion(&motion().entering(MotionPreset::Tada)),
             );
+            // The bubble's tail, pointing back at the chip.
+            let tail = view()
+                .absolute()
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .left(px(-5.0))
+                .justify_center()
+                .child(view().size(px(12.0)).bg(hex(palette::PAPER)).rotate(deg(45.0)));
             view()
-                .items_center()
-                .gap(px(4.0))
-                .px(px(18.0))
-                .pt(px(12.0))
-                .pb(px(10.0))
-                .rounded(px(24.0))
-                .bg(hex(color))
-                .border_2()
-                .border_color(hex(0xffffff))
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(18.0))
+                .bg(hex(palette::PAPER))
                 .shadow_lg()
                 .bind_motion(&motion().entering(MotionPreset::PopIn))
+                .child(tail)
                 .child(emoji)
-                .child(bold(who, 13.0, palette::ink_on(color)))
         },
     );
-    view()
-        .absolute()
-        .inset_0()
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .gap(px(24.0))
-        .pointer_events(PointerEvents::None)
-        .child(rows)
+    view().flex_row().items_center().gap(px(6.0)).pointer_events(PointerEvents::None).child(bubbles)
 }
 
 /// A dimmed screen with a card in the middle while `open`. Made once per
@@ -2005,7 +2020,6 @@ pub fn game_screen(app: AppState) -> impl IntoElement {
         .child(bottom(app))
         .child(winner(app))
         .child(fx::fx_layer(app))
-        .child(reactions_layer(app))
         .child(item_card(app))
         .child(spellbook(app))
         .child(attack_confirm(app))

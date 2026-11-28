@@ -156,7 +156,7 @@ pub struct AppState {
     pub players_open: Signal<bool>,
     /// The row of reactions to pick from.
     pub reactions_open: Signal<bool>,
-    /// Reactions in the middle of the screen right now.
+    /// Reactions showing beside their senders' chips right now.
     pub reactions_shown: Signal<Vec<SentReaction>>,
     /// The `seq` of the latest reaction seen; `None` before the first view.
     last_reaction: Stored<Option<u64>>,
@@ -446,7 +446,7 @@ impl AppState {
         });
     }
 
-    /// Puts reactions newer than the last seen in the middle of the screen
+    /// Shows reactions newer than the last seen beside their senders' chips
     /// for a moment; ones sent before this device arrived are not replayed.
     fn show_reactions(&self, reactions: &[SentReaction]) {
         let latest = reactions.last().map_or(0, |r| r.seq);
