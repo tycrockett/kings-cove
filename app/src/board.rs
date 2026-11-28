@@ -492,7 +492,7 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
             v
         }
         Event::ItemAppeared { tile } => {
-            let (at, label) = (piece_pos(g, tile), "Something appeared!".to_owned());
+            let (at, label) = (piece_pos(g, tile), "Item Appeared!".to_owned());
             vec![
                 a(800.0, AnimKind::Pop { at, color: palette::GOLD }),
                 a(1300.0, AnimKind::Float { at, color: palette::GOLD, label }),

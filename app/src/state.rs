@@ -17,7 +17,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{
     board::{self, Anim, AnimKind, Mood},
     fx::{self, Fx, FxKind},
-    nudge::{self, Nudge, Spots},
+    nudge::{self, Anchors, Nudge, Spots},
     palette,
     rules::Item,
     sound::{self, Cue},
@@ -205,6 +205,8 @@ pub struct AppState {
     pub nudge: Signal<Option<Nudge>>,
     /// Where the tips' anchors were laid out.
     pub spots: Signal<Spots>,
+    /// The elements tips point at, for their overlays to follow.
+    pub anchors: Anchors,
     /// The tips already shown this turn.
     seen_nudges: Stored<Vec<Nudge>>,
     /// Tips about something that just happened, waiting for the showing one
@@ -268,6 +270,7 @@ impl AppState {
             tips_on: signal(Storage::get_item(TIPS_KEY).as_deref() != Some("off")),
             nudge: signal(None),
             spots: signal(Spots::default()),
+            anchors: Anchors::new(),
             seen_nudges: stored(Vec::new()),
             pending_nudges: stored(Vec::new()),
             last_seq: stored(None),

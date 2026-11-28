@@ -16,8 +16,6 @@ use crate::{
 
 /// How far the dock's content sits in from the screen's edge.
 pub const DOCK_INSET: f32 = 8.0;
-/// The bubble's widest.
-const BUBBLE_W: f32 = 240.0;
 /// The width of the line from the bubble down to its anchor.
 const LINE_W: f32 = 2.0;
 /// How far the ring stands out from its anchor.
@@ -75,6 +73,59 @@ impl Anchor {
             Anchor::EndTurn => Row::Bottom,
         }
     }
+}
+
+/// A handle on each element a tip can point at, so the tip's overlay can
+/// follow it as it moves (the tray's tiles as the tray scrolls).
+#[derive(Copy, Clone)]
+pub struct Anchors {
+    knight: ElementRef,
+    spells: ElementRef,
+    trade: ElementRef,
+    end_turn: ElementRef,
+    tiles: [ElementRef; 5],
+}
+
+impl Anchors {
+    pub fn new() -> Self {
+        Anchors {
+            knight: element_ref(),
+            spells: element_ref(),
+            trade: element_ref(),
+            end_turn: element_ref(),
+            tiles: std::array::from_fn(|_| element_ref()),
+        }
+    }
+
+    pub fn get(&self, anchor: Anchor) -> ElementRef {
+        match anchor {
+            Anchor::Knight => self.knight,
+            Anchor::Spells => self.spells,
+            Anchor::Trade => self.trade,
+            Anchor::EndTurn => self.end_turn,
+            Anchor::Tile(item) => self.tiles[Item::ALL.iter().position(|&i| i == item).expect("a tray item")],
+        }
+    }
+}
+
+/// A gold ring around `anchor` while the tip shows it: put it inside the
+/// anchor, so it moves with it.
+pub fn ring(app: AppState, anchor: Anchor) -> impl IntoElement {
+    dynamic(move || {
+        let shown = app.nudge.get().filter(|_| !app.dice_hidden.get()).map(Nudge::anchor) == Some(anchor);
+        shown.then(|| {
+            view()
+                .absolute()
+                .top(px(-RING_GAP))
+                .left(px(-RING_GAP))
+                .right(px(-RING_GAP))
+                .bottom(px(-RING_GAP))
+                .rounded(px(16.0))
+                .border_2()
+                .border_color(hex(palette::GOLD))
+                .pointer_events(PointerEvents::None)
+        })
+    })
 }
 
 /// Where the anchors and the dock's rows were laid out, in the dock's own
@@ -266,9 +317,10 @@ pub fn fresh(before: &Game, after: &Game, seat: PlayerId, seen: &[Nudge]) -> Vec
 }
 
 /// The tip: a dark bubble above the action strip, so it covers none of the
-/// dock, with a line down to what it is about and a ring around that. One
-/// layer over the dock, so the tray's scroll cannot clip it. It stays until
-/// the next press anywhere, which still does what it presses.
+/// dock, with a line down to what it is about (and [`ring`] around that).
+/// An overlay anchored to that element, so it follows it as the tray
+/// scrolls. It stays until the next press anywhere, which still does what
+/// it presses.
 pub fn layer(app: AppState) -> impl IntoElement {
     // The tip last drawn: it pops in once, not again as the tray scrolls.
     let drawn = stored(None::<Nudge>);
@@ -278,28 +330,28 @@ pub fn layer(app: AppState) -> impl IntoElement {
             return None;
         };
         let text = app.game().map(|g| nudge.text(&g))?;
-        let f = app.spots.get().frame(nudge.anchor())?;
+        let anchor = nudge.anchor();
+        let f = app.spots.get().frame(anchor)?;
         let hud = app.hud.get();
         if hud.dock <= 0.0 {
             return None;
         }
-        // Over the strip, and over Undo and Recenter when they show there.
+        // The bubble sits over the strip, and over Undo and Recenter when
+        // they show there; the line reaches down from it to the ring.
         let pills = undo_shown(app) || app.focus.with(Option::is_some);
-        let bubble_bottom = hud.strip + hud.dock + if pills { 48.0 } else { 10.0 };
-        // The ring stands RING_GAP out from the anchor; the line meets its top.
-        let ring_top = hud.dock - f.top + RING_GAP;
+        let line_h = hud.strip + f.top + if pills { 48.0 } else { 10.0 } - RING_GAP;
+        // Near a side the bubble lines up with the anchor's edge, so it
+        // stays on screen, and the line keeps to the anchor's middle.
         let x = f.left + f.w / 2.0;
         let width = window().width.0;
-        let left = (x - BUBBLE_W / 2.0).clamp(4.0, (width - BUBBLE_W - 4.0).max(4.0));
-        // The bubble leans toward the line when it sits near a side.
-        let lean = |c: View| {
-            if x > width * 0.65 {
-                c.items_end()
-            } else if x < width * 0.35 {
-                c.items_start()
-            } else {
-                c.items_center()
-            }
+        let inset = px((f.w / 2.0 - LINE_W / 2.0).max(0.0));
+        let line = view().w(px(LINE_W)).h(px(line_h.max(0.0))).bg(hex(palette::GOLD));
+        let (align, col, line) = if x > width * 0.65 {
+            (Align::End, view().items_end(), line.mr(inset))
+        } else if x < width * 0.35 {
+            (Align::Start, view().items_start(), line.ml(inset))
+        } else {
+            (Align::Center, view().items_center(), line)
         };
         let pop = drawn.replace(Some(nudge)) != Some(nudge);
         let body = view()
@@ -309,44 +361,19 @@ pub fn layer(app: AppState) -> impl IntoElement {
             .bg(hexa(0x000000, 0.75))
             .child(bold(text, 13.0, 0xffffff));
         let body = if pop { body.bind_motion(&motion().entering(MotionPreset::PopIn)) } else { body };
-        let bubble = lean(
-            view()
-                .absolute()
-                .left(px(left))
-                .bottom(px(bubble_bottom))
-                .w(px(BUBBLE_W))
-                .pointer_events(PointerEvents::None),
-        )
-        .child(body);
-        let line = view()
-            .absolute()
-            .left(px(x - LINE_W / 2.0))
-            .bottom(px(ring_top))
-            .w(px(LINE_W))
-            .h(px((bubble_bottom - ring_top).max(0.0)))
-            .bg(hex(palette::GOLD))
-            .pointer_events(PointerEvents::None);
-        let ring = view()
-            .absolute()
-            .left(px(f.left - RING_GAP))
-            .bottom(px(hud.dock - f.top - f.h - RING_GAP))
-            .w(px(f.w + 2.0 * RING_GAP))
-            .h(px(f.h + 2.0 * RING_GAP))
-            .rounded(px(16.0))
-            .border_2()
-            .border_color(hex(palette::GOLD))
-            .pointer_events(PointerEvents::None);
         Some(
             view()
                 .absolute()
-                .left(px(0.0))
-                .right(px(0.0))
-                .top(px(0.0))
-                .bottom(px(0.0))
-                .pointer_events(PointerEvents::BoxNone)
-                .child(line)
-                .child(ring)
-                .child(bubble)
+                .size(px(0.0))
+                .child(
+                    overlay()
+                        .anchor(&app.anchors.get(anchor))
+                        .placement(Placement::Top)
+                        .align(align)
+                        .offset(px(RING_GAP))
+                        .margin(px(4.0))
+                        .child(col.pointer_events(PointerEvents::None).child(body).child(line)),
+                )
                 // An empty overlay hears every press, on the bubble too,
                 // without taking it from what was pressed.
                 .child(overlay().size(px(0.0)).on_press_outside(move |_: &Point<Points>| app.hide_nudge())),

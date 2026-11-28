@@ -225,7 +225,7 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::SpellCast { player, spell, .. } => format!("{} cast {}", n(*player), spell.name()),
         Event::ProductionStopped { spell, .. } => format!("{} stopped a harvest", rules::spell_title(*spell)),
         Event::WindfallPaid { player, gained } => format!("{} collected a windfall: {gained}", n(*player)),
-        Event::ItemAppeared { .. } => "Something appeared on the island".to_owned(),
+        Event::ItemAppeared { .. } => "An item appeared on the island".to_owned(),
         Event::ItemFound { player, kind, count, gained, scroll, .. } => {
             format!("{}'s knight found {}", n(*player), rules::item_found(*kind, *count, gained, *scroll))
         }
@@ -804,7 +804,7 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
                 .border_color(hexa(palette::INK, 0.12))
                 .opacity(if n > 0 { 1.0 } else { 0.6 })
                 .child(resource_icon(r, 22.0))
-                .child(bold(n.to_string(), 18.0, palette::INK).min_w(px(11.0)));
+                .child(bold(n.to_string(), 16.0, palette::INK).min_w(px(10.0)));
             if before.is_some_and(|b| n > b.get(r)) {
                 chip.bind_motion(&motion().entering(MotionPreset::Tada.spec().timing(|t| t.delay(delay))))
             } else {
@@ -817,14 +817,19 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         let selected = app.mode.get_untracked() == mode;
         let enabled = can_deploy && count > 0;
         let v = view()
+            .flex_row()
+            .items_center()
+            .gap(px(3.0))
             .px(px(6.0))
             .py(px(4.0))
             .rounded(px(12.0))
             .bg(hex(if selected { palette::GOLD } else { 0x4a3c30 }))
             .opacity(if count > 0 { 1.0 } else { 0.45 })
             .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Knight, f))
+            .element_ref(&app.anchors.get(Anchor::Knight))
+            .child(nudge::ring(app, Anchor::Knight))
             .child(glyph_icon(Glyph::Knight, palette::player(seat), 22.0, 26.0))
-            .child(chip_badge(bold(count.to_string(), 11.0, palette::INK)));
+            .child(bold(format!("×{count}"), 14.0, if selected { palette::INK } else { 0xffffff }));
         if enabled {
             v.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || {
                 app.inspect.set(None);
@@ -855,6 +860,8 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
             .bg(hex(if casting { palette::GOLD } else { 0x4a3c30 }))
             .opacity(if scrolls > 0 || ready { 1.0 } else { 0.45 })
             .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Spells, f))
+            .element_ref(&app.anchors.get(Anchor::Spells))
+            .child(nudge::ring(app, Anchor::Spells))
             .child(glyph_icon(Glyph::Spellbook, palette::player(seat), 24.0, 26.0))
             .child(status)
             .active(|s| s.opacity(0.7).scale(0.96))
@@ -881,7 +888,9 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         .border_color(hex(if trading { 0xb8860b } else { palette::PAPER_DIM }))
         .opacity(if trade_enabled || trading { 1.0 } else { 0.45 })
         .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Trade, f))
-        .child(glyph_icon(Glyph::Trade, palette::player(seat), 30.0, 26.0));
+        .element_ref(&app.anchors.get(Anchor::Trade))
+        .child(nudge::ring(app, Anchor::Trade))
+        .child(glyph_icon(Glyph::Trade, palette::player(seat), 26.0, 26.0));
     let trade = if trade_enabled {
         trade.active(|s| s.opacity(0.7).scale(0.96)).on_press(move || app.trade_open.update(|o| *o = !*o))
     } else {
@@ -892,9 +901,9 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
     view()
         .flex_row()
         .items_center()
-        .gap(px(4.0))
+        .gap(px(3.0))
         .on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Inventory, f))
-        .child(view().flex_row().flex_1().gap(px(3.0)).child(resources))
+        .child(view().flex_row().flex_1().gap(px(2.0)).child(resources))
         .child(trade)
         .child(card(me.cards.knights))
         .child(spells)
@@ -974,6 +983,8 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 .child(cost_row(&item.cost(), Some(&have), 14.0, 11.5))
                 .active(|s| s.opacity(0.75).scale(0.95))
                 .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Tile(item), f))
+                .element_ref(&app.anchors.get(Anchor::Tile(item)))
+                .child(nudge::ring(app, Anchor::Tile(item)))
                 .on_press(move || {
                     app.inspect.set(None);
                     if selected {
@@ -1358,6 +1369,8 @@ fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<
             app.send(Action::EndTurn)
         })
         .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::EndTurn, f))
+        .element_ref(&app.anchors.get(Anchor::EndTurn))
+        .child(nudge::ring(app, Anchor::EndTurn))
         .child(bold("End turn", 18.0, 0xffffff)),
         Phase::Setup { .. } if g.current == seat => big_button(0xfff0c2, false, || {})
             .border_2()
