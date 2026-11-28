@@ -95,11 +95,23 @@ pub enum Reaction {
     Angry,
     Heart,
     Eyes,
+    Shrug,
+    Laugh,
+    Party,
 }
 
 impl Reaction {
-    pub const ALL: [Reaction; 6] =
-        [Reaction::Wave, Reaction::Sad, Reaction::Wow, Reaction::Angry, Reaction::Heart, Reaction::Eyes];
+    pub const ALL: [Reaction; 9] = [
+        Reaction::Wave,
+        Reaction::Sad,
+        Reaction::Wow,
+        Reaction::Angry,
+        Reaction::Heart,
+        Reaction::Eyes,
+        Reaction::Shrug,
+        Reaction::Laugh,
+        Reaction::Party,
+    ];
 
     pub const fn emoji(self) -> &'static str {
         match self {
@@ -109,6 +121,9 @@ impl Reaction {
             Reaction::Angry => "😡",
             Reaction::Heart => "💖",
             Reaction::Eyes => "👀",
+            Reaction::Shrug => "🤷",
+            Reaction::Laugh => "😂",
+            Reaction::Party => "🥳",
         }
     }
 }
