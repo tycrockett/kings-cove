@@ -984,26 +984,11 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 })
         })
         .collect();
-    // One card for all the spells: it opens the spellbook.
-    let casting = matches!(current, Mode::Cast(..));
-    let mana = mana_state(g, seat);
-    let castable = my_move && (mana == "ready" || !g.players[seat.index()].scrolls.is_empty());
-    let spells = tile(Glyph::Spellbook, "Spells", casting, if castable { 1.0 } else { 0.62 })
-        .child(label(mana, 11.0, palette::MUTED))
-        .active(|s| s.opacity(0.75).scale(0.95))
-        .on_press(move || {
-            app.inspect.set(None);
-            if casting {
-                app.mode.set(Mode::Idle);
-            } else {
-                app.spellbook_open.set(true);
-            }
-        });
     view().on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Tray, f)).child(
         scroll()
             .horizontal()
             .on_scroll(move |e: &ScrollEvent| nudge::mark_scroll(app, e.offset.x.0))
-            .child(view().flex_row().gap(px(6.0)).child(buttons).child(spells)),
+            .child(view().flex_row().gap(px(6.0)).child(buttons)),
     )
 }
 
