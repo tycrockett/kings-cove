@@ -35,7 +35,9 @@ jobs:
         # The release the app's nsh crates are built for: a newer nsh refuses them.
         env:
           NSH_VERSION: v0.6.1
+        # pipefail: a failed download fails here, not as `nsh: command not found` later.
         run: |
+          set -o pipefail
           curl -fsSL https://nsh.dev/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build the web client
