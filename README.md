@@ -203,7 +203,7 @@ Costs (all in `engine/src/balance.rs`):
   knight token, bank trade, blockade order, deploy, move, or any spell but Ward and Lure. Rolls, attacks, trades with
   players and ending the turn can't be undone, nor a deploy or move that found an item, hit a ward or won the game.
 - Tips: a dark bubble above the strip, with a gold line down to a ring around what just became useful, such as *Deploy
-  Knight* on a new knight token, *Magic is ready!* on the Spells chip, a build you can now afford, a good bank trade, or
+  Knight* on a new knight token, *Magic is ready!* on the Spells chip, a good bank trade when nothing can be built, or
   *End turn* once nothing is left to do. Each
   stays until your next tap anywhere (which still does what it taps) and shows once a turn; a new knight token brings
   *Deploy Knight* back. *Tips* turns them off, in **Menu** or in *Settings* on the home screen.

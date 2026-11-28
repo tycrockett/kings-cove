@@ -982,9 +982,6 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
             tile(item.glyph(), item.title(), selected, opacity)
                 .child(cost_row(&item.cost(), Some(&have), 14.0, 11.5))
                 .active(|s| s.opacity(0.75).scale(0.95))
-                .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Tile(item), f))
-                .element_ref(&app.anchors.get(Anchor::Tile(item)))
-                .child(nudge::ring(app, Anchor::Tile(item)))
                 .on_press(move || {
                     app.inspect.set(None);
                     if selected {
@@ -995,12 +992,7 @@ fn tray(app: AppState, g: &Game, seat: PlayerId) -> View {
                 })
         })
         .collect();
-    view().on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Tray, f)).child(
-        scroll()
-            .horizontal()
-            .on_scroll(move |e: &ScrollEvent| nudge::mark_scroll(app, e.offset.x.0))
-            .child(view().flex_row().gap(px(6.0)).child(buttons)),
-    )
+    view().child(scroll().horizontal().child(view().flex_row().gap(px(6.0)).child(buttons)))
 }
 
 /// The player's mana, in a word or two.

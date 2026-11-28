@@ -32,8 +32,6 @@ pub enum Nudge {
     FreeSpell(Spell),
     /// The first castle was built: spells cost nothing now.
     FreeCastSpells,
-    /// The tray item can be paid for and placed.
-    CanBuild(Item),
     /// The round's hot resource sells at the market's best rate.
     MarketDeal(Resource),
     /// Enough of one resource to trade with the bank, and nothing to build.
@@ -49,8 +47,6 @@ pub enum Anchor {
     Knight,
     /// The Spells chip.
     Spells,
-    /// A build tray tile.
-    Tile(Item),
     /// The trade button.
     Trade,
     /// The End turn button.
@@ -61,7 +57,6 @@ pub enum Anchor {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     Inventory,
-    Tray,
     Bottom,
 }
 
@@ -69,32 +64,24 @@ impl Anchor {
     fn row(self) -> Row {
         match self {
             Anchor::Knight | Anchor::Spells | Anchor::Trade => Row::Inventory,
-            Anchor::Tile(_) => Row::Tray,
             Anchor::EndTurn => Row::Bottom,
         }
     }
 }
 
 /// A handle on each element a tip can point at, so the tip's overlay can
-/// follow it as it moves (the tray's tiles as the tray scrolls).
+/// follow it as it moves.
 #[derive(Copy, Clone)]
 pub struct Anchors {
     knight: ElementRef,
     spells: ElementRef,
     trade: ElementRef,
     end_turn: ElementRef,
-    tiles: [ElementRef; 5],
 }
 
 impl Anchors {
     pub fn new() -> Self {
-        Anchors {
-            knight: element_ref(),
-            spells: element_ref(),
-            trade: element_ref(),
-            end_turn: element_ref(),
-            tiles: std::array::from_fn(|_| element_ref()),
-        }
+        Anchors { knight: element_ref(), spells: element_ref(), trade: element_ref(), end_turn: element_ref() }
     }
 
     pub fn get(&self, anchor: Anchor) -> ElementRef {
@@ -103,7 +90,6 @@ impl Anchors {
             Anchor::Spells => self.spells,
             Anchor::Trade => self.trade,
             Anchor::EndTurn => self.end_turn,
-            Anchor::Tile(item) => self.tiles[Item::ALL.iter().position(|&i| i == item).expect("a tray item")],
         }
     }
 }
@@ -133,12 +119,10 @@ pub fn ring(app: AppState, anchor: Anchor) -> impl IntoElement {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spots {
     /// Each anchor's frame inside its row: left from the dock's content,
-    /// top from the row's. The tray's tiles are measured in the scrolled strip.
+    /// top from the row's.
     marks: Vec<(Anchor, Frame)>,
     /// The top of each row from the dock's top edge.
-    rows: [f32; 3],
-    /// How far the tray is scrolled.
-    scroll: f32,
+    rows: [f32; 2],
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -154,8 +138,7 @@ impl Spots {
     /// dock's, its width and height.
     fn frame(&self, anchor: Anchor) -> Option<Frame> {
         let f = self.marks.iter().find(|(a, _)| *a == anchor)?.1;
-        let scroll = if matches!(anchor, Anchor::Tile(_)) { self.scroll } else { 0.0 };
-        Some(Frame { left: DOCK_INSET + f.left - scroll, top: self.rows[anchor.row() as usize] + f.top, ..f })
+        Some(Frame { left: DOCK_INSET + f.left, top: self.rows[anchor.row() as usize] + f.top, ..f })
     }
 }
 
@@ -178,11 +161,6 @@ pub fn mark_row(app: AppState, row: Row, f: &Bounds<Points>) {
     });
 }
 
-/// Records how far the tray is scrolled.
-pub fn mark_scroll(app: AppState, offset: f32) {
-    change(app, |s| s.scroll = offset);
-}
-
 /// Edits the spots, telling readers only when something moved.
 fn change(app: AppState, edit: impl FnOnce(&mut Spots)) {
     let mut spots = app.spots.get_untracked();
@@ -198,7 +176,6 @@ impl Nudge {
         match self {
             Nudge::DeployKnight => Anchor::Knight,
             Nudge::MagicReady | Nudge::FreeSpell(_) | Nudge::FreeCastSpells => Anchor::Spells,
-            Nudge::CanBuild(item) => Anchor::Tile(item),
             Nudge::MarketDeal(_) | Nudge::BankTrade(_) => Anchor::Trade,
             Nudge::NothingLeft => Anchor::EndTurn,
         }
@@ -216,15 +193,6 @@ impl Nudge {
                 format!("Free spell: {head}{}", chars.as_str())
             }
             Nudge::FreeCastSpells => "Spells are free now!".to_owned(),
-            Nudge::CanBuild(Item::Knight) => "You can buy a Knight token".to_owned(),
-            Nudge::CanBuild(item @ (Item::Town | Item::City)) => {
-                let gain = match item {
-                    Item::Town => balance::TOWN_POINTS,
-                    _ => balance::CITY_POINTS - balance::TOWN_POINTS,
-                };
-                format!("Upgrade to a {} (+{gain} VP)", item.title())
-            }
-            Nudge::CanBuild(item) => format!("You can build a {}", item.title()),
             Nudge::MarketDeal(r) => format!("Market: {} {} → 1 of anything", g.bank_rate(r), r.name()),
             Nudge::BankTrade(r) => format!("Trade {} {} with the bank", g.bank_rate(r), r.name()),
             Nudge::NothingLeft => "Nothing left: end your turn".to_owned(),
@@ -262,15 +230,9 @@ pub fn available(g: &Game, seat: PlayerId) -> Vec<Nudge> {
     if g.has_city(seat) && !castable.is_empty() {
         out.push(Nudge::FreeCastSpells);
     }
-    // Upgrades first: they are the points.
-    let usable: Vec<Item> = [Item::Town, Item::City, Item::Outpost, Item::Road, Item::Knight]
-        .into_iter()
-        .filter(|&item| item_blocker(g, seat, item).is_none())
-        .collect();
-    out.extend(usable.iter().map(|&item| Nudge::CanBuild(item)));
     let can_bank =
         |give: Resource| Resource::ALL.iter().any(|&get| get != give && g.can_trade_with_bank(seat, give, get).is_ok());
-    let nothing_to_build = usable.is_empty();
+    let nothing_to_build = Item::ALL.into_iter().all(|item| item_blocker(g, seat, item).is_some());
     let hot = g.market.map(|m| m.hot);
     if nothing_to_build {
         if let Some(r) = hot.filter(|&r| me.resources.get(r) >= g.bank_rate(r) && can_bank(r)) {
