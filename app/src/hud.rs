@@ -533,7 +533,8 @@ fn prompt(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<S
             SetupPlacing::Road { .. } => "Tap a glowing edge for a road beside it".to_owned(),
         },
         Phase::Setup { .. } => return None,
-        Phase::Playing if g.current != seat => return None,
+        // Not before the board has shown the turn before it.
+        Phase::Playing if g.current != seat || (g.dice.is_none() && !app.settled.get()) => return None,
         Phase::Playing if g.dice.is_none() => "Your turn! Roll the dice".to_owned(),
         Phase::Playing => match app.mode.get() {
             Mode::Road => "Tap a glowing edge to build a road".to_owned(),
@@ -1318,9 +1319,14 @@ pub fn rulebook(app: AppState) -> impl IntoElement {
 /// The one big button: roll, end the turn, or whose turn it is.
 fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<View> {
     let busy = app.busy.get();
-    let current = name(names, g.current);
+    // The turn came back, but the board still shows the last one being
+    // played (moves, bandits, finds): the player before is still "playing".
+    let replaying = matches!(g.phase, Phase::Playing) && g.current == seat && g.dice.is_none() && !app.settled.get();
+    let playing =
+        if replaying { PlayerId(((seat.index() + g.players.len() - 1) % g.players.len()) as u8) } else { g.current };
+    let current = name(names, playing);
     Some(match g.phase {
-        Phase::Playing if g.current == seat && g.dice.is_none() => {
+        Phase::Playing if g.current == seat && g.dice.is_none() && !replaying => {
             let breathe =
                 MotionSpec::new(KeyframeTiming::new(750.0).infinite().direction(PlaybackDirection::Alternate))
                     .values(MotionChannel::Scale, [1.0, 1.05]);
@@ -1341,7 +1347,7 @@ fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<
                 );
             if busy { roll } else { roll.bind_motion(&motion().entering(breathe)) }
         }
-        Phase::Playing if g.current == seat => big_button(palette::GO, !busy, move || {
+        Phase::Playing if g.current == seat && !replaying => big_button(palette::GO, !busy, move || {
             app.mode.set(Mode::Idle);
             app.trade_open.set(false);
             app.send(Action::EndTurn)
@@ -1363,7 +1369,7 @@ fn primary(app: AppState, g: &Game, seat: PlayerId, names: &[String]) -> Option<
                     view()
                         .size(px(14.0))
                         .rounded(px(7.0))
-                        .bg(hex(palette::player(g.current)))
+                        .bg(hex(palette::player(playing)))
                         .border_1()
                         .border_color(hex(0xffffff)),
                 )
@@ -1585,14 +1591,17 @@ fn counter_editor(app: AppState, give: Resources, want: Resources) -> View {
 /// makes the panel again (one to the player bounces in); what changes while
 /// it stands, the answers and what the player can pay, updates in place.
 fn trade_offer(app: AppState) -> impl IntoElement {
+    // Someone else's offer shows once the board has played out what came
+    // before it (a bot rolls, then offers, in one go).
     let shown = computed(move || {
+        let settled = app.settled.get();
         app.view.with(|v| {
             let v = v.as_ref()?;
             let g = v.game.as_ref()?;
             let o = g.trade.as_ref()?;
             let for_me = o.recipients(g.players.len()).any(|p| p == v.seat)
                 && !matches!(o.answer(v.seat), Some(Answer::Decline));
-            (o.from == v.seat || for_me).then_some((o.from == v.seat, o.from, o.give, o.want))
+            (o.from == v.seat || (for_me && settled)).then_some((o.from == v.seat, o.from, o.give, o.want))
         })
     });
     let editing = computed(move || app.counter.with(Option::is_some));

@@ -157,6 +157,9 @@ pub struct AppState {
     pub fx: Signal<Vec<Fx>>,
     /// Milliseconds, ticking while animations run.
     pub clock: Signal<f64>,
+    /// Nothing on the board is still playing out: moves, dice, finds and
+    /// fights shown, turn banners aside.
+    pub settled: Signal<bool>,
     /// The HUD's dice hide while the rolled ones fly to them.
     pub dice_hidden: Signal<bool>,
     dice_until: Stored<f64>,
@@ -243,6 +246,7 @@ impl AppState {
             anims: signal(Vec::new()),
             fx: signal(Vec::new()),
             clock: signal(now_ms()),
+            settled: signal(true),
             dice_hidden: signal(false),
             dice_until: stored(0.0),
             fx_cursor: stored(0.0),
@@ -450,6 +454,7 @@ impl AppState {
         self.anims.set(Vec::new());
         self.fx.set(Vec::new());
         self.fx_cursor.replace(0.0);
+        self.settled.set(true);
         self.last_seq.replace(None);
         sound::hush();
     }
@@ -1000,7 +1005,19 @@ impl AppState {
         }
         self.anims.update(|a| a.extend(anims));
         self.fx.update(|f| f.extend(effects));
+        self.follow_settled(now_ms());
         self.run_clock();
+    }
+
+    /// Updates `settled`: whether the board has finished playing out what
+    /// happened (turn banners aside).
+    fn follow_settled(&self, now: f64) {
+        let playing = self.anims.with_untracked(|a| a.iter().any(|x| x.end() > now))
+            || self.fx.with_untracked(|f| f.iter().any(|x| x.end() > now && !matches!(x.kind, FxKind::Banner { .. })))
+            || self.dice_until.get() > now;
+        if self.settled.get_untracked() == playing {
+            self.settled.set(!playing);
+        }
     }
 
     /// Ticks `clock` every frame while anything animates.
@@ -1078,6 +1095,7 @@ impl AppState {
             || self.fx.with_untracked(|f| f.iter().any(|x| x.end() > now))
             || dice_until > now;
         self.clock.set(now);
+        self.follow_settled(now);
         if busy {
             return;
         }
