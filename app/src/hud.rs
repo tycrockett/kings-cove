@@ -2196,35 +2196,43 @@ fn reaction_button(app: AppState) -> View {
         .child(text(Reaction::Wave.emoji()).text_size(px(24.0)))
 }
 
-/// The reactions to pick from, over the dock.
+/// The reactions to pick from, over the dock: two rows, the second set half
+/// a choice in, so its choices sit between those above.
 fn reaction_picker(app: AppState) -> impl IntoElement {
+    const CHOICE: f32 = 44.0;
+    const GAP: f32 = 2.0;
     dynamic(move || {
         if !app.reactions_open.get() {
             return None;
         }
-        let choices: Vec<View> = Reaction::ALL
-            .into_iter()
-            .map(|r| {
-                view()
-                    .size(px(44.0))
-                    .rounded(px(22.0))
-                    .items_center()
-                    .justify_center()
-                    .active(|s| s.opacity(0.6).scale(0.9))
-                    .on_press(move || app.react(r))
-                    .child(text(r.emoji()).text_size(px(26.0)))
-            })
-            .collect();
+        let row = |reactions: &[Reaction]| {
+            let choices: Vec<View> = reactions
+                .iter()
+                .map(|&r| {
+                    view()
+                        .size(px(CHOICE))
+                        .rounded(px(CHOICE / 2.0))
+                        .items_center()
+                        .justify_center()
+                        .active(|s| s.opacity(0.6).scale(0.9))
+                        .on_press(move || app.react(r))
+                        .child(text(r.emoji()).text_size(px(26.0)))
+                })
+                .collect();
+            view().flex_row().gap(px(GAP)).child(choices)
+        };
+        let (top, bottom) = Reaction::ALL.split_at(Reaction::ALL.len().div_ceil(2));
         Some(
             panel()
                 .self_start()
                 .ml(px(8.0))
-                .flex_row()
+                .items_start()
                 .p(px(4.0))
-                .gap(px(2.0))
+                .gap(px(GAP))
                 .rounded(px(26.0))
                 .bind_motion(&motion().entering(MotionPreset::FadeInUp))
-                .child(choices),
+                .child(row(top))
+                .child(row(bottom).ml(px((CHOICE + GAP) / 2.0))),
         )
     })
 }
