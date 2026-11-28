@@ -809,9 +809,9 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     // with the rounds it has left.
     for item in &g.items {
         let at = piece_pos(g, item.tile);
-        // Never smaller on screen than its badge, which stands off its
-        // upper right so as not to hide it.
-        let u = (0.25 * S).max(10.0 * px1);
+        // As big as a knight, shrinking with the board when zoomed out to a
+        // few points; its badge, off its upper right, stays readable.
+        let u = (0.25 * S).max(5.0 * px1);
         p = match item.kind {
             Some(ItemKind::Relic) => art::relic(p, at, 0.88 * u, 1.6 * px1),
             _ => art::chest(p, at, u, 1.6 * px1),
