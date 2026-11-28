@@ -1826,11 +1826,9 @@ fn reaction_bubbles(app: AppState, seat: impl Fn() -> Option<PlayerId> + 'static
         |r: &SentReaction| r.seq,
         move |r, _| {
             let r = r.get_untracked();
-            // The emoji in it does a little dance and keeps bobbing while it
-            // shows.
-            let emoji = view().bind_motion(&motion().entering(MotionPreset::Float)).child(
-                text(r.reaction.emoji()).text_size(px(26.0)).bind_motion(&motion().entering(MotionPreset::Tada)),
-            );
+            // The emoji in it does a little dance as it pops in.
+            let emoji =
+                text(r.reaction.emoji()).text_size(px(26.0)).bind_motion(&motion().entering(MotionPreset::Tada));
             // The bubble's tail, pointing back at the chip.
             let tail = view()
                 .absolute()
