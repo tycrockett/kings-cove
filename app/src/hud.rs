@@ -94,24 +94,6 @@ fn glyph_icon(g: Glyph, color: u32, w: f32, h: f32) -> impl IntoElement {
     canvas(move || art::glyph(Painter::new(), g, color, w, h)).w(px(w)).h(px(h))
 }
 
-/// A small round badge on a chip's top right corner, over its edge.
-fn chip_badge(content: impl IntoElement) -> View {
-    view()
-        .absolute()
-        .top(px(-6.0))
-        .right(px(-6.0))
-        .min_w(px(18.0))
-        .h(px(18.0))
-        .px(px(4.0))
-        .rounded(px(9.0))
-        .items_center()
-        .justify_center()
-        .bg(hex(0xfffdf6))
-        .border_1()
-        .border_color(hex(0x4a3c30))
-        .child(content)
-}
-
 fn star_icon(s: f32) -> impl IntoElement {
     canvas(move || {
         art::star(Painter::new(), (s / 2.0, s / 2.0 + 0.5), s / 2.0)
@@ -795,8 +777,8 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
                 .flex_row()
                 .items_center()
                 .gap(px(2.0))
-                .pl(px(3.0))
-                .pr(px(4.0))
+                .pl(px(2.0))
+                .pr(px(3.0))
                 .py(px(4.0))
                 .rounded(px(12.0))
                 .bg(hex(0xfffdf6))
@@ -819,8 +801,8 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         let v = view()
             .flex_row()
             .items_center()
-            .gap(px(3.0))
-            .px(px(6.0))
+            .gap(px(2.0))
+            .px(px(5.0))
             .py(px(4.0))
             .rounded(px(12.0))
             .bg(hex(if selected { palette::GOLD } else { 0x4a3c30 }))
@@ -840,21 +822,25 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
         }
     };
     // The Spells chip: styled like the knight chip, it opens the spellbook.
-    // Its badge shows the scrolls held, else a drop when the mana is ready,
+    // Beside the book: the scrolls held, else a drop when the mana is ready,
     // else the rounds left before it is.
     let casting = matches!(app.mode.get_untracked(), Mode::Cast(..));
     let scrolls = me.scrolls.len();
     let ready = mana_state(g, seat) == "ready";
     let spells = {
+        let fg = if casting { palette::INK } else { 0xffffff };
         let status = if scrolls > 0 {
-            chip_badge(bold(format!("×{scrolls}"), 11.0, palette::INK))
+            view().child(bold(scrolls.to_string(), 14.0, fg))
         } else if ready {
-            chip_badge(mana_icon(12.0, true))
+            view().child(mana_icon(16.0, true))
         } else {
-            chip_badge(bold(me.mana_ready_round.saturating_sub(g.round).to_string(), 11.0, palette::INK))
+            view().child(bold(me.mana_ready_round.saturating_sub(g.round).to_string(), 14.0, fg))
         };
         view()
-            .px(px(6.0))
+            .flex_row()
+            .items_center()
+            .gap(px(2.0))
+            .px(px(5.0))
             .py(px(4.0))
             .rounded(px(12.0))
             .bg(hex(if casting { palette::GOLD } else { 0x4a3c30 }))
@@ -862,7 +848,7 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
             .on_layout(move |f: &Bounds<Points>| nudge::mark(app, Anchor::Spells, f))
             .element_ref(&app.anchors.get(Anchor::Spells))
             .child(nudge::ring(app, Anchor::Spells))
-            .child(glyph_icon(Glyph::Spellbook, palette::player(seat), 24.0, 26.0))
+            .child(glyph_icon(Glyph::Spellbook, palette::player(seat), 22.0, 26.0))
             .child(status)
             .active(|s| s.opacity(0.7).scale(0.96))
             .on_press(move || {
@@ -880,7 +866,7 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
     let trade = view()
         .items_center()
         .justify_center()
-        .px(px(4.0))
+        .px(px(3.0))
         .py(px(4.0))
         .rounded(px(12.0))
         .bg(hex(if trading { palette::GOLD } else { 0xfffdf6 }))
@@ -901,9 +887,9 @@ fn inventory(app: AppState, g: &Game, seat: PlayerId, before: Option<Resources>)
     view()
         .flex_row()
         .items_center()
-        .gap(px(3.0))
+        .gap(px(2.0))
         .on_layout(move |f: &Bounds<Points>| nudge::mark_row(app, Row::Inventory, f))
-        .child(view().flex_row().flex_1().gap(px(2.0)).child(resources))
+        .child(view().flex_row().flex_1().gap(px(1.0)).child(resources))
         .child(trade)
         .child(card(me.cards.knights))
         .child(spells)
