@@ -97,21 +97,20 @@ impl Anchors {
 /// A gold ring around `anchor` while the tip shows it: put it inside the
 /// anchor, so it moves with it.
 pub fn ring(app: AppState, anchor: Anchor) -> impl IntoElement {
-    dynamic(move || {
-        let shown = app.nudge.get().filter(|_| !app.dice_hidden.get()).map(Nudge::anchor) == Some(anchor);
-        shown.then(|| {
-            view()
-                .absolute()
-                .top(px(-RING_GAP))
-                .left(px(-RING_GAP))
-                .right(px(-RING_GAP))
-                .bottom(px(-RING_GAP))
-                .rounded(px(16.0))
-                .border_2()
-                .border_color(hex(palette::GOLD))
-                .pointer_events(PointerEvents::None)
-        })
-    })
+    // Always there and only faded in, so it keeps its place as the anchor's
+    // first child: under the anchor's icons and badges.
+    let shown = move || app.nudge.get().filter(|_| !app.dice_hidden.get()).map(Nudge::anchor) == Some(anchor);
+    view()
+        .absolute()
+        .top(px(-RING_GAP))
+        .left(px(-RING_GAP))
+        .right(px(-RING_GAP))
+        .bottom(px(-RING_GAP))
+        .rounded(px(16.0))
+        .border_2()
+        .border_color(hex(palette::GOLD))
+        .opacity(move || if shown() { 1.0_f32 } else { 0.0 })
+        .pointer_events(PointerEvents::None)
 }
 
 /// Where the anchors and the dock's rows were laid out, in the dock's own
