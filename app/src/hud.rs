@@ -1077,7 +1077,7 @@ fn spellbook(app: AppState) -> impl IntoElement {
                                     )
                                 })),
                         )
-                        .child(if castle {
+                        .child(if castle || free > 0 {
                             view().child(bold("Free", 13.0, palette::GO))
                         } else {
                             cost_row(&spell.cost(), Some(&have), 16.0, 12.0)
@@ -1117,7 +1117,10 @@ fn spellbook(app: AppState) -> impl IntoElement {
                     );
                     row.child(view().gap(px(5.0)).child(lines))
                         .child(blocker.map(|why| bold(why, 13.0, palette::DANGER).self_center()))
-                        .child(trade_for(app, g, seat, g.spell_price(seat, spell), close))
+                        // A scroll casts it free: nothing to trade for.
+                        .child(
+                            (free == 0).then(|| trade_for(app, g, seat, g.spell_price(seat, spell), close)).flatten(),
+                        )
                         .child(cast)
                 })
                 .collect();
