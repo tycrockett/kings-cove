@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     game::ItemKind,
+    rng::Rng,
     types::{Resource, Resources},
 };
 
@@ -81,6 +82,147 @@ impl MapSize {
             MapSize::ExtraLarge => "XL",
         }
     }
+
+    /// The islands that suit a match of `players`: random settings draw
+    /// from these.
+    pub const fn for_players(players: usize) -> &'static [MapSize] {
+        match players {
+            0..=2 => &[MapSize::ExtraSmall, MapSize::Small],
+            3 => &[MapSize::Small, MapSize::Medium],
+            _ => &[MapSize::Medium, MapSize::Large, MapSize::ExtraLarge],
+        }
+    }
+
+    /// The goals that suit the island, about one victory point for every
+    /// two to four tiles: random settings draw from these.
+    pub const fn fitting_goals(self) -> &'static [u32] {
+        match self {
+            MapSize::ExtraSmall => &[10],
+            MapSize::Small => &[10, 15],
+            MapSize::Medium => &[15, 20],
+            MapSize::Large => &[20, 30],
+            MapSize::ExtraLarge => &[30, 40],
+        }
+    }
+}
+
+/// The island's outline, chosen in the lobby. Either way it has the
+/// size's number of tiles.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapShape {
+    /// Rings of tiles around a centre tile: a hexagon.
+    #[default]
+    Classic,
+    /// A free-form island in one piece, with capes and bays but no lakes.
+    Wild,
+}
+
+impl MapShape {
+    pub const ALL: [MapShape; 2] = [MapShape::Classic, MapShape::Wild];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            MapShape::Classic => "Classic",
+            MapShape::Wild => "Wild",
+        }
+    }
+}
+
+/// How many of one kind of structure (shrines, mines, lumber mills) stand
+/// on the island, chosen in the lobby for each kind.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Amount {
+    #[default]
+    Off,
+    /// One per [`TILES_PER_STRUCTURE_FEW`] tiles, at least one.
+    Few,
+    /// One per [`TILES_PER_STRUCTURE_MANY`] tiles, at least two.
+    Many,
+}
+
+impl Amount {
+    pub const ALL: [Amount; 3] = [Amount::Off, Amount::Few, Amount::Many];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Amount::Off => "Off",
+            Amount::Few => "Few",
+            Amount::Many => "Many",
+        }
+    }
+
+    /// How many on an island of `tiles` (1, 1, 2, 3, 4 at Few and 2, 2, 4,
+    /// 6, 8 at Many on the five sizes).
+    pub const fn count(self, tiles: usize) -> usize {
+        match self {
+            Amount::Off => 0,
+            Amount::Few => max(1, tiles / TILES_PER_STRUCTURE_FEW),
+            Amount::Many => max(2, tiles / TILES_PER_STRUCTURE_MANY),
+        }
+    }
+}
+
+const fn max(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+/// Tiles of island per structure of a kind at [`Amount::Few`].
+pub const TILES_PER_STRUCTURE_FEW: usize = 30;
+/// Tiles of island per structure of a kind at [`Amount::Many`].
+pub const TILES_PER_STRUCTURE_MANY: usize = 15;
+/// Victory points of each shrine a player's knight stands on.
+pub const SHRINE_POINTS: u32 = 2;
+/// What a mine pays its holder at the start of each of their turns: this
+/// many of iron or stone, drawn.
+pub const MINE_YIELD: u32 = 1;
+/// Wood a lumber mill pays its holder at the start of each of their turns.
+pub const MILL_YIELD: u32 = 1;
+/// Tiles a bandit drawn to an empty structure covers at the end of a round.
+pub const STRUCTURE_BANDIT_STEPS: u32 = 1;
+
+/// What a match is played with: its goal, its island and the structures
+/// on it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Settings {
+    /// One of [`VICTORY_POINT_GOALS`].
+    pub victory_points: u32,
+    pub map_size: MapSize,
+    pub map_shape: MapShape,
+    pub shrines: Amount,
+    pub mines: Amount,
+    pub mills: Amount,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            victory_points: DEFAULT_VICTORY_POINTS,
+            map_size: MapSize::default(),
+            map_shape: MapShape::default(),
+            shrines: Amount::Off,
+            mines: Amount::Off,
+            mills: Amount::Off,
+        }
+    }
+}
+
+impl Settings {
+    /// Settings drawn for a match of `players`: an island that suits them,
+    /// a goal that suits the island, any shape and any number of each
+    /// structure.
+    pub fn random(players: usize, rng: &mut Rng) -> Settings {
+        let map_size = rng.pick(MapSize::for_players(players)).expect("sizes");
+        Settings {
+            victory_points: rng.pick(map_size.fitting_goals()).expect("goals"),
+            map_size,
+            map_shape: rng.pick(&MapShape::ALL).expect("shapes"),
+            shrines: rng.pick(&Amount::ALL).expect("amounts"),
+            mines: rng.pick(&Amount::ALL).expect("amounts"),
+            mills: rng.pick(&Amount::ALL).expect("amounts"),
+        }
+    }
 }
 
 /// The resources of every 19 tiles (a bigger board repeats them).
@@ -133,6 +275,11 @@ pub const LUCK_COST: Resources = res(1, 0, 0, 3);
 /// Chance (numerator / denominator) the roll after a Luck comes up as its
 /// tile's number; otherwise any other total does.
 pub const LUCK_CHANCE: (u64, u64) = (1, 2);
+/// Warding stones, rations for the watch and iron to bind it: the dearest
+/// spell with Swap, for it fells knights and bandits and holds 7 tiles.
+pub const WARD_COST: Resources = res(0, 2, 1, 3);
+/// Rounds a ward holds: the one it is cast in and the next.
+pub const WARD_ROUNDS: u32 = 2;
 /// Rolls of its tile's number a lingering spell lasts (frost, bounty, swap).
 pub const SPELL_CHARGES: u32 = 2;
 /// Rounds the caster's mana takes to refill after any spell.

@@ -23,9 +23,13 @@ cargo run -p kings-cove-app
 cd app && nsh run                     # --target ios | android | macos | linux | windows
 ```
 
-Open the client on 2–4 devices. One player taps **Create match** and shares the room code; the others **Join** with it.
-In the room, the host picks the goal and island size; everyone sees the choice. Under *Add a bot* the host can also seat
-bots the server plays, alone or alongside other players, each of a style:
+Open the client on 2–4 devices. One player taps **Create match** and shares the room: **Share room link** sends a link
+that opens the web client with the code filled in (through the system's share sheet: a message, mail, another app; or
+copied, where there is none), and the code itself copies with a tap. The others **Join** with it.
+In the room, the host picks the goal, the island's size and shape and how many shrines, mines and lumber mills stand on
+it, or **Random**: the server then draws
+them as the match starts, to suit the number of players, and nobody sees them before. Everyone sees the choice. Under
+*Add a bot* the host can also seat bots the server plays, alone or alongside other players, each of a style:
 
 | Style | Name | Trades | Works against |
 |---|---|---|---|
@@ -34,8 +38,10 @@ bots the server plays, alone or alongside other players, each of a style:
 | Ruthless | `Ruthless Bot 1` | takes offers worth 150% of what it gives, only from players not ahead of it | everyone, leaders most |
 
 A bot takes its starting corners by how often their numbers come up. On its turns it rolls, sends a bandit where it
-hurts those it works against after a 7 (or just off its own tiles), sends its knights for items and against bandits
-on its tiles, attacks knights and blockades tiles of those it works against, builds a castle, a town, an outpost or a
+hurts those it works against after a 7 (or just off its own tiles), sends its knights for items, onto empty shrines,
+mines and lumber mills (where they stay) and against bandits on its tiles or on those structures, attacks knights and
+blockades tiles of those it works against, casts a ward where it fells bandits or rivals' knights, builds a castle, a
+town, an outpost or a
 road, offers a player one of what it has most for one of what it lacks (once a turn), trades 4:1 with the bank, keeps
 one knight (a ruthless bot two) and casts a spell when a castle or a scroll makes it free, or when it is worth its
 price. Its turns happen as soon as the turn passes to it; an offer it makes to a person waits up to 30 seconds for an
@@ -52,13 +58,16 @@ shows what it does and its price before buying it, and tapping an attack target 
 To try the client alone, run a debug server and a debug client (`cargo run` builds both that way) and tap **Practice
 alone (dev)** on the home screen. It starts a match against *Rival*, whom the server plays: it declines trades, and on
 its turns it only rolls and passes, so play comes straight back to you. The match starts on your first turn. Setup is
-already done, your first town is a castle, you have 12 of each resource and 2 knight tokens, and each side has two
-knights on the board, one of Rival's next to one of yours. Release builds have neither the button nor the server's
+already done, your first town is a castle, you have 12 of each resource and 2 knight tokens, each side has two
+knights on the board, one of Rival's next to one of yours, and the island has a shrine, a mine and a lumber mill or
+two. Release builds have
+neither the button nor the server's
 `/practice` endpoint.
 
-Server settings: `KC_ADDR` (listen address), `KC_DATA` (data file). Client build setting: `KC_SERVER_URL`, the server a
-fresh install talks to (default `http://127.0.0.1:8787`). On a desktop, `KC_DATA_DIR=<dir>` gives a window its own
-storage, so several local windows each take their own seat.
+Server settings: `KC_ADDR` (listen address), `KC_DATA` (data file). Client build settings: `KC_SERVER_URL`, the server a
+fresh install talks to (default `http://127.0.0.1:8787`), and `KC_WEB_URL`, where room links from native builds point
+(default `https://tycrockett.github.io/kings-cove/`; the web client links to its own address). On a desktop,
+`KC_DATA_DIR=<dir>` gives a window its own storage, so several local windows each take their own seat.
 
 ## Deploy
 
@@ -83,8 +92,17 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
 
 - **Board**: hex tiles of Wood, Stone, Food and Iron, numbered 2–12 without 7; the 6s and 8s never touch and no two
   neighbours share a number. A match is played to 5, 10, 15, 20, 30, 40 or 50 victory points (default 20) on an extra
-  small, small, medium, large or extra large island of 19, 37, 61, 91 or 127 tiles (default medium), both chosen by the
-  host in the room before the match starts.
+  small, small, medium, large or extra large island of 19, 37, 61, 91 or 127 tiles (default medium), shaped *classic*
+  (rings of tiles around a centre tile) or *wild* (a free-form coast of capes and bays, in one piece and without lakes),
+  all chosen by the host in the room before the match starts. *Random* settings draw an island for the players (extra
+  small or small for 2, small or medium for 3, medium to extra large for 4), a goal for the island (10; 10–15; 15–20;
+  20–30; 30–40 from extra small up), and any shape and number of each structure.
+- **Structures**: shrines, mines and lumber mills (each off, few or many: 1, 1, 2, 3, 4 or 2, 2, 4, 6, 8 on the five
+  sizes) stand on tiles for the whole match, all as far apart as they can be. One serves the player whose knight stands
+  on it, for as long as it stands there: a *shrine* is worth 2 VP; a *mine* pays 1 iron or 1 stone (drawn) and a
+  *lumber mill* 1 wood at the start of each of that player's turns. At the end of each round every empty structure
+  draws the nearest bandit not yet drawn one tile toward it; a bandit on a structure holds it, staying put until a
+  knight brings it down.
 - **Buildings** sit on tile corners and are upgraded in place: **Outpost → Town → Castle**. Every new building starts as
   an outpost on the owner's roads. Towns and castles never stand on neighbouring corners: an outpost next to a town or
   castle can't be upgraded, and starting towns keep the same distance.
@@ -113,10 +131,11 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   the next 2 rolls of its number; *Bounty* doubles it.
   *Lure* moves any bandit to any free tile. *Swap* trades two tiles' numbers for 2 rolls. *Windfall* pays 1 of each
   resource the caster's buildings touch on their next roll. *Luck* gives the next roll, whoever makes it, a 50% chance
-  of coming up as a chosen tile's number. Tile spells affect everyone on the tile, and a new one on a tile replaces the
-  old.
+  of coming up as a chosen tile's number. *Ward* fells every bandit and every other player's knight on its tile and the
+  six around it; for that round and the next, any bandit or other player's knight coming into them falls (the client
+  asks before you send a knight in). Tile spells affect everyone on the tile, and a new one on a tile replaces the old.
 - **Bandits** block production on their tile. The island always has at least one, from the start. At the end of each
-  round they wander to a free neighbouring tile; then, while there are fewer than
+  round they wander to a free neighbouring tile (unless a structure draws them); then, while there are fewer than
   `floor(towns and castles / 4) + floor(tiles / 40)` (so 0, 0, 1, 2 or 3 more on the five island sizes), another
   appears with a 50% chance on a free tile, more likely the farther it is from the other bandits. After a knight removes
   a bandit none appear for two full rounds; then one appears if the island has none. Rolling 7 produces nothing and lets
@@ -130,7 +149,7 @@ Building the web client locally needs `rustup target add wasm32-unknown-unknown`
   random resource; a *mana crystal* refills the finder's mana; a *spell scroll* one free cast of a random spell (no
   price, castle or mana needed); a *recruit* a knight token; a *relic* is carried by the knight for 1 VP and dropped
   where it falls; a *trap* fells the knight; a *bandit's hoard* gives 2 of each resource but brings a bandit next to it.
-- **Victory**: the first player to reach the match's goal (relics included) wins.
+- **Victory**: the first player to reach the match's goal (relics and shrines included) wins.
 
 Costs (all in `engine/src/balance.rs`):
 
@@ -147,6 +166,7 @@ Costs (all in `engine/src/balance.rs`):
 | Swap spell | 1 wood, 1 stone, 1 food, 3 iron |
 | Windfall spell | 1 wood, 1 food, 1 iron |
 | Luck spell | 1 wood, 3 iron |
+| Ward spell | 2 stone, 1 food, 3 iron |
 
 ## Playing on a phone
 

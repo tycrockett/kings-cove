@@ -396,6 +396,7 @@ pub fn spell_colors(spell: Spell) -> (u32, u32, u32) {
         Spell::Swap => (0xf0dcff, 0x7a3fb8, 0xc99cff),
         Spell::Windfall => (0xfff0c8, 0xa86b00, 0xffc94a),
         Spell::Luck => (0xd2f5dc, 0x1f7a44, 0x6fe09a),
+        Spell::Ward => (0xdfe6ff, 0x34479e, 0x8fa8ff),
     }
 }
 
@@ -508,6 +509,11 @@ pub fn spell_emblem(p: Painter, spell: Spell, (x, y): (f32, f32), r: f32, line: 
                     .stroke();
             }
             sparkle(p, at(0.42, -0.42), r * 0.26).fill_color(ink).fill()
+        }
+        Spell::Ward => {
+            let shield = [at(-0.5, -0.55), at(0.5, -0.55), at(0.5, 0.0), at(0.0, 0.62), at(-0.5, 0.0)];
+            let p = poly(p, &shield).fill_color(ink).fill();
+            segment(p.stroke_color(hex(0xffffff)).line_width(stroke * 0.8), at(0.0, -0.4), at(0.0, 0.38))
         }
     }
 }
@@ -671,6 +677,87 @@ pub fn relic(p: Painter, (x, y): (f32, f32), u: f32, line: f32) -> Painter {
     circle(p, at(0.0, -0.55), 0.16 * u).fill_color(hex(0xd8342c)).fill()
 }
 
+/// A little stone temple, its flame `flame`: a shrine. `u` is about a
+/// third of its height.
+pub fn shrine(p: Painter, (x, y): (f32, f32), u: f32, flame: u32, line: f32) -> Painter {
+    let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
+    let stone = vgrad(y - 1.1 * u, y + 0.9 * u, 0xfbf7ec, 0xc2b9a3);
+    let ink = hex(0x4f4a3e);
+    let mut p = ground_shadow(p, at(0.0, 0.95), 1.4 * u).stroke_color(ink).line_width(line);
+    // Two steps, two columns, a lintel and a pediment.
+    p = rrect(p, at(0.0, 0.78), 2.5 * u, 0.32 * u, 0.06 * u).fill_style(stone.clone()).fill().stroke();
+    p = rrect(p, at(0.0, 0.5), 2.1 * u, 0.28 * u, 0.05 * u).fill_style(stone.clone()).fill().stroke();
+    for dx in [-0.75, 0.75] {
+        p = rrect(p, at(dx, -0.02), 0.3 * u, 0.82 * u, 0.04 * u).fill_style(stone.clone()).fill().stroke();
+    }
+    p = rrect(p, at(0.0, -0.5), 2.2 * u, 0.22 * u, 0.04 * u).fill_style(stone.clone()).fill().stroke();
+    p = poly(p, &[at(-1.2, -0.62), at(1.2, -0.62), at(0.0, -1.15)]).fill_style(stone).fill().stroke();
+    // The flame in its bowl, between the columns.
+    p = p
+        .begin_path()
+        .move_to(x, y - 0.38 * u)
+        .bezier_curve_to(
+            point(px(x + 0.42 * u), px(y - 0.05 * u)),
+            point(px(x + 0.3 * u), px(y + 0.2 * u)),
+            point(px(x), px(y + 0.22 * u)),
+        )
+        .bezier_curve_to(
+            point(px(x - 0.3 * u), px(y + 0.2 * u)),
+            point(px(x - 0.42 * u), px(y - 0.05 * u)),
+            point(px(x), px(y - 0.38 * u)),
+        )
+        .close_path()
+        .fill_color(hex(flame))
+        .fill()
+        .stroke();
+    rrect(p, at(0.0, 0.3), 0.7 * u, 0.16 * u, 0.05 * u).fill_color(hex(0x6b6658)).fill().stroke()
+}
+
+/// A timbered mine mouth in a heap of rock, its pennant `mark`: a mine. `u`
+/// is about a third of its height.
+pub fn mine(p: Painter, (x, y): (f32, f32), u: f32, mark: u32, line: f32) -> Painter {
+    let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
+    let ink = hex(0x3d3a33);
+    let mut p = ground_shadow(p, at(0.0, 0.95), 1.4 * u).stroke_color(ink).line_width(line);
+    let heap = [at(-1.3, 0.85), at(-0.9, -0.2), at(-0.3, -0.75), at(0.4, -0.65), at(1.0, -0.1), at(1.3, 0.85)];
+    p = poly(p, &heap).fill_style(vgrad(y - 0.8 * u, y + 0.9 * u, 0xb3ada0, 0x6f6a5e)).fill().stroke();
+    // The dark mouth, framed in timber.
+    p = rrect(p, at(0.0, 0.35), 0.9 * u, 1.0 * u, 0.12 * u).fill_color(hex(0x1f1d19)).fill();
+    let timber = hex(0x8a5a2b);
+    for dx in [-0.48, 0.48] {
+        p = rrect(p, at(dx, 0.35), 0.18 * u, 1.05 * u, 0.03 * u).fill_color(timber).fill().stroke();
+    }
+    p = rrect(p, at(0.0, -0.18), 1.2 * u, 0.2 * u, 0.03 * u).fill_color(timber).fill().stroke();
+    // A pennant on the heap.
+    p = p.begin_path().move_to(x + 0.75 * u, y - 0.3 * u).line_to(x + 0.75 * u, y - 1.2 * u).stroke();
+    poly(p, &[at(0.75, -1.2), at(1.35, -1.0), at(0.75, -0.8)]).fill_color(hex(mark)).fill().stroke()
+}
+
+/// A plank sawmill by a stack of logs, its pennant `mark`: a lumber mill.
+/// `u` is about a third of its height.
+pub fn lumber_mill(p: Painter, (x, y): (f32, f32), u: f32, mark: u32, line: f32) -> Painter {
+    let at = |dx: f32, dy: f32| (x + dx * u, y + dy * u);
+    let ink = hex(0x3d3a33);
+    let mut p = ground_shadow(p, at(0.0, 0.95), 1.45 * u).stroke_color(ink).line_width(line);
+    // The shed and its roof.
+    p = rrect(p, at(-0.2, 0.3), 1.6 * u, 1.0 * u, 0.06 * u)
+        .fill_style(vgrad(y - 0.2 * u, y + 0.8 * u, 0xc98f55, 0x8f5a2b))
+        .fill()
+        .stroke();
+    p = poly(p, &[at(-1.15, -0.2), at(0.75, -0.2), at(-0.2, -1.0)]).fill_color(hex(0x6b4423)).fill().stroke();
+    p = rrect(p, at(-0.2, 0.45), 0.45 * u, 0.7 * u, 0.04 * u).fill_color(hex(0x3b2614)).fill();
+    // The saw blade at its side.
+    p = circle(p, at(0.85, 0.35), 0.42 * u).fill_color(hex(0xd9dde2)).fill().stroke();
+    p = circle(p, at(0.85, 0.35), 0.1 * u).fill_color(ink).fill();
+    // Logs stacked in front.
+    for (dx, dy) in [(-0.75, 0.8), (-0.25, 0.8), (-0.5, 0.55)] {
+        p = circle(p, at(dx, dy), 0.2 * u).fill_color(hex(0xe2b47a)).fill().stroke();
+    }
+    // A pennant on the roof.
+    p = p.begin_path().move_to(x - 0.2 * u, y - 1.0 * u).line_to(x - 0.2 * u, y - 1.5 * u).stroke();
+    poly(p, &[at(-0.2, -1.5), at(0.4, -1.3), at(-0.2, -1.1)]).fill_color(hex(mark)).fill().stroke()
+}
+
 /// A road from `a` to `b`, `w` wide.
 pub fn road(p: Painter, a: (f32, f32), b: (f32, f32), color: u32, w: f32) -> Painter {
     let seg = |p: Painter| p.begin_path().move_to(a.0, a.1).line_to(b.0, b.1);
@@ -714,6 +801,7 @@ pub enum Glyph {
     Trade,
     Robber,
     Chest,
+    Shrine,
 }
 
 /// `glyph` drawn to fit a `w` × `h` box at the origin, in `color`.
@@ -731,6 +819,7 @@ pub fn glyph(p: Painter, glyph: Glyph, color: u32, w: f32, h: f32) -> Painter {
         Glyph::Spellbook => spellbook(p, w, h),
         Glyph::Robber => bandit(p, (c.0, h * 0.5), h * 0.36, 1.2),
         Glyph::Chest => chest(p, (c.0, h * 0.55), h * 0.4, 1.2),
+        Glyph::Shrine => shrine(p, (c.0, h * 0.58), h * 0.27, palette::GOLD, 1.2),
         Glyph::Trade => {
             let arrow = |p: Painter, y: f32, dir: f32, color: u32| {
                 let (x0, x1) = if dir > 0.0 { (w * 0.2, w * 0.8) } else { (w * 0.8, w * 0.2) };

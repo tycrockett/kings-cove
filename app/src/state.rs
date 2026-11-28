@@ -4,14 +4,12 @@
 
 use std::time::Duration;
 
-use kings_cove_engine::{
-    Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, balance::MapSize, bot::Style,
-};
+use kings_cove_engine::{Action, Event, Game, Phase, PlayerId, RobberId, Spell, TileId, UnitId, UnitKind, bot::Style};
 use kings_cove_protocol::{
     ActionRequest, AddBotRequest, ConfigureRequest, CreateRequest, ErrorBody, JoinRequest, MatchView, ReactRequest,
     Reaction, SentReaction, Session, SessionRequest,
 };
-use nsh_core::{prelude::*, storage::Storage};
+use nsh_core::{prelude::*, share::ShareRequest, storage::Storage};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -47,6 +45,33 @@ pub const DEFAULT_SERVER: &str = match option_env!("KC_SERVER_URL") {
     Some(url) if !url.is_empty() => url,
     _ => "http://127.0.0.1:8787",
 };
+
+/// Where the web client is published: room links from the other builds
+/// open it. `KC_WEB_URL` when the app was built, else the GitHub Pages site.
+pub const DEFAULT_WEB_URL: &str = match option_env!("KC_WEB_URL") {
+    Some(url) if !url.is_empty() => url,
+    _ => "https://tycrockett.github.io/kings-cove/",
+};
+/// The query parameter of a room link that names its room.
+const ROOM_PARAM: &str = "room";
+
+/// A link into room `code`: the web client's own address (`page`, when it
+/// is a web page) or [`DEFAULT_WEB_URL`], asking for the room.
+pub fn room_link(page: Option<&str>, code: &str) -> String {
+    let page = page.filter(|p| p.starts_with("https://") || p.starts_with("http://")).unwrap_or(DEFAULT_WEB_URL);
+    let base = page.split(['?', '#']).next().unwrap_or(page);
+    format!("{base}?{ROOM_PARAM}={code}")
+}
+
+/// The room a link asks for, if any.
+pub fn room_in_link(url: &str) -> Option<String> {
+    let query = url.split('#').next()?.split_once('?')?.1;
+    query
+        .split('&')
+        .find_map(|kv| kv.split_once('=').filter(|(k, _)| *k == ROOM_PARAM))
+        .map(|(_, code)| code.trim().to_ascii_uppercase())
+        .filter(|code| !code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric()))
+}
 
 /// What a tap on the board does next.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -144,6 +169,10 @@ pub struct AppState {
     pub confirm_attack: Signal<Option<Action>>,
     /// The room code was just copied: the lobby says so for a moment.
     pub code_copied: Signal<bool>,
+    /// The room link was just copied, where there is no share sheet.
+    pub link_copied: Signal<bool>,
+    /// The room code typed on the home screen, or a room link's.
+    pub join_code: Signal<String>,
     last_seq: Stored<Option<u64>>,
     poll_generation: Stored<u64>,
     /// The interval ticking `clock`, with its period (ms).
@@ -191,6 +220,8 @@ impl AppState {
             spellbook_open: signal(false),
             confirm_attack: signal(None),
             code_copied: signal(false),
+            link_copied: signal(false),
+            join_code: signal(String::new()),
             last_seq: stored(None),
             poll_generation: stored(0),
             ticker: stored(None),
@@ -199,6 +230,15 @@ impl AppState {
         if session.is_some() {
             state.poll();
         }
+        // A room link (the web client's address) fills in the code to join.
+        let join_code = state.join_code;
+        state.root.run(|| {
+            spawn(async move {
+                if let Some(code) = app_url().await.as_deref().and_then(room_in_link) {
+                    join_code.set(code);
+                }
+            })
+        });
         state
     }
 
@@ -216,6 +256,31 @@ impl AppState {
         self.code_copied.set(true);
         let copied = self.code_copied;
         self.root.run(|| set_timeout(Duration::from_millis(1800), move || copied.set(false)));
+    }
+
+    /// Shares a link into room `code` through the system's share sheet (a
+    /// message, mail, another app); where there is none, or it fails, puts
+    /// the link on the clipboard.
+    pub fn share_room(&self, code: String) {
+        let this = *self;
+        self.root.run(|| {
+            spawn(async move {
+                let link = room_link(app_url().await.as_deref(), &code);
+                if share_available().await {
+                    let request = ShareRequest::new()
+                        .title("King's Cove")
+                        .text(format!("Join my King's Cove match! Room code: {code}"))
+                        .url(link.clone());
+                    if share(request).await.is_ok() {
+                        return;
+                    }
+                }
+                set_clipboard(link);
+                this.link_copied.set(true);
+                let copied = this.link_copied;
+                this.root.run(|| set_timeout(Duration::from_millis(1800), move || copied.set(false)));
+            })
+        });
     }
 
     pub fn show_error(&self, message: String) {
@@ -252,13 +317,14 @@ impl AppState {
         self.request(async move { post::<_, Session>(&base, "/practice", &body).await }, move |s| this.enter(s));
     }
 
-    /// The host changes the match's goal or island in the lobby.
-    pub fn configure(&self, victory_points: Option<u32>, map_size: Option<MapSize>) {
+    /// The host changes the match's settings in the lobby: those `edit` sets.
+    pub fn configure(&self, edit: impl FnOnce(&mut ConfigureRequest)) {
         let Some(s) = self.session.get_untracked() else {
             return;
         };
         let (this, base) = (*self, self.base());
-        let body = ConfigureRequest { code: s.code, token: s.token, victory_points, map_size };
+        let mut body = ConfigureRequest::new(s.code, s.token);
+        edit(&mut body);
         self.request(async move { post::<_, MatchView>(&base, "/configure", &body).await }, move |v| this.receive(v));
     }
 
@@ -642,6 +708,7 @@ impl AppState {
                                 Spell::Frost => "The frost melts",
                                 Spell::Bounty => "Bounty spent",
                                 Spell::Luck => "Luck spent",
+                                Spell::Ward => "The ward fades",
                                 _ => "The numbers swap back",
                             },
                             1100.0,
@@ -663,7 +730,8 @@ impl AppState {
                     let kind = AnimKind::Float { at: (0.0, 0.0), color, label };
                     anims.push(Anim { start: harvest + 400.0, dur: 1800.0, kind });
                 }
-                Event::RingPaid { player, tile, resource, amount } => {
+                Event::RingPaid { player, tile, resource, amount }
+                | Event::StructurePaid { player, tile, resource, amount, .. } => {
                     let color = palette::player(player);
                     let kind = AnimKind::Gain { tile, resource, amount, color, mine: player == seat, slot: 0, of: 1 };
                     anims.push(Anim { start: cursor, dur: board::GAIN_MS, kind });

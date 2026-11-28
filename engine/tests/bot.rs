@@ -1,6 +1,6 @@
 use kings_cove_engine::{
     Action, Board, Event, Game, Phase, PlayerId, Resources, Rng, TileId, Unit, UnitId, UnitKind, balance,
-    balance::MapSize,
+    balance::{Amount, MapShape, MapSize, Settings},
     bot::{self, Style, Turn},
 };
 
@@ -34,14 +34,22 @@ fn play_out(g: &mut Game, styles: &[Style], rng: &mut Rng, seen: &mut Vec<Event>
 }
 
 /// Played to 10: buildings alone can't make 20 on the smallest island with
-/// four players.
+/// four players. Every shape and number of each structure comes up.
 #[test]
-fn bots_of_every_style_play_a_match_to_a_winner_with_trades_knights_and_spells() {
+fn bots_of_every_style_play_a_match_to_a_winner_with_trades_knights_spells_and_structures() {
     let mut seen = Vec::new();
     for (seed, size) in MapSize::ALL.into_iter().enumerate() {
         for players in balance::MIN_PLAYERS..=balance::MAX_PLAYERS {
             let mut rng = Rng::new(seed as u64 * 10 + players as u64);
-            let mut g = Game::new(&names(players), 10, size, &mut rng);
+            let settings = Settings {
+                victory_points: 10,
+                map_size: size,
+                map_shape: MapShape::ALL[(seed + players) % MapShape::ALL.len()],
+                shrines: Amount::ALL[(seed + players) % Amount::ALL.len()],
+                mines: Amount::ALL[(seed + players + 1) % Amount::ALL.len()],
+                mills: Amount::ALL[(seed + players + 2) % Amount::ALL.len()],
+            };
+            let mut g = Game::new(&names(players), &settings, &mut rng);
             let styles: Vec<Style> = (0..players).map(|i| Style::ALL[(i + seed) % Style::ALL.len()]).collect();
             play_out(&mut g, &styles, &mut rng, &mut seen);
             let winner = g.winner().unwrap();
@@ -53,6 +61,8 @@ fn bots_of_every_style_play_a_match_to_a_winner_with_trades_knights_and_spells()
     assert!(count(|e| matches!(e, Event::Deployed { .. })) > 0, "bots deploy knights");
     assert!(count(|e| matches!(e, Event::UnitMoved { .. })) > 0, "bots move knights");
     assert!(count(|e| matches!(e, Event::SpellCast { .. })) > 0, "bots cast spells");
+    assert!(count(|e| matches!(e, Event::StructureTaken { .. })) > 0, "bots take structures");
+    assert!(count(|e| matches!(e, Event::StructurePaid { .. })) > 0, "mines and mills pay bots");
 }
 
 /// Player 0's turn, rolled, a knight of each player's side by side on the
@@ -89,7 +99,8 @@ fn a_ruthless_bot_attacks_a_knight_a_friendly_one_leaves_alone() {
 #[test]
 fn a_bot_takes_a_trade_its_style_finds_worth_it() {
     let mut rng = Rng::new(3);
-    let mut g = Game::new(&names(2), balance::DEFAULT_VICTORY_POINTS, MapSize::ExtraSmall, &mut rng);
+    let settings = Settings { map_size: MapSize::ExtraSmall, ..Settings::default() };
+    let mut g = Game::new(&names(2), &settings, &mut rng);
     while matches!(g.phase, Phase::Setup { .. }) {
         let current = g.current;
         bot::play_turn(&mut g, current, Style::Balanced, &mut rng).unwrap();

@@ -6,12 +6,12 @@
 //! width and one y unit is half its side. Corners land on exact integers, so
 //! shared corners deduplicate without floating point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    balance,
+    balance::{self, MapShape, MapSize},
     rng::Rng,
     types::{EdgeId, Resource, TileId, VertexId},
 };
@@ -62,12 +62,12 @@ impl Board {
     /// The topology of a hexagonal board of `radius` rings, every tile Wood 2;
     /// [`Board::generate`] deals resources and numbers onto it.
     pub fn hexagon(radius: i32) -> Board {
-        let mut coords = Vec::new();
-        for q in -radius..=radius {
-            for r in (-radius).max(-q - radius)..=radius.min(-q + radius) {
-                coords.push((q, r));
-            }
-        }
+        Board::from_coords(hex_area(radius))
+    }
+
+    /// The topology of a board of tiles at the axial `coords`, every tile
+    /// Wood 2. Tile ids follow the order of `coords`.
+    pub fn from_coords(coords: Vec<(i32, i32)>) -> Board {
         // Stable vertex ids: sorted by lattice position (top to bottom, left to right).
         let mut vertex_keys: BTreeMap<(i32, i32), u16> = BTreeMap::new();
         for &(q, r) in &coords {
@@ -146,13 +146,16 @@ impl Board {
         Board { tiles, vertices, edges }
     }
 
-    /// A playable board of `radius` rings: the resources of
+    /// A playable island of `size` and `shape`: the resources of
     /// [`balance::TILE_RESOURCES`] and the numbers of
     /// [`balance::PRODUCTION_NUMBERS`] (repeated for a bigger board) dealt
     /// onto it so no two hot numbers touch and no tile shares its number
     /// with a neighbour.
-    pub fn generate(radius: i32, rng: &mut Rng) -> Board {
-        let mut board = Board::hexagon(radius);
+    pub fn generate(size: MapSize, shape: MapShape, rng: &mut Rng) -> Board {
+        let mut board = match shape {
+            MapShape::Classic => Board::hexagon(size.radius()),
+            MapShape::Wild => Board::from_coords(wild_coords(size.tiles(), rng)),
+        };
         let n = board.tiles.len();
         let pool: Vec<Resource> =
             balance::TILE_RESOURCES.iter().flat_map(|&(r, count)| std::iter::repeat_n(r, count)).collect();
@@ -273,4 +276,154 @@ fn deal<T: Copy>(set: &[T], n: usize, rng: &mut Rng) -> Vec<T> {
     rng.shuffle(&mut extra);
     out.extend_from_slice(&extra[..n % set.len()]);
     out
+}
+
+/// The axial coordinates within `radius` rings of the centre.
+fn hex_area(radius: i32) -> Vec<(i32, i32)> {
+    let mut coords = Vec::new();
+    for q in -radius..=radius {
+        for r in (-radius).max(-q - radius)..=radius.min(-q + radius) {
+            coords.push((q, r));
+        }
+    }
+    coords
+}
+
+fn hex_distance((q, r): (i32, i32)) -> i32 {
+    (q.abs() + r.abs() + (q + r).abs()) / 2
+}
+
+fn neighbors_of((q, r): (i32, i32)) -> impl Iterator<Item = (i32, i32)> {
+    AXIAL_DIRECTIONS.iter().map(move |&(dq, dr)| (q + dq, r + dr))
+}
+
+/// Twelve directions, as unit vectors: the axis a wild island stretches along.
+const STRETCH_AXES: [(f64, f64); 12] = [
+    (1.0, 0.0),
+    (0.866_025_4, 0.5),
+    (0.5, 0.866_025_4),
+    (0.0, 1.0),
+    (-0.5, 0.866_025_4),
+    (-0.866_025_4, 0.5),
+    (-1.0, 0.0),
+    (-0.866_025_4, -0.5),
+    (-0.5, -0.866_025_4),
+    (0.0, -1.0),
+    (0.5, -0.866_025_4),
+    (0.866_025_4, -0.5),
+];
+/// How many tiles' worth of distance the landscape's noise outweighs: how
+/// deep the bays and how long the capes of a wild island.
+const WILD_ROUGHNESS: f64 = 3.0;
+
+/// The axial coordinates of a wild island of `n` tiles, sorted, around the
+/// centre. It is grown from the centre over a smoothed random landscape
+/// that falls away with the distance from it, stretched along a random axis,
+/// so its coast has capes and bays. Water it encloses is filled in and the
+/// lowest coast taken away for it, keeping the island in one piece.
+fn wild_coords(n: usize, rng: &mut Rng) -> Vec<(i32, i32)> {
+    // Room for an island stretched to twice a hexagon's width.
+    let reach = {
+        let mut r = 0;
+        while 3 * r * r + 3 * r + 1 < n as i32 {
+            r += 1;
+        }
+        2 * r + 2
+    };
+    let area: BTreeSet<(i32, i32)> = hex_area(reach).into_iter().collect();
+
+    // A landscape of random heights, smoothed twice, rescaled to 0..1.
+    let mut height: BTreeMap<(i32, i32), f64> = area.iter().map(|&c| (c, rng.below(1000) as f64)).collect();
+    for _ in 0..2 {
+        height = area
+            .iter()
+            .map(|&c| {
+                let around: Vec<f64> =
+                    std::iter::once(c).chain(neighbors_of(c)).filter_map(|n| height.get(&n).copied()).collect();
+                (c, around.iter().sum::<f64>() / around.len() as f64)
+            })
+            .collect();
+    }
+    let lo = height.values().copied().fold(f64::MAX, f64::min);
+    let hi = height.values().copied().fold(f64::MIN, f64::max);
+    let (axis_x, axis_y) = STRETCH_AXES[rng.below(STRETCH_AXES.len())];
+    let stretch = 1.0 + rng.below(9) as f64 / 10.0;
+    let ground: BTreeMap<(i32, i32), f64> = area
+        .iter()
+        .map(|&(q, r)| {
+            // In tile widths: neighbours are 1 apart.
+            let (x, y) = (q as f64 + r as f64 / 2.0, r as f64 * 0.866_025_4);
+            let (along, across) = (x * axis_x + y * axis_y, x * axis_y - y * axis_x);
+            let distance = ((along / stretch).powi(2) + across.powi(2)).sqrt();
+            let noise = if hi > lo { (height[&(q, r)] - lo) / (hi - lo) } else { 0.0 };
+            ((q, r), WILD_ROUGHNESS * noise - distance)
+        })
+        .collect();
+    let higher = |a: &(i32, i32), b: &(i32, i32)| ground[a].total_cmp(&ground[b]).then(b.cmp(a));
+
+    // Grow from the centre, always onto the highest ground along the coast.
+    let mut island: BTreeSet<(i32, i32)> = BTreeSet::from([(0, 0)]);
+    let mut coast: BTreeSet<(i32, i32)> = neighbors_of((0, 0)).collect();
+    while island.len() < n {
+        let next = *coast.iter().max_by(|a, b| higher(a, b)).expect("the area outgrows any island");
+        coast.remove(&next);
+        island.insert(next);
+        coast.extend(neighbors_of(next).filter(|c| area.contains(c) && !island.contains(c)));
+    }
+
+    // Fill in enclosed water, then give up as many tiles of the lowest
+    // coast, never one that would split the island.
+    let open_sea = |island: &BTreeSet<(i32, i32)>| {
+        let start = (reach + 1, 0);
+        let mut sea = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(c) = queue.pop_front() {
+            for nb in neighbors_of(c) {
+                if hex_distance(nb) <= reach + 1 && !island.contains(&nb) && sea.insert(nb) {
+                    queue.push_back(nb);
+                }
+            }
+        }
+        sea
+    };
+    let sea = open_sea(&island);
+    let lakes: Vec<(i32, i32)> = area.iter().copied().filter(|c| !island.contains(c) && !sea.contains(c)).collect();
+    island.extend(lakes);
+    while island.len() > n {
+        let sea = open_sea(&island);
+        let mut shore: Vec<(i32, i32)> =
+            island.iter().copied().filter(|&c| neighbors_of(c).any(|nb| sea.contains(&nb))).collect();
+        shore.sort_by(|a, b| higher(a, b));
+        let cut = shore
+            .into_iter()
+            .find(|c| {
+                let mut rest = island.clone();
+                rest.remove(c);
+                connected(&rest)
+            })
+            .expect("a coast tile whose loss keeps the island whole");
+        island.remove(&cut);
+    }
+
+    // Centre it on the world origin.
+    let (sx, sy) = island.iter().fold((0, 0), |(sx, sy), &(q, r)| (sx + 2 * q + r, sy + 3 * r));
+    let count = island.len() as f64;
+    let dr = (-(sy as f64) / count / 3.0).round() as i32;
+    let dq = ((-(sx as f64) / count - dr as f64) / 2.0).round() as i32;
+    island.into_iter().map(|(q, r)| (q + dq, r + dr)).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+/// The tiles at `cells` form one piece.
+fn connected(cells: &BTreeSet<(i32, i32)>) -> bool {
+    let Some(&start) = cells.first() else { return true };
+    let mut seen = BTreeSet::from([start]);
+    let mut queue = VecDeque::from([start]);
+    while let Some(c) = queue.pop_front() {
+        for nb in neighbors_of(c) {
+            if cells.contains(&nb) && seen.insert(nb) {
+                queue.push_back(nb);
+            }
+        }
+    }
+    seen.len() == cells.len()
 }

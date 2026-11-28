@@ -2,7 +2,9 @@
 //! engine's `balance` and outcomes from its own rules, so the text cannot
 //! drift from the game.
 
-use kings_cove_engine::{BuildingKind, Game, ItemKind, PlayerId, Resources, Spell, Target, UnitId, balance};
+use kings_cove_engine::{
+    BuildingKind, Game, ItemKind, PlayerId, Resources, Spell, StructureKind, Target, TileId, UnitId, balance,
+};
 
 use crate::art::Glyph;
 
@@ -142,6 +144,7 @@ pub fn spell_title(spell: Spell) -> &'static str {
         Spell::Swap => "Swap",
         Spell::Windfall => "Windfall",
         Spell::Luck => "Luck",
+        Spell::Ward => "Ward",
     }
 }
 
@@ -153,6 +156,7 @@ pub fn spell_summary(spell: Spell) -> &'static str {
         Spell::Swap => "Two tiles trade their numbers.",
         Spell::Windfall => "Your next roll brings a bit of everything.",
         Spell::Luck => "Tilts the next roll toward a tile.",
+        Spell::Ward => "A deadly circle no bandit or rival knight survives.",
     }
 }
 
@@ -185,8 +189,12 @@ pub fn spell_rules(spell: Spell) -> Vec<String> {
                 num * 100 / den
             )
         }
+        Spell::Ward => format!(
+            "Cast on any tile. Every bandit and every other player's knight on it or on a tile next to it falls at once. For {} rounds (this one and the next) any bandit or other player's knight that comes into it falls. Your own knights are safe there.",
+            balance::WARD_ROUNDS
+        ),
     }];
-    if spell.lasting().is_some() {
+    if spell.lasting().is_some() || spell == Spell::Ward {
         lines.push("A spell cast on a tile that already holds one replaces it.".to_owned());
     }
     lines
@@ -218,7 +226,7 @@ pub fn charges_word(n: u32) -> String {
 /// What the board asks while a spell is being aimed.
 pub fn spell_hint(spell: Spell, picked_first: bool) -> String {
     match (spell, picked_first) {
-        (Spell::Frost | Spell::Bounty | Spell::Luck, _) => format!("Tap a tile for {}", spell.name()),
+        (Spell::Frost | Spell::Bounty | Spell::Luck | Spell::Ward, _) => format!("Tap a tile for {}", spell.name()),
         (Spell::Lure, false) => "Tap the bandit to lure".to_owned(),
         (Spell::Lure, true) => "Tap a free tile to lure it to".to_owned(),
         (Spell::Swap, false) => "Tap the first tile to swap".to_owned(),
@@ -301,20 +309,21 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                 match goal {
                     Some(goal) => format!("The first player to {goal} victory points wins."),
                     None => format!(
-                        "The first player to the match's goal wins: {} victory points, chosen by the host in the lobby along with the island's size: {}.",
+                        "The first player to the match's goal wins: {} victory points, chosen by the host in the lobby along with the island's size ({}), its shape (classic rings of tiles, or a wild coast of capes and bays) and how many shrines, mines and lumber mills stand on it. Or the host leaves it all to chance: random settings suit the number of players and stay secret until the match starts.",
                         goals_text(),
                         balance::MapSize::ALL
                             .iter()
-                            .map(|s| format!("{} ({} tiles)", s.label().to_lowercase(), s.tiles()))
+                            .map(|s| format!("{} {} tiles", s.label().to_lowercase(), s.tiles()))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
                 },
                 format!(
-                    "Towns are worth {} VP and castles {}; outposts score nothing. A relic counts {} VP for as long as one of your knights carries it.",
+                    "Towns are worth {} VP and castles {}; outposts score nothing. A relic counts {} VP for as long as one of your knights carries it, and a shrine {} VP for as long as one of your knights stands on it.",
                     balance::TOWN_POINTS,
                     balance::CITY_POINTS,
-                    balance::RELIC_POINTS
+                    balance::RELIC_POINTS,
+                    balance::SHRINE_POINTS
                 ),
             ],
         ),
@@ -400,7 +409,7 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                     "Rolling {} produces nothing. The roller moves a bandit to any free tile, or places a new one when the island has none. It then stays put through the next full round.",
                     balance::ROBBER_ROLL
                 ),
-                "At the end of every round each bandit wanders to a free neighbouring tile.".to_owned(),
+                "At the end of every round each bandit wanders to a free neighbouring tile, unless a structure draws it (see Shrines, mines and mills).".to_owned(),
                 format!(
                     "While there are fewer bandits than one per {} towns and castles, plus one per {} tiles of island, another may appear at the end of a round ({}% chance), as far from the others as it can.",
                     balance::SETTLEMENTS_PER_ROBBER,
@@ -412,6 +421,27 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
                     balance::ROBBER_RESPAWN_ROUNDS
                 ),
             ],
+        ),
+        page(
+            "Shrines, mines and mills",
+            Some(Glyph::Shrine),
+            {
+                let mut lines = vec![
+                    "When the host asks for them, shrines, mines and lumber mills stand on the island for the whole match, as far apart as they can be.".to_owned(),
+                    "A structure serves the player whose knight stands on it, for as long as it stands there: moving on or falling ends it.".to_owned(),
+                ];
+                lines.extend(StructureKind::ALL.into_iter().map(|kind| format!("• {}: {}", structure_title(kind), structure_rule(kind))));
+                lines.push(format!(
+                    "At the end of every round each empty structure draws the bandit nearest to it, one bandit a structure: it moves {} toward it instead of wandering.",
+                    if balance::STRUCTURE_BANDIT_STEPS == 1 {
+                        "a tile".to_owned()
+                    } else {
+                        format!("{} tiles", balance::STRUCTURE_BANDIT_STEPS)
+                    }
+                ));
+                lines.push("A bandit that reaches a structure holds it: it stays put, and no knight gains from it until one brings the bandit down (falling with it).".to_owned());
+                lines
+            },
         ),
         page(
             "Trading",
@@ -437,17 +467,72 @@ pub fn rulebook(goal: Option<u32>) -> Vec<Section> {
     pages
 }
 
+/// A structure's name, capitalised.
+pub fn structure_title(kind: StructureKind) -> &'static str {
+    match kind {
+        StructureKind::Shrine => "Shrine",
+        StructureKind::Mine => "Mine",
+        StructureKind::LumberMill => "Lumber mill",
+    }
+}
+
+/// What sending `player`'s knight onto `tile` does when a rival's ward holds
+/// it: a title, a sentence and the ward's caster.
+pub fn ward_outcome(g: &Game, names: &[String], player: PlayerId, tile: TileId) -> Option<(String, String, PlayerId)> {
+    let caster = g.wards_over(tile).find(|e| e.caster != player)?.caster;
+    let name = names.get(caster.index()).cloned().unwrap_or_else(|| format!("Player {}", caster.0 + 1));
+    Some(("Into a ward".to_owned(), format!("{name}'s ward fells your knight the moment it gets there."), caster))
+}
+
+/// What a structure gives the player whose knight stands on it, in a few words.
+pub fn structure_gain(kind: StructureKind) -> String {
+    match kind {
+        StructureKind::Shrine => format!("+{} VP", balance::SHRINE_POINTS),
+        StructureKind::Mine => format!("{} iron or stone each turn", balance::MINE_YIELD),
+        StructureKind::LumberMill => format!("{} wood each turn", balance::MILL_YIELD),
+    }
+}
+
+/// What a structure does, in a sentence.
+pub fn structure_rule(kind: StructureKind) -> String {
+    match kind {
+        StructureKind::Shrine => {
+            format!("worth {} VP to the player whose knight stands on it.", balance::SHRINE_POINTS)
+        }
+        StructureKind::Mine => format!(
+            "pays the player whose knight stands on it {} iron or stone (drawn each time) at the start of each of their turns.",
+            balance::MINE_YIELD
+        ),
+        StructureKind::LumberMill => format!(
+            "pays the player whose knight stands on it {} wood at the start of each of their turns.",
+            balance::MILL_YIELD
+        ),
+    }
+}
+
 /// What an attack will do, before it is made: a title and a sentence.
 pub fn attack_outcome(g: &Game, names: &[String], unit: UnitId, target: Target) -> Option<(String, String)> {
     let name = |p: PlayerId| names.get(p.index()).cloned().unwrap_or_else(|| format!("Player {}", p.0 + 1));
-    g.unit(unit)?;
-    Some(match target {
-        Target::Robber(_) => {
-            ("Knight vs bandit".to_owned(), "The bandit is removed, and your knight falls with it.".to_owned())
+    let attacker = g.unit(unit)?;
+    let mut outcome = match target {
+        Target::Robber(r) => {
+            let mut text = "The bandit is removed, and your knight falls with it.".to_owned();
+            if let Some(kind) = g.robber(r).and_then(|r| g.structure_at(r.tile)) {
+                text += &format!(" The {} stands empty again.", kind.name());
+            }
+            ("Knight vs bandit".to_owned(), text)
         }
         Target::Unit(u) => {
             let defender = g.unit(u)?;
-            ("Knight vs knight".to_owned(), format!("Both knights fall: yours and {}'s.", name(defender.owner)))
+            let mut text = format!("Both knights fall: yours and {}'s.", name(defender.owner));
+            if let Some(kind) = g.structure_at(defender.tile) {
+                text += &format!(" {} loses the {} ({}).", name(defender.owner), kind.name(), structure_gain(kind));
+            }
+            ("Knight vs knight".to_owned(), text)
         }
-    })
+    };
+    if let Some(kind) = g.structure_at(attacker.tile) {
+        outcome.1 += &format!(" You lose your {} ({}).", kind.name(), structure_gain(kind));
+    }
+    Some(outcome)
 }

@@ -15,7 +15,11 @@
 //!
 //! Failures answer a 4xx status with an [`ErrorBody`].
 
-use kings_cove_engine::{Action, Game, PlayerId, balance::MapSize, bot::Style};
+use kings_cove_engine::{
+    Action, Game, PlayerId,
+    balance::{Amount, MapShape, MapSize},
+    bot::Style,
+};
 use serde::{Deserialize, Serialize};
 
 /// How long `/poll` holds a request open with no change, in seconds.
@@ -23,15 +27,15 @@ pub const POLL_SECONDS: u64 = 20;
 /// How many recent reactions a [`MatchView`] carries.
 pub const RECENT_REACTIONS: usize = 8;
 
-/// A match starts with the default goal and island; the host picks others
-/// in the lobby with `/configure`.
+/// A match starts with the default settings; the host picks others in the
+/// lobby with `/configure`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateRequest {
     pub name: String,
 }
 
-/// The host changes the match's goal or island before starting it; an
-/// absent field stays as it is.
+/// The host changes the match's settings before starting it; an absent
+/// field stays as it is.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfigureRequest {
     pub code: String,
@@ -41,6 +45,35 @@ pub struct ConfigureRequest {
     pub victory_points: Option<u32>,
     #[serde(default)]
     pub map_size: Option<MapSize>,
+    #[serde(default)]
+    pub map_shape: Option<MapShape>,
+    #[serde(default)]
+    pub shrines: Option<Amount>,
+    #[serde(default)]
+    pub mines: Option<Amount>,
+    #[serde(default)]
+    pub mills: Option<Amount>,
+    /// The server draws every setting when the match starts, to suit its
+    /// players, and nobody knows them before.
+    #[serde(default)]
+    pub random: Option<bool>,
+}
+
+impl ConfigureRequest {
+    /// A request of `code`'s seat `token` that changes nothing yet.
+    pub fn new(code: String, token: String) -> Self {
+        ConfigureRequest {
+            code,
+            token,
+            victory_points: None,
+            map_size: None,
+            map_shape: None,
+            shrines: None,
+            mines: None,
+            mills: None,
+            random: None,
+        }
+    }
 }
 
 /// The host seats a bot of `style` before starting the match.
@@ -142,12 +175,25 @@ pub struct MatchView {
     /// The host ended the match; it takes no more actions.
     #[serde(default)]
     pub ended: bool,
-    /// Victory points that win the match, known from the lobby on.
+    /// Victory points that win the match, known from the lobby on (drawn
+    /// at the start when `random`).
     #[serde(default)]
     pub victory_points: u32,
     /// The island's size, known from the lobby on.
     #[serde(default)]
     pub map_size: MapSize,
+    #[serde(default)]
+    pub map_shape: MapShape,
+    #[serde(default)]
+    pub shrines: Amount,
+    #[serde(default)]
+    pub mines: Amount,
+    #[serde(default)]
+    pub mills: Amount,
+    /// The settings are drawn when the match starts; until then the ones
+    /// above mean nothing.
+    #[serde(default)]
+    pub random: bool,
     /// The latest reactions, oldest first, at most [`RECENT_REACTIONS`].
     #[serde(default)]
     pub reactions: Vec<SentReaction>,

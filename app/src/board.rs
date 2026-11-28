@@ -5,7 +5,7 @@ use std::f32::consts::{PI, TAU};
 
 use kings_cove_engine::{
     Action, Blockade, BuildingKind, EdgeId, Enchantment, Event, Game, ItemKind, Phase, PlayerId, Resource, RobberId,
-    SetupPlacing, Spell, Target, TileId, UnitId, VertexId,
+    SetupPlacing, Spell, StructureKind, Target, TileId, UnitId, VertexId, balance,
 };
 use nsh_core::{
     TouchPhase,
@@ -62,6 +62,12 @@ pub fn edge_mid(g: &Game, e: EdgeId) -> (f32, f32) {
 pub fn piece_pos(g: &Game, t: TileId) -> (f32, f32) {
     let (x, y) = tile_pos(g, t);
     (x, y + 0.44 * S)
+}
+
+/// Where a structure stands on its tile: above the number token.
+pub fn structure_pos(g: &Game, t: TileId) -> (f32, f32) {
+    let (x, y) = tile_pos(g, t);
+    (x, y - 0.6 * S)
 }
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -232,11 +238,16 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
             .filter(|&v| g.can_upgrade(seat, v, BuildingKind::City).is_ok())
             .map(|v| opt(Spot::Vertex(v), Action::UpgradeCity(v)))
             .collect(),
+        // A rival's ward would fell the knight: asked first, in red.
         Mode::Deploy(kind) => g
             .deploy_tiles(seat)
             .into_iter()
             .filter(|&t| g.can_deploy(seat, kind, t).is_ok())
-            .map(|t| opt(Spot::Tile(t), Action::Deploy { kind, tile: t }))
+            .map(|t| Opt {
+                spot: Spot::Tile(t),
+                then: Then::Send(Action::Deploy { kind, tile: t }),
+                hostile: g.warded_against(t, seat),
+            })
             .collect(),
         Mode::Cast(spell, first) => {
             let tiles = || g.board.tile_ids();
@@ -258,8 +269,11 @@ pub fn options(g: &Game, seat: PlayerId, mode: Mode) -> Vec<Opt> {
             }
         }
         Mode::Unit(unit) => {
-            let moves =
-                g.move_targets(seat, unit).into_iter().map(|t| opt(Spot::Tile(t), Action::MoveUnit { unit, to: t }));
+            let moves = g.move_targets(seat, unit).into_iter().map(|t| Opt {
+                spot: Spot::Tile(t),
+                then: Then::Send(Action::MoveUnit { unit, to: t }),
+                hostile: g.warded_against(t, seat),
+            });
             let attacks = g.attack_targets(seat, unit).into_iter().filter_map(|target| {
                 let spot = match target {
                     Target::Robber(r) => Spot::Tile(g.robber(r)?.tile),
@@ -511,6 +525,32 @@ pub fn anims_for(g: &Game, event: &Event, start: f64) -> Vec<Anim> {
                 a(1300.0, AnimKind::Float { at, color: color(player), label: label.to_owned() }),
             ]
         }
+        Event::StructureTaken { player, tile, kind, .. } => {
+            let at = structure_pos(g, tile);
+            let mut v = vec![a(700.0, AnimKind::Pop { at, color: color(player) })];
+            let later = |dur, kind| Anim { start: start + 200.0, dur, kind };
+            v.push(match kind {
+                StructureKind::Shrine => later(1500.0, AnimKind::Points { at, amount: balance::SHRINE_POINTS }),
+                _ => {
+                    let label = format!("{} taken!", crate::rules::structure_title(kind));
+                    later(1300.0, AnimKind::Float { at, color: color(player), label })
+                }
+            });
+            v
+        }
+        Event::StructureSeized { tile, kind, .. } => {
+            let label = format!("{} seized!", crate::rules::structure_title(kind));
+            vec![a(1300.0, AnimKind::Float { at: structure_pos(g, tile), color: 0x2b2b2e, label })]
+        }
+        Event::WardStruck { caster, tile, .. } => {
+            let at = piece_pos(g, tile);
+            let (_, deep, _) = art::spell_colors(Spell::Ward);
+            vec![
+                a(650.0, AnimKind::Burst { at }),
+                a(1300.0, AnimKind::Float { at, color: deep, label: "Warded!".to_owned() }),
+                a(700.0, AnimKind::Pop { at, color: color(caster) }),
+            ]
+        }
         _ => Vec::new(),
     }
 }
@@ -680,6 +720,42 @@ pub fn draw_pieces(s: &Scene) -> Painter {
     }
     if let Some(Inspect::Tile(t)) = s.inspect {
         p = poly(p, &outline(t)).stroke_color(hex(0xffffff)).line_width(3.0 * px1).stroke();
+    }
+
+    // Each ward's reach: its tile and those around, ringed in its colour.
+    for e in g.enchantments.iter().filter(|e| e.spell == Spell::Ward) {
+        let (_, deep, glow) = art::spell_colors(Spell::Ward);
+        for t in std::iter::once(e.tile).chain(g.board.tile(e.tile).neighbors.iter().copied()) {
+            let ring = hex_points(tile_pos(g, t), S * 0.93);
+            p = poly(p, &ring).fill_color(hexa(glow, 0.12)).fill();
+            p = poly(p, &ring).stroke_color(hexa(deep, 0.75)).line_width(2.5 * px1).stroke();
+        }
+    }
+
+    // Structures: a held one rings its tile in the holder's colour and
+    // flies it; a bandit's flies dark. Never smaller on screen than a
+    // badge, and then raised to keep clear of the number token.
+    let u = (0.17 * S).max(6.0 * px1);
+    for s in &g.structures {
+        let holder = g.structure_holder(s.tile);
+        if let Some(owner) = holder {
+            p = poly(p, &hex_points(tile_pos(g, s.tile), S * 0.9))
+                .stroke_color(hex(palette::player(owner)))
+                .line_width(4.0 * px1)
+                .stroke();
+        }
+        let mark = match holder {
+            Some(owner) => palette::player(owner),
+            None if g.robber_at(s.tile).is_some() => 0x2b2b2e,
+            None => palette::GOLD,
+        };
+        let (x, y) = structure_pos(g, s.tile);
+        let at = (x, y.min(tile_pos(g, s.tile).1 - 0.4 * S - u));
+        p = match s.kind {
+            StructureKind::Shrine => art::shrine(p, at, u, mark, px1),
+            StructureKind::Mine => art::mine(p, at, u, mark, px1),
+            StructureKind::LumberMill => art::lumber_mill(p, at, u, mark, px1),
+        };
     }
 
     // Roads.
@@ -1038,6 +1114,10 @@ fn enchanted_tile(mut p: Painter, g: &Game, e: &Enchantment, tile: TileId, now: 
                 .fill();
             }
         }
+        Spell::Ward => {
+            p = poly(p, &outline).fill_color(hexa(glow, 0.22 + 0.14 * pulse)).fill();
+            p = twinkles(p, c, t, seed, 0xffffff);
+        }
         Spell::Lure | Spell::Windfall | Spell::Luck => {}
     }
     p = p.restore();
@@ -1146,12 +1226,16 @@ fn spell_seal(p: Painter, g: &Game, e: &Enchantment, tile: TileId, px1: f32) -> 
     let c = tile_pos(g, tile);
     let (_, deep, _) = art::spell_colors(e.spell);
     // The seal reaches 11 points below its centre; 2 more keep it apart.
+    // A structure on the tile pushes it aside.
     let lift = (0.62 * S).max(0.38 * S + 13.0 * px1);
-    let mut p = p.save().translate(c.0, c.1 - lift).scale(px1, px1);
+    let aside = if g.structure_at(tile).is_some() { 0.45 * S } else { 0.0 };
+    let mut p = p.save().translate(c.0 + aside, c.1 - lift).scale(px1, px1);
     p = art::shadow(p, 0.45, 6.0, 2.0);
     p = art::spell_emblem(p, e.spell, (0.0, 0.0), 11.0, 1.5);
     p = art::no_shadow(p);
-    p = count_badge(p, (10.0, 4.0), e.charges, deep, 1.0);
+    // Rolls left, or a ward's rounds.
+    let left = e.last_round.map_or(e.charges, |last| (last + 1).saturating_sub(g.round));
+    p = count_badge(p, (10.0, 4.0), left, deep, 1.0);
     p.restore()
 }
 

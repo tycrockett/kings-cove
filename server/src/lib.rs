@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 
 use kings_cove_engine::{
     Action, Event, Game, PlayerId, Rng, balance,
-    balance::MapSize,
+    balance::{Amount, MapShape, MapSize, Settings},
     bot::{self, Style},
 };
-use kings_cove_protocol::{MatchView, RECENT_REACTIONS, Reaction, SentReaction, Session};
+use kings_cove_protocol::{ConfigureRequest, MatchView, RECENT_REACTIONS, Reaction, SentReaction, Session};
 use serde::{Deserialize, Serialize};
 
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -61,6 +61,17 @@ pub struct Match {
     /// The size of the island its game is played on.
     #[serde(default)]
     pub map_size: MapSize,
+    #[serde(default)]
+    pub map_shape: MapShape,
+    #[serde(default)]
+    pub shrines: Amount,
+    #[serde(default)]
+    pub mines: Amount,
+    #[serde(default)]
+    pub mills: Amount,
+    /// Its settings are drawn as it starts, to suit its players.
+    #[serde(default)]
+    pub random: bool,
     /// The latest reactions, oldest first: not saved.
     #[serde(skip)]
     reactions: Vec<SentReaction>,
@@ -104,6 +115,11 @@ impl Match {
             ended: self.ended,
             victory_points: self.victory_points,
             map_size: self.map_size,
+            map_shape: self.map_shape,
+            shrines: self.shrines,
+            mines: self.mines,
+            mills: self.mills,
+            random: self.random,
             reactions: self.reactions.clone(),
         }
     }
@@ -223,6 +239,11 @@ impl Store {
                 ended: false,
                 victory_points: balance::DEFAULT_VICTORY_POINTS,
                 map_size: MapSize::default(),
+                map_shape: MapShape::default(),
+                shrines: Amount::Off,
+                mines: Amount::Off,
+                mills: Amount::Off,
+                random: false,
                 reactions: Vec::new(),
                 reaction_seq: 0,
                 bot_offer: None,
@@ -302,7 +323,22 @@ impl Store {
             return Err(format!("At least {} players are needed", balance::MIN_PLAYERS));
         }
         let names: Vec<String> = m.seats.iter().map(|s| s.name.clone()).collect();
-        m.game = Some(Game::new(&names, m.victory_points, m.map_size, &mut m.rng));
+        let settings = if m.random {
+            Settings::random(names.len(), &mut m.rng)
+        } else {
+            Settings {
+                victory_points: m.victory_points,
+                map_size: m.map_size,
+                map_shape: m.map_shape,
+                shrines: m.shrines,
+                mines: m.mines,
+                mills: m.mills,
+            }
+        };
+        let Settings { victory_points, map_size, map_shape, shrines, mines, mills } = settings;
+        (m.victory_points, m.map_size, m.map_shape, m.shrines, m.mines, m.mills) =
+            (victory_points, map_size, map_shape, shrines, mines, mills);
+        m.game = Some(Game::new(&names, &settings, &mut m.rng));
         m.version += 1;
         Ok(m.view(seat))
     }
@@ -320,16 +356,10 @@ impl Store {
         Ok(m.view(seat))
     }
 
-    /// The host changes the goal and island size before the game starts; absent fields stay.
-    pub fn configure(
-        &mut self,
-        code: &str,
-        token: &str,
-        victory_points: Option<u32>,
-        map_size: Option<MapSize>,
-    ) -> Result<MatchView, String> {
-        let m = self.matches.get_mut(code).ok_or("No match with that code")?;
-        let seat = m.seat_of(token)?;
+    /// The host changes the settings before the game starts; absent fields stay.
+    pub fn configure(&mut self, change: &ConfigureRequest) -> Result<MatchView, String> {
+        let m = self.matches.get_mut(&change.code).ok_or("No match with that code")?;
+        let seat = m.seat_of(&change.token)?;
         if seat != PlayerId(0) {
             return Err("Only the host can change the settings".to_owned());
         }
@@ -339,14 +369,29 @@ impl Store {
         if m.game.is_some() {
             return Err("The match has already started".to_owned());
         }
-        if let Some(goal) = victory_points {
+        if let Some(goal) = change.victory_points {
             if !balance::VICTORY_POINT_GOALS.contains(&goal) {
                 return Err(format!("Play to one of {:?} victory points", balance::VICTORY_POINT_GOALS));
             }
             m.victory_points = goal;
         }
-        if let Some(size) = map_size {
+        if let Some(size) = change.map_size {
             m.map_size = size;
+        }
+        if let Some(shape) = change.map_shape {
+            m.map_shape = shape;
+        }
+        if let Some(shrines) = change.shrines {
+            m.shrines = shrines;
+        }
+        if let Some(mines) = change.mines {
+            m.mines = mines;
+        }
+        if let Some(mills) = change.mills {
+            m.mills = mills;
+        }
+        if let Some(random) = change.random {
+            m.random = random;
         }
         m.version += 1;
         Ok(m.view(seat))
@@ -485,28 +530,72 @@ mod tests {
         assert!(store.join(&host.code, "Cy").is_err());
     }
 
+    /// A configure request of `token`'s seat in `code` changing what `edit` sets.
+    fn change(code: &str, token: &str, edit: impl FnOnce(&mut ConfigureRequest)) -> ConfigureRequest {
+        let mut request = ConfigureRequest::new(code.to_owned(), token.to_owned());
+        edit(&mut request);
+        request
+    }
+
     #[test]
     fn only_the_host_configures_an_unstarted_match() {
         let mut store = Store::new(5);
         let host = store.create("Ada").unwrap();
         let guest = store.join(&host.code, "Bo").unwrap();
-        assert!(store.configure(&host.code, &guest.token, Some(30), None).is_err(), "only the host");
-        assert!(store.configure(&host.code, &host.token, Some(12), None).is_err(), "only the offered goals");
+        let goal = |token: &str, goal: u32| change(&host.code, token, |c| c.victory_points = Some(goal));
+        assert!(store.configure(&goal(&guest.token, 30)).is_err(), "only the host");
+        assert!(store.configure(&goal(&host.token, 12)).is_err(), "only the offered goals");
         let before = store.version(&host.code).unwrap();
-        let view = store.configure(&host.code, &host.token, Some(30), None).unwrap();
+        let view = store.configure(&goal(&host.token, 30)).unwrap();
         assert_eq!((view.victory_points, view.map_size), (30, MapSize::default()), "absent fields stay");
         assert_eq!(store.version(&host.code).unwrap(), before + 1, "waiting polls wake");
-        let view = store.configure(&host.code, &host.token, None, Some(MapSize::Large)).unwrap();
+        let view = store
+            .configure(&change(&host.code, &host.token, |c| {
+                c.map_size = Some(MapSize::Large);
+                c.map_shape = Some(MapShape::Wild);
+                c.shrines = Some(Amount::Many);
+                c.mines = Some(Amount::Few);
+            }))
+            .unwrap();
         assert_eq!((view.victory_points, view.map_size), (30, MapSize::Large));
         let seen = store.view(&host.code, &guest.token).unwrap();
-        assert_eq!((seen.victory_points, seen.map_size), (30, MapSize::Large));
+        assert_eq!(
+            (seen.victory_points, seen.map_size, seen.map_shape, seen.shrines, seen.mines, seen.mills, seen.random),
+            (30, MapSize::Large, MapShape::Wild, Amount::Many, Amount::Few, Amount::Off, false)
+        );
         let started = store.start(&host.code, &host.token).unwrap().game.unwrap();
         assert_eq!((started.victory_points, started.board.tiles.len()), (30, MapSize::Large.tiles()));
-        assert!(store.configure(&host.code, &host.token, Some(10), None).is_err(), "not after the start");
+        let tiles = MapSize::Large.tiles();
+        assert_eq!(started.structures.len(), Amount::Many.count(tiles) + Amount::Few.count(tiles));
+        assert!(store.configure(&goal(&host.token, 10)).is_err(), "not after the start");
 
         let other = store.create("Cy").unwrap();
         store.end(&other.code, &other.token).unwrap();
-        assert!(store.configure(&other.code, &other.token, Some(10), None).is_err(), "not once ended");
+        let late = change(&other.code, &other.token, |c| c.victory_points = Some(10));
+        assert!(store.configure(&late).is_err(), "not once ended");
+    }
+
+    #[test]
+    fn random_settings_are_drawn_at_the_start_to_suit_the_players() {
+        for players in balance::MIN_PLAYERS..=balance::MAX_PLAYERS {
+            for seed in 0..12 {
+                let mut store = Store::new(seed);
+                let host = store.create("Ada").unwrap();
+                for _ in 1..players {
+                    store.add_bot(&host.code, &host.token, Style::Balanced).unwrap();
+                }
+                store.configure(&change(&host.code, &host.token, |c| c.random = Some(true))).unwrap();
+                let view = store.start(&host.code, &host.token).unwrap();
+                let game = view.game.as_ref().unwrap();
+                assert!(view.random);
+                assert!(MapSize::for_players(players).contains(&view.map_size), "{players} players");
+                assert!(view.map_size.fitting_goals().contains(&view.victory_points));
+                assert_eq!((game.victory_points, game.board.tiles.len()), (view.victory_points, view.map_size.tiles()));
+                let tiles = game.board.tiles.len();
+                let structures = view.shrines.count(tiles) + view.mines.count(tiles) + view.mills.count(tiles);
+                assert_eq!(game.structures.len(), structures);
+            }
+        }
     }
 
     #[test]
@@ -541,7 +630,16 @@ mod tests {
     fn store_round_trips_through_json() {
         let mut store = Store::new(1);
         let host = store.create("Ada").unwrap();
-        store.configure(&host.code, &host.token, Some(30), Some(MapSize::Small)).unwrap();
+        store
+            .configure(&change(&host.code, &host.token, |c| {
+                c.victory_points = Some(30);
+                c.map_size = Some(MapSize::Small);
+                c.map_shape = Some(MapShape::Wild);
+                c.shrines = Some(Amount::Few);
+                c.mines = Some(Amount::Many);
+                c.mills = Some(Amount::Few);
+            }))
+            .unwrap();
         store.join(&host.code, "Bo").unwrap();
         store.start(&host.code, &host.token).unwrap();
         let saved = serde_json::to_string(&store).unwrap();

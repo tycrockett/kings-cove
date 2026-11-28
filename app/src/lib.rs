@@ -9,7 +9,12 @@ mod palette;
 mod rules;
 mod state;
 
-use kings_cove_engine::{PlayerId, balance, balance::MapSize, bot::Style};
+use kings_cove_engine::{
+    PlayerId, balance,
+    balance::{Amount, MapShape, MapSize},
+    bot::Style,
+};
+use kings_cove_protocol::MatchView;
 use nsh_core::prelude::*;
 
 use crate::{
@@ -109,7 +114,7 @@ fn choice<T: Copy + PartialEq + 'static>(
 
 fn home(app: AppState) -> impl IntoElement {
     let name = app.name;
-    let code = signal(String::new());
+    let code = app.join_code;
     let show_server = signal(false);
     let can_create = move || !name.get().trim().is_empty();
     let can_join = move || can_create() && code.get().trim().len() >= 4;
@@ -202,145 +207,212 @@ fn connecting(app: AppState) -> impl IntoElement {
         .child(pill("Leave", 0x8a8070, 0xffffff, true, move || app.leave()))
 }
 
+/// What the lobby says about the match it waits to start: who may join and
+/// what it is played with, or that nobody knows yet.
+fn match_summary(v: &MatchView) -> String {
+    if v.random {
+        return "Share it: 2–4 players · random settings, revealed when the match starts".to_owned();
+    }
+    let tiles = v.map_size.tiles();
+    let structures: String =
+        [(v.shrines, "shrine", "shrines"), (v.mines, "mine", "mines"), (v.mills, "lumber mill", "lumber mills")]
+            .iter()
+            .filter_map(|&(amount, one, many)| match amount.count(tiles) {
+                0 => None,
+                1 => Some(format!(" · 1 {one}")),
+                n => Some(format!(" · {n} {many}")),
+            })
+            .collect();
+    format!(
+        "Share it: 2–4 players · first to {} victory points · {} {} island ({tiles} tiles){structures}",
+        v.victory_points,
+        v.map_size.label().to_lowercase(),
+        v.map_shape.label().to_lowercase(),
+    )
+}
+
 fn lobby(app: AppState) -> impl IntoElement {
     view()
         .flex_1()
-        .p_safe_area()
-        .px(px(20.0))
-        .justify_center()
-        .items_center()
-        .child(dynamic(move || {
-            let view_ = app.view.get()?;
-            let host = view_.seat == PlayerId(0);
-            let count = view_.players.len();
-            let players: Vec<View> = view_
-                .players
-                .iter()
-                .enumerate()
-                .map(|(i, n)| {
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.0))
-                        .child(
-                            view()
-                                .size(px(16.0))
-                                .rounded(px(8.0))
-                                .bg(hex(palette::player(PlayerId(i as u8))))
-                                .border_1()
-                                .border_color(hex(palette::INK)),
-                        )
-                        .child(bold(
-                            format!(
-                                "{n}{}{}",
-                                if i == 0 { " · host" } else { "" },
-                                if i == view_.seat.index() { " (you)" } else { "" }
-                            ),
-                            15.0,
-                            palette::INK,
-                        ))
-                })
-                .collect();
-            let can_start = host && count >= balance::MIN_PLAYERS && !app.busy.get();
-            Some(
-                card()
-                    .w_full()
-                    .max_w(px(hud::MENU_WIDTH))
-                    .items_stretch()
-                    .child(label("Room code", 12.0, palette::MUTED).self_center())
-                    .child({
-                        let code = view_.code.clone();
+        .child(scroll().flex_1().child(view().p_safe_area().px(px(20.0)).py(px(28.0)).items_center().child(dynamic(
+            move || {
+                let view_ = app.view.get()?;
+                let host = view_.seat == PlayerId(0);
+                let count = view_.players.len();
+                let players: Vec<View> = view_
+                    .players
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| {
                         view()
-                            .self_center()
                             .flex_row()
                             .items_center()
                             .gap(px(10.0))
-                            .active(|s| s.opacity(0.7))
-                            .on_press(move || app.copy_code(code.clone()))
-                            .child(bold(view_.code.clone(), 40.0, palette::INK))
-                            .child(dynamic(move || {
-                                let copied = app.code_copied.get();
-                                Some(
-                                    view()
-                                        .px(px(10.0))
-                                        .py(px(5.0))
-                                        .rounded(px(12.0))
-                                        .bg(hex(if copied { palette::GO } else { palette::INK }))
-                                        .child(bold(if copied { "Copied ✓" } else { "Copy" }, 12.0, 0xffffff)),
-                                )
-                            }))
-                    })
-                    .child(
-                        label(
-                            format!(
-                                "Share it: 2–4 players · first to {} victory points · {} island ({} tiles)",
-                                view_.victory_points,
-                                view_.map_size.label().to_lowercase(),
-                                view_.map_size.tiles()
-                            ),
-                            12.0,
-                            palette::MUTED,
-                        )
-                        .self_center(),
-                    )
-                    .child(host.then(|| {
-                        let idle = !app.busy.get();
-                        view()
-                            .gap(px(10.0))
-                            .child(choice(
-                                "Victory points",
-                                &balance::VICTORY_POINT_GOALS,
-                                view_.victory_points,
-                                idle,
-                                |goal| goal.to_string(),
-                                move |goal| app.configure(Some(goal), None),
+                            .child(
+                                view()
+                                    .size(px(16.0))
+                                    .rounded(px(8.0))
+                                    .bg(hex(palette::player(PlayerId(i as u8))))
+                                    .border_1()
+                                    .border_color(hex(palette::INK)),
+                            )
+                            .child(bold(
+                                format!(
+                                    "{n}{}{}",
+                                    if i == 0 { " · host" } else { "" },
+                                    if i == view_.seat.index() { " (you)" } else { "" }
+                                ),
+                                15.0,
+                                palette::INK,
                             ))
-                            .child(choice(
-                                "Island size",
-                                &MapSize::ALL,
-                                view_.map_size,
+                    })
+                    .collect();
+                let can_start = host && count >= balance::MIN_PLAYERS && !app.busy.get();
+                Some(
+                    card()
+                        .w_full()
+                        .max_w(px(hud::MENU_WIDTH))
+                        .items_stretch()
+                        .child(label("Room code", 12.0, palette::MUTED).self_center())
+                        .child({
+                            let code = view_.code.clone();
+                            view()
+                                .self_center()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .active(|s| s.opacity(0.7))
+                                .on_press(move || app.copy_code(code.clone()))
+                                .child(bold(view_.code.clone(), 40.0, palette::INK))
+                                .child(dynamic(move || {
+                                    let copied = app.code_copied.get();
+                                    Some(
+                                        view()
+                                            .px(px(10.0))
+                                            .py(px(5.0))
+                                            .rounded(px(12.0))
+                                            .bg(hex(if copied { palette::GO } else { palette::INK }))
+                                            .child(bold(if copied { "Copied ✓" } else { "Copy" }, 12.0, 0xffffff)),
+                                    )
+                                }))
+                        })
+                        .child({
+                            let code = view_.code.clone();
+                            dynamic(move || {
+                                let (copied, code) = (app.link_copied.get(), code.clone());
+                                let text = if copied { "Link copied ✓" } else { "Share room link" };
+                                Some(pill(
+                                    text,
+                                    if copied { palette::GO } else { 0x2f6db5 },
+                                    0xffffff,
+                                    true,
+                                    move || app.share_room(code.clone()),
+                                ))
+                            })
+                        })
+                        .child(label(match_summary(&view_), 12.0, palette::MUTED).self_center())
+                        .child(host.then(|| {
+                            let idle = !app.busy.get();
+                            let settings = view().gap(px(10.0)).child(choice(
+                                "Settings",
+                                &[false, true],
+                                view_.random,
                                 idle,
-                                |size| size.short_label().to_owned(),
-                                move |size| app.configure(None, Some(size)),
-                            ))
-                    }))
-                    .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
-                    .child(players)
-                    .child((host && count < balance::MAX_PLAYERS).then(|| {
-                        // A press adds one: no chip stays picked.
-                        let styles = Style::ALL.map(Some);
-                        choice(
-                            "Add a bot",
-                            &styles,
-                            None,
-                            !app.busy.get(),
-                            |style| style.map_or_else(String::new, |s| s.label().to_owned()),
-                            move |style| app.add_bot(style.unwrap_or_default()),
-                        )
-                    }))
-                    .child(if host {
-                        pill(
-                            if count < balance::MIN_PLAYERS {
-                                "Waiting for players…".to_owned()
-                            } else {
-                                format!("Start with {count} players")
-                            },
-                            palette::GO,
-                            0xffffff,
-                            can_start,
-                            move || app.start_match(),
-                        )
-                    } else {
-                        pill("Waiting for the host to start", 0x8a8070, 0xffffff, false, || {})
-                    })
-                    .child(if host {
-                        // Leaving would strand the guests: the host cancels for everyone.
-                        pill("Cancel match", palette::DANGER, 0xffffff, !app.busy.get(), move || app.end_match())
-                    } else {
-                        pill("Leave", 0x8a8070, 0xffffff, true, move || app.leave())
-                    })
-                    .child(dynamic(move || app.toast.get().map(|t| label(t, 12.0, palette::DANGER)))),
-            )
-        }))
+                                |random| (if random { "Random" } else { "Custom" }).to_owned(),
+                                move |random| app.configure(|c| c.random = Some(random)),
+                            ));
+                            // Random settings stay hidden from everyone, the host too.
+                            if view_.random {
+                                return settings;
+                            }
+                            settings
+                                .child(choice(
+                                    "Victory points",
+                                    &balance::VICTORY_POINT_GOALS,
+                                    view_.victory_points,
+                                    idle,
+                                    |goal| goal.to_string(),
+                                    move |goal| app.configure(|c| c.victory_points = Some(goal)),
+                                ))
+                                .child(choice(
+                                    "Island size",
+                                    &MapSize::ALL,
+                                    view_.map_size,
+                                    idle,
+                                    |size| size.short_label().to_owned(),
+                                    move |size| app.configure(|c| c.map_size = Some(size)),
+                                ))
+                                .child(choice(
+                                    "Island shape",
+                                    &MapShape::ALL,
+                                    view_.map_shape,
+                                    idle,
+                                    |shape| shape.label().to_owned(),
+                                    move |shape| app.configure(|c| c.map_shape = Some(shape)),
+                                ))
+                                .child(choice(
+                                    "Shrines",
+                                    &Amount::ALL,
+                                    view_.shrines,
+                                    idle,
+                                    |amount| amount.label().to_owned(),
+                                    move |amount| app.configure(|c| c.shrines = Some(amount)),
+                                ))
+                                .child(choice(
+                                    "Mines",
+                                    &Amount::ALL,
+                                    view_.mines,
+                                    idle,
+                                    |amount| amount.label().to_owned(),
+                                    move |amount| app.configure(|c| c.mines = Some(amount)),
+                                ))
+                                .child(choice(
+                                    "Lumber mills",
+                                    &Amount::ALL,
+                                    view_.mills,
+                                    idle,
+                                    |amount| amount.label().to_owned(),
+                                    move |amount| app.configure(|c| c.mills = Some(amount)),
+                                ))
+                        }))
+                        .child(view().h(px(1.0)).bg(hexa(palette::INK, 0.12)))
+                        .child(players)
+                        .child((host && count < balance::MAX_PLAYERS).then(|| {
+                            // A press adds one: no chip stays picked.
+                            let styles = Style::ALL.map(Some);
+                            choice(
+                                "Add a bot",
+                                &styles,
+                                None,
+                                !app.busy.get(),
+                                |style| style.map_or_else(String::new, |s| s.label().to_owned()),
+                                move |style| app.add_bot(style.unwrap_or_default()),
+                            )
+                        }))
+                        .child(if host {
+                            pill(
+                                if count < balance::MIN_PLAYERS {
+                                    "Waiting for players…".to_owned()
+                                } else {
+                                    format!("Start with {count} players")
+                                },
+                                palette::GO,
+                                0xffffff,
+                                can_start,
+                                move || app.start_match(),
+                            )
+                        } else {
+                            pill("Waiting for the host to start", 0x8a8070, 0xffffff, false, || {})
+                        })
+                        .child(if host {
+                            // Leaving would strand the guests: the host cancels for everyone.
+                            pill("Cancel match", palette::DANGER, 0xffffff, !app.busy.get(), move || app.end_match())
+                        } else {
+                            pill("Leave", 0x8a8070, 0xffffff, true, move || app.leave())
+                        })
+                        .child(dynamic(move || app.toast.get().map(|t| label(t, 12.0, palette::DANGER)))),
+                )
+            },
+        ))))
         .child(hud::ended(app))
 }

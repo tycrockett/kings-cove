@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    balance,
+    balance::{self, Settings},
     board::Board,
     rng::Rng,
     types::{EdgeId, PlayerId, Resource, Resources, RobberId, TileId, UnitId, VertexId},
@@ -109,10 +109,14 @@ pub enum Spell {
     Windfall,
     /// The next roll, whoever makes it, comes up as a tile's number half the time.
     Luck,
+    /// For its rounds, fells every bandit and every other player's knight on
+    /// its tile and the tiles around, and keeps other knights out.
+    Ward,
 }
 
 impl Spell {
-    pub const ALL: [Spell; 6] = [Spell::Frost, Spell::Bounty, Spell::Lure, Spell::Swap, Spell::Windfall, Spell::Luck];
+    pub const ALL: [Spell; 7] =
+        [Spell::Frost, Spell::Bounty, Spell::Lure, Spell::Swap, Spell::Windfall, Spell::Luck, Spell::Ward];
 
     pub fn cost(self) -> Resources {
         match self {
@@ -122,6 +126,7 @@ impl Spell {
             Spell::Swap => balance::SWAP_COST,
             Spell::Windfall => balance::WINDFALL_COST,
             Spell::Luck => balance::LUCK_COST,
+            Spell::Ward => balance::WARD_COST,
         }
     }
 
@@ -129,7 +134,7 @@ impl Spell {
     /// goes; for Swap the two that trade numbers.
     pub fn targets(self) -> usize {
         match self {
-            Spell::Frost | Spell::Bounty | Spell::Luck => 1,
+            Spell::Frost | Spell::Bounty | Spell::Luck | Spell::Ward => 1,
             Spell::Lure | Spell::Swap => 2,
             Spell::Windfall => 0,
         }
@@ -149,7 +154,7 @@ impl Spell {
     pub fn lasting(self) -> Option<u32> {
         match self {
             Spell::Frost | Spell::Bounty | Spell::Swap => Some(balance::SPELL_CHARGES),
-            Spell::Lure | Spell::Windfall | Spell::Luck => None,
+            Spell::Lure | Spell::Windfall | Spell::Luck | Spell::Ward => None,
         }
     }
 
@@ -161,12 +166,13 @@ impl Spell {
             Spell::Swap => "swap",
             Spell::Windfall => "windfall",
             Spell::Luck => "luck",
+            Spell::Ward => "ward",
         }
     }
 }
 
 /// A spell lingering on a tile (and, for Swap, its `partner`) for its
-/// remaining `charges`.
+/// remaining `charges`, or (a ward) until the end of round `last_round`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Enchantment {
     pub tile: TileId,
@@ -175,12 +181,47 @@ pub struct Enchantment {
     pub charges: u32,
     #[serde(default)]
     pub partner: Option<TileId>,
+    #[serde(default)]
+    pub last_round: Option<u32>,
 }
 
 impl Enchantment {
     pub fn touches(&self, tile: TileId) -> bool {
         self.tile == tile || self.partner == Some(tile)
     }
+}
+
+/// A building of the island's own, standing on a tile for the whole match:
+/// it serves whoever's knight stands on it, and draws a bandit while empty.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructureKind {
+    /// Worth [`balance::SHRINE_POINTS`] to its holder.
+    Shrine,
+    /// Pays its holder [`balance::MINE_YIELD`] of iron or stone, drawn, at
+    /// the start of each of their turns.
+    Mine,
+    /// Pays its holder [`balance::MILL_YIELD`] wood at the start of each of
+    /// their turns.
+    LumberMill,
+}
+
+impl StructureKind {
+    pub const ALL: [StructureKind; 3] = [StructureKind::Shrine, StructureKind::Mine, StructureKind::LumberMill];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            StructureKind::Shrine => "shrine",
+            StructureKind::Mine => "mine",
+            StructureKind::LumberMill => "lumber mill",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Structure {
+    pub kind: StructureKind,
+    pub tile: TileId,
 }
 
 /// Something that turns up on the island at the end of a round, for a
@@ -254,7 +295,9 @@ pub struct Item {
 pub enum Blockade {
     Holding,
     /// Packing up: it holds until the end of round `free_after`.
-    Lifting { free_after: u32 },
+    Lifting {
+        free_after: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -663,6 +706,35 @@ pub enum Event {
         robber: RobberId,
         tile: TileId,
     },
+    /// A knight stepped onto an empty structure: it serves the knight's
+    /// owner while the knight stands there.
+    StructureTaken {
+        player: PlayerId,
+        unit: UnitId,
+        tile: TileId,
+        kind: StructureKind,
+    },
+    /// A bandit came to a structure: it holds it until a knight brings it down.
+    StructureSeized {
+        robber: RobberId,
+        tile: TileId,
+        kind: StructureKind,
+    },
+    /// A mine or a lumber mill paid the player whose knight stands on it.
+    StructurePaid {
+        player: PlayerId,
+        tile: TileId,
+        kind: StructureKind,
+        resource: Resource,
+        amount: u32,
+    },
+    /// A ward felled a bandit (`knight` `None`) or the knight of `knight`
+    /// on `tile`.
+    WardStruck {
+        caster: PlayerId,
+        tile: TileId,
+        knight: Option<PlayerId>,
+    },
     TradeProposed {
         from: PlayerId,
         to: Option<PlayerId>,
@@ -732,6 +804,9 @@ pub struct Game {
     /// Items lying on tiles, at most one per tile.
     #[serde(default)]
     pub items: Vec<Item>,
+    /// Structures standing on tiles for good, at most one a tile.
+    #[serde(default)]
+    pub structures: Vec<Structure>,
     /// Victory points that win this match.
     #[serde(default = "classic_goal")]
     pub victory_points: u32,
@@ -743,14 +818,25 @@ pub struct Game {
 }
 
 impl Game {
-    /// A new game for `names` played to `victory_points`, on a generated
-    /// board of `map_size`.
-    pub fn new(names: &[String], victory_points: u32, map_size: balance::MapSize, rng: &mut Rng) -> Game {
-        let mut game = Game::with_board(names, Board::generate(map_size.radius(), rng));
-        game.victory_points = victory_points;
-        // The island always has a robber, from the first turn on.
-        let tiles: Vec<TileId> = game.board.tile_ids().collect();
-        if let Some(tile) = rng.pick(&tiles) {
+    /// A new game for `names` with `settings`: a generated island of their
+    /// size and shape, their structures spread over it, played to their goal.
+    pub fn new(names: &[String], settings: &Settings, rng: &mut Rng) -> Game {
+        let board = Board::generate(settings.map_size, settings.map_shape, rng);
+        let mut game = Game::with_board(names, board);
+        game.victory_points = settings.victory_points;
+        let tiles = game.board.tiles.len();
+        let kinds: Vec<StructureKind> = [
+            (StructureKind::Shrine, settings.shrines),
+            (StructureKind::Mine, settings.mines),
+            (StructureKind::LumberMill, settings.mills),
+        ]
+        .iter()
+        .flat_map(|&(kind, amount)| std::iter::repeat_n(kind, amount.count(tiles)))
+        .collect();
+        game.raise_structures(kinds, rng);
+        // The island always has a robber, from the first turn on, off the structures.
+        let free: Vec<TileId> = game.board.tile_ids().filter(|&t| game.structure_at(t).is_none()).collect();
+        if let Some(tile) = rng.pick(&free) {
             let id = RobberId(game.next_id());
             game.robbers.push(Robber { id, tile, frozen_through_round: 0 });
         }
@@ -788,6 +874,7 @@ impl Game {
             enchantments: Vec::new(),
             luck: None,
             items: Vec::new(),
+            structures: Vec::new(),
             victory_points: classic_goal(),
             trade: None,
             next_piece_id: 1,
@@ -885,12 +972,46 @@ impl Game {
         }
     }
 
-    /// Buildings, and the relics the player's knights carry.
+    /// The kind of structure standing on `tile`.
+    pub fn structure_at(&self, tile: TileId) -> Option<StructureKind> {
+        self.structures.iter().find(|s| s.tile == tile).map(|s| s.kind)
+    }
+
+    /// The player whose knight stands on the structure at `tile`.
+    pub fn structure_holder(&self, tile: TileId) -> Option<PlayerId> {
+        self.structure_at(tile)?;
+        self.unit_at(tile).map(|u| u.owner)
+    }
+
+    pub fn is_shrine(&self, tile: TileId) -> bool {
+        self.structure_at(tile) == Some(StructureKind::Shrine)
+    }
+
+    /// The wards over `tile`: cast on it or on a tile next to it.
+    pub fn wards_over(&self, tile: TileId) -> impl Iterator<Item = &Enchantment> + '_ {
+        self.enchantments
+            .iter()
+            .filter(move |e| e.spell == Spell::Ward && (e.tile == tile || self.board.are_adjacent(e.tile, tile)))
+    }
+
+    /// Another player's ward holds `tile`: a knight of `player`'s going
+    /// there falls.
+    pub fn warded_against(&self, tile: TileId, player: PlayerId) -> bool {
+        self.wards_over(tile).any(|e| e.caster != player)
+    }
+
+    /// Buildings, the relics the player's knights carry and the shrines
+    /// they stand on.
     pub fn points(&self, player: PlayerId) -> u32 {
         let buildings: u32 =
             self.buildings.iter().flatten().filter(|b| b.owner == player).map(|b| b.kind.points()).sum();
         let relics: u32 = self.units.iter().filter(|u| u.owner == player).map(|u| u.relics).sum();
-        buildings + relics * balance::RELIC_POINTS
+        let shrines = self
+            .structures
+            .iter()
+            .filter(|s| s.kind == StructureKind::Shrine && self.structure_holder(s.tile) == Some(player))
+            .count() as u32;
+        buildings + relics * balance::RELIC_POINTS + shrines * balance::SHRINE_POINTS
     }
 
     /// Towns and cities of every player.
@@ -1257,7 +1378,9 @@ impl Game {
             self.players[player.index()].mana_ready_round = self.round + balance::MANA_RECHARGE_ROUNDS;
         }
         self.log(Event::SpellCast { player, spell, tiles: tiles.to_vec() });
-        if let Some(charges) = spell.lasting() {
+        let charges = spell.lasting();
+        let last_round = (spell == Spell::Ward).then(|| self.round + balance::WARD_ROUNDS - 1);
+        if charges.is_some() || last_round.is_some() {
             for &t in tiles {
                 while let Some(i) = self.enchantments.iter().position(|e| e.touches(t)) {
                     self.lift(i);
@@ -1270,7 +1393,11 @@ impl Game {
                 self.board.tiles[a.index()].number = nb;
                 self.board.tiles[b.index()].number = na;
             }
-            self.enchantments.push(Enchantment { tile: tiles[0], spell, caster: player, charges, partner });
+            let charges = charges.unwrap_or(0);
+            self.enchantments.push(Enchantment { tile: tiles[0], spell, caster: player, charges, partner, last_round });
+        }
+        if spell == Spell::Ward {
+            self.ward_strike(tiles[0], player);
         }
         match spell {
             Spell::Lure => {
@@ -1348,6 +1475,9 @@ impl Game {
                 let id = UnitId(self.next_id());
                 self.units.push(Unit { id, owner: player, kind, tile, ready: false, relics: 0, blockade: None });
                 self.log(Event::Deployed { player, unit: id, kind, tile });
+                if !self.ward_fells_knight(player, id, tile) {
+                    self.arrived(player, id, tile);
+                }
                 Ok(())
             }
             Action::MoveUnit { unit, to } => {
@@ -1358,7 +1488,11 @@ impl Game {
                 u.ready = false;
                 let kind = u.kind;
                 self.log(Event::UnitMoved { player, unit, kind, from, to });
+                if self.ward_fells_knight(player, unit, to) {
+                    return Ok(());
+                }
                 self.pick_up(player, unit, to, rng);
+                self.arrived(player, unit, to);
                 Ok(())
             }
             Action::Attack { unit, target } => self.attack(player, unit, target),
@@ -1538,7 +1672,7 @@ impl Game {
             self.top_up_items(0, rng);
             self.phase = Phase::Playing;
             self.round = 1;
-            self.begin_turn(PlayerId(0));
+            self.begin_turn(PlayerId(0), rng);
         }
         Ok(())
     }
@@ -1643,9 +1777,10 @@ impl Game {
         }
     }
 
-    /// The spell on `tile` used a charge; on its last it fades.
+    /// The spell on `tile` used a charge; on its last it fades. Wards count
+    /// rounds, not rolls.
     fn spend_charge(&mut self, tile: TileId) {
-        let found = self.enchantments.iter().position(|e| e.touches(tile));
+        let found = self.enchantments.iter().position(|e| e.touches(tile) && e.last_round.is_none());
         let Some(i) = found else { return };
         self.enchantments[i].charges -= 1;
         if self.enchantments[i].charges == 0 {
@@ -1743,8 +1878,14 @@ impl Game {
         match kind {
             ItemKind::Trap => self.fall(unit),
             ItemKind::Hoard => {
-                let near: Vec<TileId> =
-                    self.board.tile(tile).neighbors.iter().copied().filter(|&t| self.robber_may_enter(t)).collect();
+                let near: Vec<TileId> = self
+                    .board
+                    .tile(tile)
+                    .neighbors
+                    .iter()
+                    .copied()
+                    .filter(|&t| self.robber_may_enter(t) && self.wards_over(t).next().is_none())
+                    .collect();
                 if let Some(at) = rng.pick(&near) {
                     let robber = RobberId(self.next_id());
                     self.robbers.push(Robber { id: robber, tile: at, frozen_through_round: 0 });
@@ -1757,12 +1898,65 @@ impl Game {
         }
     }
 
-    /// A robber came to `tile`: it takes any item there.
+    /// A robber came to `tile`: a ward there fells it; else it takes any
+    /// item there and holds a structure.
     fn robber_landed(&mut self, tile: TileId) {
+        let ward = self.wards_over(tile).next().map(|e| e.caster);
+        if let Some(caster) = ward {
+            self.ward_fells_robber(tile, caster);
+            return;
+        }
         if let Some(i) = self.items.iter().position(|it| it.tile == tile) {
             self.items.remove(i);
             self.log(Event::ItemStolen { tile });
         }
+        if let Some(kind) = self.structure_at(tile)
+            && let Some(robber) = self.robber_at(tile).map(|r| r.id)
+        {
+            self.log(Event::StructureSeized { robber, tile, kind });
+        }
+    }
+
+    /// A ward cast on `tile` by `caster`: every bandit and every knight not
+    /// the caster's on it and the tiles around falls.
+    fn ward_strike(&mut self, tile: TileId, caster: PlayerId) {
+        let zone: Vec<TileId> = std::iter::once(tile).chain(self.board.tile(tile).neighbors.iter().copied()).collect();
+        for t in zone {
+            if self.robber_at(t).is_some() {
+                self.ward_fells_robber(t, caster);
+            }
+            if let Some((unit, owner)) = self.unit_at(t).filter(|u| u.owner != caster).map(|u| (u.id, u.owner)) {
+                self.log(Event::WardStruck { caster, tile: t, knight: Some(owner) });
+                self.fall(unit);
+            }
+        }
+    }
+
+    /// `caster`'s ward fells the robber on `tile`. As after a knight's kill,
+    /// none appears for a breather.
+    fn ward_fells_robber(&mut self, tile: TileId, caster: PlayerId) {
+        self.robbers.retain(|r| r.tile != tile);
+        self.robbers_quiet_until = self.round + balance::ROBBER_RESPAWN_ROUNDS;
+        self.log(Event::WardStruck { caster, tile, knight: None });
+    }
+
+    /// `player`'s knight `unit` came to `tile`: another player's ward there
+    /// fells it. True when it fell.
+    fn ward_fells_knight(&mut self, player: PlayerId, unit: UnitId, tile: TileId) -> bool {
+        let ward = self.wards_over(tile).find(|e| e.caster != player).map(|e| e.caster);
+        let Some(caster) = ward else { return false };
+        self.log(Event::WardStruck { caster, tile, knight: Some(player) });
+        self.fall(unit);
+        true
+    }
+
+    /// The player's knight is on `tile` (unless an item there felled it):
+    /// a structure there serves them, a shrine maybe winning the game.
+    fn arrived(&mut self, player: PlayerId, unit: UnitId, tile: TileId) {
+        if let Some(kind) = self.structure_at(tile).filter(|_| self.structure_holder(tile) == Some(player)) {
+            self.log(Event::StructureTaken { player, unit, tile, kind });
+        }
+        self.check_victory(player);
     }
 
     fn end_turn(&mut self, rng: &mut Rng) {
@@ -1771,13 +1965,13 @@ impl Game {
             self.end_round(rng);
             self.round += 1;
         }
-        self.begin_turn(PlayerId(next as u8));
+        self.begin_turn(PlayerId(next as u8), rng);
     }
 
-    /// The player's knights stand ready, and every tile they ring with a
-    /// city among its corners pays them, unless a bandit or a blockade
-    /// stands on it.
-    fn begin_turn(&mut self, player: PlayerId) {
+    /// The player's knights stand ready; every tile they ring with a city
+    /// among its corners pays them, unless a bandit or a blockade stands on
+    /// it; and every mine and lumber mill their knights stand on pays them.
+    fn begin_turn(&mut self, player: PlayerId, rng: &mut Rng) {
         self.current = player;
         self.dice = None;
         self.robber_relocation = false;
@@ -1795,23 +1989,47 @@ impl Game {
             *self.players[player.index()].resources.get_mut(resource) += amount;
             self.log(Event::RingPaid { player, tile, resource, amount });
         }
+        let held: Vec<Structure> =
+            self.structures.iter().copied().filter(|s| self.structure_holder(s.tile) == Some(player)).collect();
+        for Structure { kind, tile } in held {
+            let (resource, amount) = match kind {
+                StructureKind::Shrine => continue,
+                StructureKind::Mine => {
+                    (rng.pick(&[Resource::Iron, Resource::Stone]).expect("two ores"), balance::MINE_YIELD)
+                }
+                StructureKind::LumberMill => (Resource::Wood, balance::MILL_YIELD),
+            };
+            *self.players[player.index()].resources.get_mut(resource) += amount;
+            self.log(Event::StructurePaid { player, tile, kind, resource, amount });
+        }
     }
 
-    /// Robbers wander, then one may spawn if the board is below capacity;
-    /// knights packing up long enough are free; old items vanish, then the
-    /// island is topped up with hidden items (at least one new one).
+    /// Robbers move: each empty structure draws the nearest robber toward
+    /// it, one robber a structure; a robber on a structure holds it; the
+    /// rest wander (into a ward, to fall). Then one may spawn, off the
+    /// wards, if the board is below capacity; wards in their last round
+    /// fade; knights packing up long enough are free; old items vanish, then
+    /// the island is topped up with hidden items (at least one new one).
     pub fn end_round(&mut self, rng: &mut Rng) {
         let round = self.round;
-        for i in 0..self.robbers.len() {
-            if self.robbers[i].frozen_through_round >= round {
+        let drawn = self.structure_draws();
+        let ids: Vec<RobberId> = self.robbers.iter().map(|r| r.id).collect();
+        for robber in ids {
+            // A ward may have felled it on the way.
+            let Some(&Robber { tile: from, frozen_through_round, .. }) = self.robber(robber) else { continue };
+            if frozen_through_round >= round || self.structure_at(from).is_some() {
                 continue;
             }
-            let from = self.robbers[i].tile;
-            let free: Vec<TileId> =
-                self.board.tile(from).neighbors.iter().copied().filter(|&t| self.robber_may_enter(t)).collect();
-            if let Some(to) = rng.pick(&free) {
-                self.robbers[i].tile = to;
-                let robber = self.robbers[i].id;
+            let to = match drawn.iter().find(|&&(r, _)| r == robber) {
+                Some(&(_, structure)) => self.toward_structure(from, structure, rng),
+                None => {
+                    let free: Vec<TileId> =
+                        self.board.tile(from).neighbors.iter().copied().filter(|&t| self.robber_may_enter(t)).collect();
+                    rng.pick(&free)
+                }
+            };
+            if let Some(to) = to {
+                self.robbers.iter_mut().find(|r| r.id == robber).expect("standing").tile = to;
                 self.log(Event::RobberWandered { robber, from, to });
                 self.robber_landed(to);
             }
@@ -1830,7 +2048,7 @@ impl Game {
             let spots: Vec<(TileId, usize)> = self
                 .board
                 .tile_ids()
-                .filter(|&t| self.robber_may_enter(t))
+                .filter(|&t| self.robber_may_enter(t) && self.wards_over(t).next().is_none())
                 .map(|t| (t, if robbers.is_empty() { 1 } else { distances[t.index()].pow(2) }))
                 .collect();
             if let Some(tile) = pick_weighted(&spots, rng) {
@@ -1839,6 +2057,9 @@ impl Game {
                 self.log(Event::RobberSpawned { robber: id, tile });
                 self.robber_landed(tile);
             }
+        }
+        while let Some(i) = self.enchantments.iter().position(|e| e.last_round.is_some_and(|last| last <= round)) {
+            self.lift(i);
         }
         for i in 0..self.units.len() {
             if let Some(Blockade::Lifting { free_after }) = self.units[i].blockade
@@ -1930,7 +2151,101 @@ impl Game {
         dist
     }
 
+    /// Puts a structure of each of `kinds` on the island, spread out: each
+    /// layout starts anywhere and puts every next structure on a tile
+    /// farthest from those before it (drawn among equals); of
+    /// [`STRUCTURE_LAYOUTS`] layouts, the one whose closest two stand
+    /// farthest apart. The kinds are dealt onto its tiles at random.
+    fn raise_structures(&mut self, mut kinds: Vec<StructureKind>, rng: &mut Rng) {
+        let count = kinds.len().min(self.board.tiles.len());
+        if count == 0 {
+            return;
+        }
+        let tiles: Vec<TileId> = self.board.tile_ids().collect();
+        let mut best: Option<(usize, Vec<TileId>)> = None;
+        for _ in 0..STRUCTURE_LAYOUTS {
+            let mut layout = vec![rng.pick(&tiles).expect("an island has tiles")];
+            while layout.len() < count {
+                let distances = self.tile_distances(&layout);
+                let most = tiles.iter().map(|t| distances[t.index()]).max().unwrap_or(0);
+                let far: Vec<TileId> = tiles.iter().copied().filter(|t| distances[t.index()] == most).collect();
+                layout.push(rng.pick(&far).expect("a farthest tile"));
+            }
+            let closest = layout
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let from = self.tile_distances(&[s]);
+                    layout[i + 1..].iter().map(|o| from[o.index()]).min().unwrap_or(usize::MAX)
+                })
+                .min()
+                .unwrap_or(usize::MAX);
+            if best.as_ref().is_none_or(|(spread, _)| closest > *spread) {
+                best = Some((closest, layout));
+            }
+        }
+        rng.shuffle(&mut kinds);
+        let layout = best.expect("at least one layout").1;
+        self.structures = layout.into_iter().zip(kinds).map(|(tile, kind)| Structure { kind, tile }).collect();
+    }
+
+    /// Which robber each empty structure (no knight, no robber on it) draws:
+    /// the nearest free to move, one structure a robber, nearest pairs first.
+    fn structure_draws(&self) -> Vec<(RobberId, TileId)> {
+        let movable: Vec<&Robber> = self
+            .robbers
+            .iter()
+            .filter(|r| r.frozen_through_round < self.round && self.structure_at(r.tile).is_none())
+            .collect();
+        let mut pairs: Vec<(usize, TileId, RobberId)> = Vec::new();
+        for target in self.structures.iter().map(|s| s.tile).filter(|&t| !self.occupied(t)) {
+            let distances = self.tile_distances(&[target]);
+            pairs.extend(movable.iter().map(|r| (distances[r.tile.index()], target, r.id)));
+        }
+        pairs.sort();
+        let mut drawn: Vec<(RobberId, TileId)> = Vec::new();
+        for (_, target, robber) in pairs {
+            if !drawn.iter().any(|&(r, t)| r == robber || t == target) {
+                drawn.push((robber, target));
+            }
+        }
+        drawn
+    }
+
+    /// Where a robber on `from` drawn to the structure on `target` ends the
+    /// round: up to `balance::STRUCTURE_BANDIT_STEPS` free tiles nearer it
+    /// (or, when the way is blocked, one aside), stopping on it. `None` when
+    /// it cannot move.
+    fn toward_structure(&self, from: TileId, target: TileId, rng: &mut Rng) -> Option<TileId> {
+        let distances = self.tile_distances(&[target]);
+        let mut at = from;
+        for _ in 0..balance::STRUCTURE_BANDIT_STEPS {
+            if at == target {
+                break;
+            }
+            let here = distances[at.index()];
+            let free: Vec<TileId> = self
+                .board
+                .tile(at)
+                .neighbors
+                .iter()
+                .copied()
+                .filter(|&t| t != from && self.robber_may_enter(t))
+                .collect();
+            let nearer: Vec<TileId> = free.iter().copied().filter(|t| distances[t.index()] < here).collect();
+            let aside: Vec<TileId> = free.iter().copied().filter(|t| distances[t.index()] == here).collect();
+            match rng.pick(&nearer).or_else(|| (at == from).then(|| rng.pick(&aside)).flatten()) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        (at != from).then_some(at)
+    }
+
     fn check_victory(&mut self, player: PlayerId) {
+        if matches!(self.phase, Phase::Finished { .. }) {
+            return;
+        }
         let points = self.points(player);
         if points >= self.victory_points {
             self.phase = Phase::Finished { winner: player };
@@ -1958,6 +2273,9 @@ impl Game {
         }
     }
 }
+
+/// How many structure layouts are drawn for the best spread of them.
+const STRUCTURE_LAYOUTS: usize = 8;
 
 /// The goal of games saved before goals could be chosen.
 fn classic_goal() -> u32 {

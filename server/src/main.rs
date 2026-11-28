@@ -80,9 +80,7 @@ fn handle(shared: &Shared, mut request: Request) {
         (Method::Post, "/practice") if cfg!(debug_assertions) => {
             with_body(&body, |r: CreateRequest| mutate(shared, |s| s.practice(&r.name)))
         }
-        (Method::Post, "/configure") => with_body(&body, |r: ConfigureRequest| {
-            mutate(shared, |s| s.configure(&r.code, &r.token, r.victory_points, r.map_size))
-        }),
+        (Method::Post, "/configure") => with_body(&body, |r: ConfigureRequest| mutate(shared, |s| s.configure(&r))),
         (Method::Post, "/react") => {
             with_body(&body, |r: ReactRequest| mutate(shared, |s| s.react(&r.code, &r.token, r.reaction)))
         }

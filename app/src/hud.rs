@@ -194,6 +194,22 @@ pub fn describe(names: &[String], e: &Event) -> Option<String> {
         Event::RobberWandered { .. } => "A bandit wandered".to_owned(),
         Event::RobberSpawned { .. } => "A bandit appeared".to_owned(),
         Event::RobberPlaced { player, .. } => format!("{} placed a bandit", n(*player)),
+        Event::StructureTaken { player, kind, .. } => {
+            format!(
+                "{}'s knight took a {}: {} while it stands there",
+                n(*player),
+                kind.name(),
+                rules::structure_gain(*kind)
+            )
+        }
+        Event::StructureSeized { kind, .. } => format!("A bandit seized a {}", kind.name()),
+        Event::StructurePaid { player, kind, resource, amount, .. } => {
+            format!("{} collected {amount} {} from a {}", n(*player), resource.name(), kind.name())
+        }
+        Event::WardStruck { caster, knight, .. } => match knight {
+            Some(owner) => format!("{}'s ward felled {}'s knight", n(*caster), n(*owner)),
+            None => format!("{}'s ward felled a bandit", n(*caster)),
+        },
         Event::BlockadeLaid { player, .. } => format!("{}'s knight blockaded a tile", n(*player)),
         Event::BlockadeLifting { player, free_after, .. } => {
             format!("{}'s knight is packing up its blockade (free after round {free_after})", n(*player))
@@ -516,7 +532,14 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
                 s += " · bandit (blocked)";
             }
             if let Some(e) = g.enchantment_at(t) {
-                s += &format!(" · {} ({})", e.spell.name(), rules::charges_word(e.charges));
+                let left = match e.last_round {
+                    Some(last) => format!("ends after round {last}"),
+                    None => rules::charges_word(e.charges),
+                };
+                s += &format!(" · {} ({left})", e.spell.name());
+            }
+            if let Some(ward) = g.wards_over(t).find(|e| e.tile != t) {
+                s += &format!(" · guarded by {}'s ward", name(names, ward.caster));
             }
             if g.luck == Some(t) {
                 s += " · luck (next roll)";
@@ -530,6 +553,14 @@ fn inspect_text(g: &Game, names: &[String], i: Inspect) -> String {
             if let Some(item) = g.item_at(t) {
                 let what = item.kind.map_or("an unknown item", rules::item_title);
                 s += &format!(" · {what} (gone after round {})", item.last_round);
+            }
+            if let Some(kind) = g.structure_at(t) {
+                let gain = rules::structure_gain(kind);
+                s += &match g.structure_holder(t) {
+                    Some(p) => format!(" · {} held by {} ({gain})", kind.name(), name(names, p)),
+                    None if g.robber_at(t).is_some() => format!(" · {} held by a bandit", kind.name()),
+                    None => format!(" · empty {}: a knight here gets {gain}", kind.name()),
+                };
             }
             s
         }
@@ -1074,20 +1105,30 @@ fn item_card(app: AppState) -> impl IntoElement {
     })
 }
 
-/// An attack the player tapped: what it will do, before it is done.
+/// An attack the player tapped, or a knight sent into a rival's ward: what
+/// it will do, before it is done.
 fn attack_confirm(app: AppState) -> impl IntoElement {
     let open = computed(move || app.confirm_attack.with(Option::is_some));
     let cancel = move || app.confirm_attack.set(None);
     sheet(open, cancel, move || {
         let action = app.confirm_attack.get()?;
-        let Action::Attack { unit, target } = action else { return None };
         let view_ = app.view.get()?;
         let g = view_.game.as_ref()?;
-        let (title, outcome) = rules::attack_outcome(g, &view_.players, unit, target)?;
-        let attacker = g.unit(unit)?;
-        let (victim, victim_color) = match target {
-            Target::Robber(_) => (Glyph::Robber, 0x2b2b2e),
-            Target::Unit(u) => (Glyph::Knight, palette::player(g.unit(u)?.owner)),
+        let (title, outcome, mover, victim, victim_color, verb) = match action {
+            Action::Attack { unit, target } => {
+                let (title, outcome) = rules::attack_outcome(g, &view_.players, unit, target)?;
+                let (victim, color) = match target {
+                    Target::Robber(_) => (Glyph::Robber, 0x2b2b2e),
+                    Target::Unit(u) => (Glyph::Knight, palette::player(g.unit(u)?.owner)),
+                };
+                (title, outcome, g.unit(unit)?.owner, victim, color, "Attack")
+            }
+            Action::MoveUnit { to: tile, .. } | Action::Deploy { tile, .. } => {
+                let (title, outcome, caster) = rules::ward_outcome(g, &view_.players, view_.seat, tile)?;
+                let verb = if matches!(action, Action::Deploy { .. }) { "Deploy anyway" } else { "Move anyway" };
+                (title, outcome, view_.seat, Glyph::Spell(Spell::Ward), palette::player(caster), verb)
+            }
+            _ => return None,
         };
         Some(
             view()
@@ -1099,13 +1140,13 @@ fn attack_confirm(app: AppState) -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .gap(px(10.0))
-                        .child(glyph_icon(Glyph::Knight, palette::player(attacker.owner), 64.0, 52.0))
+                        .child(glyph_icon(Glyph::Knight, palette::player(mover), 64.0, 52.0))
                         .child(bold("vs", 18.0, palette::DANGER))
                         .child(glyph_icon(victim, victim_color, 64.0, 52.0)),
                 )
                 .child(label(outcome, 15.0, palette::INK).text_center())
                 .child(
-                    pill("Attack", palette::DANGER, 0xffffff, !app.busy.get(), move || {
+                    pill(verb, palette::DANGER, 0xffffff, !app.busy.get(), move || {
                         app.confirm_attack.set(None);
                         app.mode.set(Mode::Idle);
                         app.send(action.clone());

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Action, Blockade, BuildingKind, EdgeId, Event, Game, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
-    RuleError, SetupPlacing, Spell, Target, TileId, Unit, UnitKind, VertexId, balance,
+    RuleError, SetupPlacing, Spell, StructureKind, Target, TileId, Unit, UnitKind, VertexId, balance,
 };
 
 /// What a corner a town may still rise on is worth beyond its production.
@@ -21,6 +21,9 @@ const NEW_RESOURCE_BONUS: u32 = 2;
 const ITEM_BONUS: i64 = 12;
 /// What each relic lying in the open is worth walking to.
 const RELIC_BONUS: i64 = 30;
+/// What a rival's knight felled by a ward is worth, per point of what the
+/// bot weighs that rival's losses at.
+const WARD_KNIGHT: i64 = 6;
 /// What each tile of the way to a goal takes off its worth.
 const STEP_COST: i64 = 3;
 /// The least harm a knight blockades a tile for.
@@ -392,9 +395,21 @@ fn command_knights(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) 
     }
 }
 
-/// What a knight does now: lifts a blockade that no longer pays, attacks a
-/// bandit on the bot's production or a knight it works against, blockades
-/// where it stands, or steps toward the best goal.
+/// What an empty structure of `kind` is worth walking to, and a bandit
+/// holding one worth bringing down.
+fn structure_bonus(kind: Option<StructureKind>) -> i64 {
+    match kind {
+        Some(StructureKind::Shrine) => 40,
+        Some(StructureKind::Mine) => 30,
+        Some(StructureKind::LumberMill) => 25,
+        None => 0,
+    }
+}
+
+/// What a knight does now: lifts a blockade that no longer pays, holds a
+/// structure it stands on, attacks a bandit on the bot's production or a
+/// structure or a knight it works against, blockades where it stands, or
+/// steps toward the best goal.
 fn knight_order(g: &Game, stakes: &Stakes, style: Style, unit: &Unit) -> Option<Action> {
     match unit.blockade {
         Some(Blockade::Holding) => {
@@ -403,15 +418,21 @@ fn knight_order(g: &Game, stakes: &Stakes, style: Style, unit: &Unit) -> Option<
         Some(Blockade::Lifting { .. }) => return None,
         None => {}
     }
+    if g.structure_at(unit.tile).is_some() {
+        return (stakes.harm(g, unit.tile) >= BLOCKADE_MIN).then_some(Action::LayBlockade { unit: unit.id });
+    }
     let attack_value = |target: Target| -> i64 {
         match target {
-            Target::Robber(r) => g.robber(r).map_or(0, |r| stakes.own(g, r.tile)),
+            Target::Robber(r) => {
+                g.robber(r).map_or(0, |r| stakes.own(g, r.tile) + structure_bonus(g.structure_at(r.tile)))
+            }
             Target::Unit(u) => {
                 let Some(enemy) = g.unit(u) else { return 0 };
                 let weight = stakes.weights[enemy.owner.index()];
                 let blocks_me = if enemy.blockade.is_some() { stakes.own(g, enemy.tile) } else { 0 };
-                let hunted = weight > 0 && (enemy.relics > 0 || style == Style::Ruthless);
-                blocks_me + if hunted { weight * (1 + i64::from(enemy.relics) * 5) } else { 0 }
+                let holds = i64::from(g.structure_at(enemy.tile).is_some());
+                let hunted = weight > 0 && (enemy.relics > 0 || holds > 0 || style == Style::Ruthless);
+                blocks_me + if hunted { weight * (1 + (i64::from(enemy.relics) + holds) * 5) } else { 0 }
             }
         }
     };
@@ -420,7 +441,7 @@ fn knight_order(g: &Game, stakes: &Stakes, style: Style, unit: &Unit) -> Option<
         return Some(Action::Attack { unit: unit.id, target });
     }
     let stay = stakes.harm(g, unit.tile);
-    let routes = routes(g, unit.tile);
+    let routes = routes(g, unit.owner, unit.tile);
     let walk = goals(g, stakes)
         .into_iter()
         .filter_map(|(t, bonus)| routes[t.index()].map(|(dist, step)| (bonus - STEP_COST * i64::from(dist), step)))
@@ -435,13 +456,15 @@ fn knight_order(g: &Game, stakes: &Stakes, style: Style, unit: &Unit) -> Option<
 }
 
 /// Tiles worth sending a knight to, with what reaching each is worth: items
-/// (relics in the open most), tiles to blockade, and tiles beside a bandit
-/// on the bot's production.
+/// (relics in the open most), empty structures, tiles to blockade, and tiles
+/// beside a bandit on the bot's production or on a structure.
 fn goals(g: &Game, stakes: &Stakes) -> Vec<(TileId, i64)> {
     let items = g.items.iter().map(|i| {
         let relic = i.revealed && i.kind == Some(ItemKind::Relic);
         (i.tile, if relic { RELIC_BONUS * i64::from(i.count) } else { ITEM_BONUS })
     });
+    let structures =
+        g.structures.iter().filter(|s| !g.occupied(s.tile)).map(|s| (s.tile, structure_bonus(Some(s.kind))));
     let blockades = g
         .board
         .tile_ids()
@@ -449,19 +472,21 @@ fn goals(g: &Game, stakes: &Stakes) -> Vec<(TileId, i64)> {
         .map(|t| (t, stakes.harm(g, t)))
         .filter(|&(_, harm)| harm >= BLOCKADE_MIN);
     let bandits = g.robbers.iter().flat_map(|r| {
-        let lost = stakes.own(g, r.tile);
-        g.board.tile(r.tile).neighbors.iter().filter(move |_| lost > 0).map(move |&t| (t, 2 * lost))
+        let worth = 2 * stakes.own(g, r.tile) + structure_bonus(g.structure_at(r.tile));
+        g.board.tile(r.tile).neighbors.iter().filter(move |_| worth > 0).map(move |&t| (t, worth))
     });
-    items.chain(blockades).chain(bandits).collect()
+    items.chain(structures).chain(blockades).chain(bandits).collect()
 }
 
-/// For every tile a knight on `from` can walk to over free tiles: how many
-/// steps away it is and the first step there.
-fn routes(g: &Game, from: TileId) -> Vec<Option<(u32, TileId)>> {
+/// For every tile a knight of `owner`'s on `from` can walk to over free
+/// tiles no rival's ward holds: how many steps away it is and the first
+/// step there.
+fn routes(g: &Game, owner: PlayerId, from: TileId) -> Vec<Option<(u32, TileId)>> {
+    let open = |t: TileId| !g.occupied(t) && !g.warded_against(t, owner);
     let mut routes = vec![None; g.board.tiles.len()];
     let mut queue = std::collections::VecDeque::new();
     for &n in &g.board.tile(from).neighbors {
-        if !g.occupied(n) {
+        if open(n) {
             routes[n.index()] = Some((1, n));
             queue.push_back(n);
         }
@@ -469,7 +494,7 @@ fn routes(g: &Game, from: TileId) -> Vec<Option<(u32, TileId)>> {
     while let Some(t) = queue.pop_front() {
         let (dist, first) = routes[t.index()].expect("queued tiles are routed");
         for &n in &g.board.tile(t).neighbors {
-            if n != from && routes[n.index()].is_none() && !g.occupied(n) {
+            if n != from && routes[n.index()].is_none() && open(n) {
                 routes[n.index()] = Some((dist + 1, first));
                 queue.push_back(n);
             }
@@ -499,7 +524,7 @@ fn recruit(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) {
         if g.players[player.index()].cards.knights == 0 {
             return;
         }
-        let tiles = g.deploy_tiles(player);
+        let tiles: Vec<TileId> = g.deploy_tiles(player).into_iter().filter(|&t| !g.warded_against(t, player)).collect();
         let near = |t: TileId| goals.iter().map(|&(goal, bonus)| bonus - STEP_COST * hex_distance(g, t, goal)).max();
         let Some(tile) = best(&tiles, |&t| near(t)) else {
             return;
@@ -532,6 +557,9 @@ fn cast_spell(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) {
     resources.sort();
     resources.dedup();
     options.push((Spell::Windfall, Vec::new(), WINDFALL_PER_RESOURCE * resources.len() as i64));
+    for t in g.board.tile_ids() {
+        options.push((Spell::Ward, vec![t], ward_value(g, &stakes, t)));
+    }
 
     let me = &g.players[player.index()];
     let castle = g.has_city(player);
@@ -543,6 +571,24 @@ fn cast_spell(g: &mut Game, player: PlayerId, style: Style, rng: &mut Rng) {
         return;
     };
     let _ = g.apply(player, Action::CastSpell { spell, tiles }, rng);
+}
+
+/// What a ward on `t` is worth to the bot: the bandits it fells (on the
+/// bot's production or holding a structure) and the knights of rivals it
+/// works against, more for those carrying relics or holding a structure.
+fn ward_value(g: &Game, stakes: &Stakes, t: TileId) -> i64 {
+    std::iter::once(t)
+        .chain(g.board.tile(t).neighbors.iter().copied())
+        .map(|z| {
+            let bandit = g.robber_at(z).map_or(0, |_| stakes.own(g, z) + structure_bonus(g.structure_at(z)));
+            let knight = g.unit_at(z).filter(|u| u.owner != stakes.me).map_or(0, |u| {
+                let weight = stakes.weights[u.owner.index()];
+                let holds = i64::from(g.structure_at(z).is_some());
+                weight * WARD_KNIGHT * (1 + i64::from(u.relics) + holds)
+            });
+            bandit + knight
+        })
+        .sum()
 }
 
 /// How many of 36 rolls come up `number`.

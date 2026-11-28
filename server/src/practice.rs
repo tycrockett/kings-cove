@@ -5,7 +5,8 @@
 
 use kings_cove_engine::{
     Action, Building, BuildingKind, Game, Phase, PlayerId, Rng, RuleError, TileId, Unit, UnitId, UnitKind, VertexId,
-    balance, balance::MapSize,
+    balance,
+    balance::{Amount, Settings},
 };
 
 /// The rival's name.
@@ -25,7 +26,9 @@ const KNIGHTS_EACH: usize = 2;
 pub fn game(name: &str, rng: &mut Rng) -> Game {
     let me = PlayerId(0);
     let names = [name.to_owned(), RIVAL.to_owned()];
-    let mut g = Game::new(&names, balance::DEFAULT_VICTORY_POINTS, MapSize::default(), rng);
+    // A few of each structure, so every kind of piece is there to try.
+    let settings = Settings { shrines: Amount::Few, mines: Amount::Few, mills: Amount::Few, ..Settings::default() };
+    let mut g = Game::new(&names, &settings, rng);
     // Setup as the players would: each building on a random inland corner,
     // with a road beside it.
     while matches!(g.phase, Phase::Setup { .. }) {

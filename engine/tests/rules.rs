@@ -1,6 +1,8 @@
 use kings_cove_engine::{
     Action, Board, Building, BuildingKind, Event, Game, Item, ItemKind, Phase, PlayerId, Resource, Resources, Rng,
-    Robber, RobberId, RuleError, SetupPlacing, Spell, Target, TileId, Unit, UnitId, UnitKind, VertexId, balance,
+    Robber, RobberId, RuleError, SetupPlacing, Spell, Structure, StructureKind, Target, TileId, Unit, UnitId, UnitKind,
+    VertexId, balance,
+    balance::{Amount, MapShape, MapSize, Settings},
 };
 
 const P0: PlayerId = PlayerId(0);
@@ -88,11 +90,12 @@ fn centre_of(b: &Board) -> TileId {
 #[test]
 fn ids_are_stable_and_generation_is_seeded_and_balanced() {
     assert_eq!(Board::hexagon(2), Board::hexagon(2));
-    let a = Board::generate(2, &mut Rng::new(9));
-    assert_eq!(a, Board::generate(2, &mut Rng::new(9)));
+    let generate = |seed| Board::generate(MapSize::ExtraSmall, MapShape::Classic, &mut Rng::new(seed));
+    let a = generate(9);
+    assert_eq!(a, generate(9));
     assert!(a.numbers_balanced());
     for seed in 0..20 {
-        let b = Board::generate(2, &mut Rng::new(seed));
+        let b = generate(seed);
         assert!(b.numbers_balanced());
         assert!(b.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
         for (resource, count) in balance::TILE_RESOURCES {
@@ -101,26 +104,71 @@ fn ids_are_stable_and_generation_is_seeded_and_balanced() {
     }
 }
 
-#[test]
-fn each_map_size_plays_on_its_own_balanced_island() {
-    for (size, tiles) in [
-        (balance::MapSize::ExtraSmall, 19),
-        (balance::MapSize::Small, 37),
-        (balance::MapSize::Medium, 61),
-        (balance::MapSize::Large, 91),
-        (balance::MapSize::ExtraLarge, 127),
-    ] {
-        for seed in 0..5 {
-            let g = Game::new(&names(3), 10, size, &mut Rng::new(seed));
-            assert_eq!(g.board.tiles.len(), tiles);
-            assert!(g.board.numbers_balanced());
-            assert!(g.board.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
-            // Each resource keeps its share of the island.
-            for (resource, per19) in balance::TILE_RESOURCES {
-                let n = g.board.tiles.iter().filter(|t| t.resource == resource).count();
-                assert!(n.abs_diff(per19 * tiles / 19) <= 2, "{resource:?}: {n} of {tiles}");
+/// Settings of `structures` shrines, mines and lumber mills each.
+fn settings(map_size: MapSize, map_shape: MapShape, structures: Amount) -> Settings {
+    Settings { victory_points: 10, map_size, map_shape, shrines: structures, mines: structures, mills: structures }
+}
+
+/// Every tile reaches every other over neighbours.
+fn in_one_piece(b: &Board) -> bool {
+    let mut seen = vec![false; b.tiles.len()];
+    let mut stack = vec![TileId(0)];
+    seen[0] = true;
+    while let Some(t) = stack.pop() {
+        for &n in &b.tile(t).neighbors {
+            if !std::mem::replace(&mut seen[n.index()], true) {
+                stack.push(n);
             }
         }
+    }
+    seen.iter().all(|&s| s)
+}
+
+#[test]
+fn each_map_size_and_shape_plays_on_its_own_balanced_island() {
+    let mut wild_outlines = Vec::new();
+    for (size, tiles) in [
+        (MapSize::ExtraSmall, 19),
+        (MapSize::Small, 37),
+        (MapSize::Medium, 61),
+        (MapSize::Large, 91),
+        (MapSize::ExtraLarge, 127),
+    ] {
+        for shape in MapShape::ALL {
+            for seed in 0..5 {
+                let g = Game::new(&names(3), &settings(size, shape, Amount::Off), &mut Rng::new(seed));
+                let b = &g.board;
+                assert_eq!(b.tiles.len(), tiles);
+                assert!(b.numbers_balanced());
+                assert!(b.tiles.iter().all(|t| t.number != 7 && (2..=12).contains(&t.number)));
+                // Each resource keeps its share of the island.
+                for (resource, per19) in balance::TILE_RESOURCES {
+                    let n = b.tiles.iter().filter(|t| t.resource == resource).count();
+                    assert!(n.abs_diff(per19 * tiles / 19) <= 2, "{resource:?}: {n} of {tiles}");
+                }
+                // One piece without lakes: corners - sides + tiles is 1 less
+                // each enclosed patch of water.
+                assert!(in_one_piece(b), "{size:?} {shape:?} seed {seed}");
+                assert_eq!(b.vertices.len() as i64 - b.edges.len() as i64 + tiles as i64, 1, "{size:?} {shape:?}");
+                // Around the world origin, where the sea is brightest.
+                let (sx, sy) = b.tiles.iter().fold((0, 0), |(x, y), t| (x + 2 * t.q + t.r, y + 3 * t.r));
+                assert!(sx.abs() <= tiles as i32 && sy.abs() <= 3 * tiles as i32 / 2, "{size:?} {shape:?} off centre");
+                if shape == MapShape::Wild {
+                    let mut outline: Vec<(i32, i32)> = b.tiles.iter().map(|t| (t.q, t.r)).collect();
+                    outline.sort();
+                    wild_outlines.push((size, outline));
+                }
+            }
+        }
+    }
+    // Wild islands are neither hexagons nor all alike.
+    for size in MapSize::ALL {
+        let mut hexagon: Vec<(i32, i32)> = Board::hexagon(size.radius()).tiles.iter().map(|t| (t.q, t.r)).collect();
+        hexagon.sort();
+        let outlines: Vec<&Vec<(i32, i32)>> =
+            wild_outlines.iter().filter(|(s, _)| *s == size).map(|(_, o)| o).collect();
+        assert!(outlines.iter().all(|&o| *o != hexagon), "{size:?}: a wild island came out a hexagon");
+        assert!(outlines.windows(2).any(|w| w[0] != w[1]), "{size:?}: every wild island alike");
     }
     // The match ends at its own goal.
     let mut g = playing(2);
@@ -983,7 +1031,7 @@ fn extra_robbers_appear_about_half_the_rounds_below_capacity_only() {
 
 #[test]
 fn the_island_always_has_a_robber() {
-    let g = Game::new(&names(2), 10, balance::MapSize::Small, &mut Rng::new(5));
+    let g = Game::new(&names(2), &settings(MapSize::Small, MapShape::Classic, Amount::Off), &mut Rng::new(5));
     assert_eq!(g.robbers.len(), 1, "one stands from the start");
 
     // With none on the board and no towns at all, one appears at the round's end.
@@ -1125,7 +1173,7 @@ fn reaching_ten_points_wins_and_ends_the_game() {
 fn a_seeded_game_replays_identically() {
     let play = |seed: u64| {
         let mut r = Rng::new(seed);
-        let mut g = Game::new(&names(2), 10, balance::MapSize::Small, &mut r);
+        let mut g = Game::new(&names(2), &settings(MapSize::Small, MapShape::Wild, Amount::Many), &mut r);
         let order = g.setup_order();
         for &p in &order {
             let v = g.setup_vertices(p).into_iter().find(|&v| g.board.vertex(v).tiles.len() == 3).unwrap();
@@ -1141,4 +1189,245 @@ fn a_seeded_game_replays_identically() {
         g
     };
     assert_eq!(play(5), play(5));
+}
+
+// ----- Structures -----
+
+/// Tiles apart on the board.
+fn apart(g: &Game, a: TileId, b: TileId) -> i32 {
+    let (a, b) = (g.board.tile(a), g.board.tile(b));
+    let (dq, dr) = (a.q - b.q, a.r - b.r);
+    (dq.abs() + dr.abs() + (dq + dr).abs()) / 2
+}
+
+fn tile_at(g: &Game, q: i32, r: i32) -> TileId {
+    g.board.tiles.iter().find(|t| (t.q, t.r) == (q, r)).unwrap().id
+}
+
+fn structure(g: &mut Game, kind: StructureKind, tile: TileId) {
+    g.structures.push(Structure { kind, tile });
+}
+
+#[test]
+fn structures_stand_far_apart_as_many_of_each_as_the_island_size_asks() {
+    for size in MapSize::ALL {
+        for shape in MapShape::ALL {
+            for amount in Amount::ALL {
+                for seed in 0..4 {
+                    // Shrines alone keep well apart.
+                    let only = Settings { shrines: amount, ..settings(size, shape, Amount::Off) };
+                    let g = Game::new(&names(2), &only, &mut Rng::new(seed));
+                    assert_eq!(g.structures.len(), amount.count(size.tiles()));
+                    assert!(g.structures.iter().all(|s| s.kind == StructureKind::Shrine));
+                    for (i, a) in g.structures.iter().enumerate() {
+                        for b in &g.structures[i + 1..] {
+                            assert!(apart(&g, a.tile, b.tile) >= 3, "{size:?} {shape:?} {amount:?}: too close");
+                        }
+                    }
+                    // Every kind at once: as many of each, one a tile, the first bandit off them.
+                    let g = Game::new(&names(2), &settings(size, shape, amount), &mut Rng::new(seed));
+                    for kind in StructureKind::ALL {
+                        let n = g.structures.iter().filter(|s| s.kind == kind).count();
+                        assert_eq!(n, amount.count(size.tiles()), "{kind:?}");
+                    }
+                    let mut tiles: Vec<TileId> = g.structures.iter().map(|s| s.tile).collect();
+                    tiles.sort();
+                    tiles.dedup();
+                    assert_eq!(tiles.len(), g.structures.len(), "one a tile");
+                    assert!(
+                        g.robbers.iter().all(|r| g.structure_at(r.tile).is_none()),
+                        "the first bandit stands off them"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(MapSize::ALL.map(|s| Amount::Few.count(s.tiles())), [1, 1, 2, 3, 4]);
+    assert_eq!(MapSize::ALL.map(|s| Amount::Many.count(s.tiles())), [2, 2, 4, 6, 8]);
+}
+
+#[test]
+fn a_knight_scores_a_shrine_only_while_it_stands_on_it() {
+    let mut g = playing(2);
+    let shrine = centre(&g);
+    structure(&mut g, StructureKind::Shrine, shrine);
+    let from = g.board.tile(shrine).neighbors[0];
+    let k = unit(&mut g, 1, P0, UnitKind::Knight, from);
+    let mut r = rng();
+    assert_eq!(g.points(P0), 0);
+    g.apply(P0, Action::MoveUnit { unit: k, to: shrine }, &mut r).unwrap();
+    assert_eq!((g.points(P0), g.structure_holder(shrine)), (balance::SHRINE_POINTS, Some(P0)));
+    let taken = Event::StructureTaken { player: P0, unit: k, tile: shrine, kind: StructureKind::Shrine };
+    assert!(g.events.iter().any(|e| e.event == taken));
+    // Its owner's turns pass; the shrine keeps counting.
+    g.apply(P0, Action::EndTurn, &mut r).unwrap();
+    assert_eq!(g.points(P0), balance::SHRINE_POINTS);
+    // Gone from it, the knight takes the points with it.
+    g.units.clear();
+    assert_eq!((g.points(P0), g.structure_holder(shrine)), (0, None));
+
+    // Stepping onto it can win the match.
+    let mut g = playing(2);
+    structure(&mut g, StructureKind::Shrine, shrine);
+    g.victory_points = balance::SHRINE_POINTS;
+    let k = unit(&mut g, 1, P0, UnitKind::Knight, from);
+    g.apply(P0, Action::MoveUnit { unit: k, to: shrine }, &mut r).unwrap();
+    assert_eq!(g.winner(), Some(P0));
+}
+
+#[test]
+fn mines_and_lumber_mills_pay_the_holder_at_the_start_of_their_turns() {
+    let mut g = playing(2);
+    let (mine, mill) = (tile_at(&g, 0, 0), tile_at(&g, 2, 0));
+    structure(&mut g, StructureKind::Mine, mine);
+    structure(&mut g, StructureKind::LumberMill, mill);
+    unit(&mut g, 1, P0, UnitKind::Knight, mine);
+    unit(&mut g, 2, P0, UnitKind::Knight, mill);
+    let mut r = rng();
+    g.apply(P0, Action::EndTurn, &mut r).unwrap();
+    assert_eq!(g.players[1].resources, Resources::ZERO, "nothing for the other player");
+    assert_eq!(g.players[0].resources, Resources::ZERO, "nor for the holder on another's turn");
+    g.dice = Some((1, 2));
+    g.apply(P1, Action::EndTurn, &mut r).unwrap();
+    let got = g.players[0].resources;
+    assert_eq!((got.wood, got.iron + got.stone, got.food), (balance::MILL_YIELD, balance::MINE_YIELD, 0));
+    let paid = g.events.iter().filter(|e| matches!(e.event, Event::StructurePaid { player: P0, .. })).count();
+    assert_eq!(paid, 2);
+
+    // The mine draws iron or stone; over many turns, both.
+    let ores: Vec<Resource> = (0..40)
+        .filter_map(|seed| {
+            let mut g = playing(2);
+            structure(&mut g, StructureKind::Mine, mine);
+            unit(&mut g, 1, P0, UnitKind::Knight, mine);
+            let mut r = Rng::new(seed);
+            g.apply(P0, Action::EndTurn, &mut r).unwrap();
+            g.dice = Some((1, 2));
+            g.apply(P1, Action::EndTurn, &mut r).unwrap();
+            g.events.iter().find_map(|e| match e.event {
+                Event::StructurePaid { resource, .. } => Some(resource),
+                _ => None,
+            })
+        })
+        .collect();
+    assert!(ores.contains(&Resource::Iron) && ores.contains(&Resource::Stone));
+    assert!(ores.iter().all(|&o| o == Resource::Iron || o == Resource::Stone));
+}
+
+#[test]
+fn the_nearest_bandit_alone_runs_to_an_empty_structure_and_holds_it() {
+    let mut base = playing(2);
+    let (target, middle, west) = (tile_at(&base, 2, 0), tile_at(&base, 0, 0), tile_at(&base, -2, 0));
+    structure(&mut base, StructureKind::LumberMill, target);
+    let near = robber(&mut base, 100, middle);
+    let far = robber(&mut base, 101, west);
+    let at = |g: &Game, id: RobberId| g.robber(id).unwrap().tile;
+    // Four tiles off, the other could step closer or along: drawn, it
+    // would always step closer.
+    let mut far_wandered = false;
+    for seed in 0..40 {
+        let mut g = base.clone();
+        g.end_round(&mut Rng::new(seed));
+        assert_eq!(apart(&g, at(&g, near), target), 1, "seed {seed}: the nearest runs a step closer");
+        far_wandered |= apart(&g, at(&g, far), target) == 4;
+    }
+    assert!(far_wandered, "the other bandit only wanders");
+
+    // It reaches the mill, seizes it and stays; nobody else is drawn.
+    let mut g = base.clone();
+    let mut r = rng();
+    for _ in 0..2 {
+        g.end_round(&mut r);
+    }
+    assert_eq!(at(&g, near), target);
+    let seized = Event::StructureSeized { robber: near, tile: target, kind: StructureKind::LumberMill };
+    assert!(g.events.iter().any(|e| e.event == seized));
+    for _ in 0..10 {
+        g.end_round(&mut r);
+        assert_eq!(at(&g, near), target, "it holds the mill until a knight brings it down");
+    }
+
+    // A guarded structure draws nobody.
+    let mut guarded = base.clone();
+    unit(&mut guarded, 1, P1, UnitKind::Knight, target);
+    let strayed = (0..40).any(|seed| {
+        let mut g = guarded.clone();
+        g.end_round(&mut Rng::new(seed));
+        apart(&g, at(&g, near), target) > 2
+    });
+    assert!(strayed, "with a knight on it, the nearest bandit only wanders");
+}
+
+// ----- Ward -----
+
+#[test]
+fn a_ward_fells_bandits_and_rival_knights_around_its_tile_and_spares_the_casters() {
+    let mut g = playing(2);
+    g.players[0].resources = balance::WARD_COST;
+    let c = centre(&g);
+    let around = g.board.tile(c).neighbors.clone();
+    robber(&mut g, 100, around[0]);
+    let rival = unit(&mut g, 1, P1, UnitKind::Knight, around[1]);
+    let on_it = unit(&mut g, 2, P1, UnitKind::Knight, c);
+    let mine = unit(&mut g, 3, P0, UnitKind::Knight, around[2]);
+    let outside = g.board.tile_ids().find(|&t| apart(&g, t, c) == 2).unwrap();
+    let beyond = unit(&mut g, 4, P1, UnitKind::Knight, outside);
+    g.apply(P0, Action::CastSpell { spell: Spell::Ward, tiles: vec![c] }, &mut rng()).unwrap();
+    assert_eq!(g.players[0].resources, Resources::ZERO, "it costs its price");
+    assert!(g.robbers.is_empty(), "the bandit next to it fell");
+    assert!(g.unit(rival).is_none() && g.unit(on_it).is_none(), "rivals beside and on it fell");
+    assert!(g.unit(mine).is_some() && g.unit(beyond).is_some(), "the caster's knight and those further off stand");
+    let struck = g.events.iter().filter(|e| matches!(e.event, Event::WardStruck { caster: P0, .. })).count();
+    assert_eq!(struck, 3);
+}
+
+#[test]
+fn a_ward_fells_rivals_and_bandits_coming_in_until_it_fades() {
+    let mut base = playing(2);
+    base.players[0].resources = balance::WARD_COST;
+    let c = centre(&base);
+    base.apply(P0, Action::CastSpell { spell: Spell::Ward, tiles: vec![c] }, &mut rng()).unwrap();
+    let edge = base.board.tile_ids().find(|&t| apart(&base, t, c) == 2).unwrap();
+    let into = *base.board.tile(edge).neighbors.iter().find(|&&t| apart(&base, t, c) == 1).unwrap();
+
+    // A rival knight may step or deploy into it, and falls there; the
+    // caster's walk in safely.
+    let mut g = base.clone();
+    let rival = unit(&mut g, 1, P1, UnitKind::Knight, edge);
+    let other_edge = g.board.tile_ids().find(|&t| apart(&g, t, c) == 2 && t != edge).unwrap();
+    let own = unit(&mut g, 2, P0, UnitKind::Knight, other_edge);
+    let corner = g.board.tile(into).vertices[0];
+    put(&mut g, corner, P1, BuildingKind::Town);
+    g.players[1].cards.knights = 1;
+    g.current = P1;
+    let mut r = rng();
+    g.apply(P1, Action::MoveUnit { unit: rival, to: into }, &mut r).unwrap();
+    assert!(g.unit(rival).is_none(), "it stepped in and fell");
+    assert!(g.events.iter().any(|e| e.event == Event::WardStruck { caster: P0, tile: into, knight: Some(P1) }));
+    g.apply(P1, Action::Deploy { kind: UnitKind::Knight, tile: into }, &mut r).unwrap();
+    assert!(g.unit_at(into).is_none() && g.players[1].cards.knights == 0, "deployed in, it fell at once");
+    g.current = P0;
+    let step = *g.board.tile(other_edge).neighbors.iter().find(|&&t| apart(&g, t, c) == 1 && !g.occupied(t)).unwrap();
+    g.apply(P0, Action::MoveUnit { unit: own, to: step }, &mut r).unwrap();
+    assert_eq!(g.unit(own).map(|u| u.tile), Some(step), "the caster's knight stands in it");
+
+    // A bandit wandering in falls; none ever stands in it.
+    let mut felled = false;
+    for seed in 0..40 {
+        let mut g = base.clone();
+        robber(&mut g, 100, edge);
+        g.end_round(&mut Rng::new(seed));
+        assert!(g.robbers.iter().all(|r| apart(&g, r.tile, c) > 1), "seed {seed}");
+        felled |= g.events.iter().any(|e| matches!(e.event, Event::WardStruck { knight: None, .. }));
+    }
+    assert!(felled, "some bandit wandered in and fell");
+
+    // It holds through the next round, then fades.
+    let mut g = base.clone();
+    g.end_round(&mut rng());
+    assert_eq!(g.wards_over(c).count(), 1, "still up after the round it was cast in");
+    g.round += 1;
+    g.end_round(&mut rng());
+    assert_eq!(g.wards_over(c).count(), 0, "gone after the next one");
+    assert!(g.events.iter().any(|e| e.event == Event::SpellFaded { tile: c, spell: Spell::Ward }));
 }
