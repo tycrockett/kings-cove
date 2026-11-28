@@ -89,26 +89,26 @@ pub struct AddBotRequest {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reaction {
-    ThumbsUp,
-    Laugh,
+    Wave,
+    Sad,
     Wow,
     Angry,
-    Party,
-    Sad,
+    Heart,
+    Eyes,
 }
 
 impl Reaction {
     pub const ALL: [Reaction; 6] =
-        [Reaction::ThumbsUp, Reaction::Laugh, Reaction::Wow, Reaction::Angry, Reaction::Party, Reaction::Sad];
+        [Reaction::Wave, Reaction::Sad, Reaction::Wow, Reaction::Angry, Reaction::Heart, Reaction::Eyes];
 
     pub const fn emoji(self) -> &'static str {
         match self {
-            Reaction::ThumbsUp => "👍",
-            Reaction::Laugh => "😂",
+            Reaction::Wave => "👋",
+            Reaction::Sad => "😢",
             Reaction::Wow => "😮",
             Reaction::Angry => "😡",
-            Reaction::Party => "🎉",
-            Reaction::Sad => "😢",
+            Reaction::Heart => "💖",
+            Reaction::Eyes => "👀",
         }
     }
 }

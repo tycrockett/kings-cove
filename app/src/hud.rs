@@ -1777,7 +1777,7 @@ fn round_button(on: impl Fn() + 'static) -> View {
 /// The round button across from the menu: it opens the reactions.
 fn reaction_button(app: AppState) -> View {
     round_button(move || app.reactions_open.update(|o| *o = !*o))
-        .child(text(Reaction::Laugh.emoji()).text_size(px(24.0)))
+        .child(text(Reaction::Wave.emoji()).text_size(px(24.0)))
 }
 
 /// The reactions to pick from, over the dock.
