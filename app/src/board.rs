@@ -2,6 +2,7 @@
 //! drawn, and the pinch, pan and tap gestures over it.
 
 use std::f32::consts::{PI, TAU};
+use std::time::Duration;
 
 use kings_cove_engine::{
     Action, Blockade, BuildingKind, EdgeId, Enchantment, Event, Game, ItemKind, Phase, PlayerId, Resource, RobberId,
@@ -10,7 +11,7 @@ use kings_cove_engine::{
 use nsh_core::{
     TouchPhase,
     canvas::{CanvasGradient, LineCap, LineJoin},
-    element::TouchEvent,
+    element::{TouchEvent, TransformOrigin},
     prelude::*,
 };
 
@@ -36,6 +37,20 @@ const FLY_MS: f64 = 300.0;
 /// sprawling wild island then fills the screen and pans instead of fitting.
 const MIN_TILE_PT: f32 = 18.0;
 const MIN_SCALE: f32 = MIN_TILE_PT / S;
+/// How far the board's layers reach past each side of the viewport, as a
+/// fraction of its size. A pan or pinch moves the layers as drawn, and
+/// draws them again only once they no longer cover the view.
+const OVERSCAN: f32 = 0.25;
+/// The most a pinch stretches the layers as drawn before they are drawn
+/// again, sharp, at the new zoom.
+const MAX_STRETCH: f32 = 1.5;
+/// How long after its last event a wheel or trackpad scroll counts as over.
+const WHEEL_SETTLE_MS: u64 = 150;
+
+/// How far the layers reach past each side of a `(w, h)` viewport.
+fn overscan((w, h): (f32, f32)) -> (f32, f32) {
+    (w * OVERSCAN, h * OVERSCAN)
+}
 
 // ----- Geometry -----
 
@@ -149,6 +164,15 @@ impl Camera {
         self.x = sx - (sx - self.x) * f;
         self.y = sy - (sy - self.y) * f;
         self.scale = next;
+    }
+
+    /// Whether layers drawn with this camera, reaching `pad` past each side
+    /// of a `size` viewport, still cover what `live` shows there without
+    /// stretching past [`MAX_STRETCH`].
+    fn covers(self, live: Camera, (w, h): (f32, f32), (pad_x, pad_y): (f32, f32)) -> bool {
+        let (from, to) = (self.to_world(-pad_x, -pad_y), self.to_world(w + pad_x, h + pad_y));
+        let (a, b) = (live.to_world(0.0, 0.0), live.to_world(w, h));
+        live.scale / self.scale <= MAX_STRETCH && a.0 >= from.0 && a.1 >= from.1 && b.0 <= to.0 && b.1 <= to.1
     }
 }
 
@@ -568,7 +592,10 @@ pub struct Scene<'a> {
     pub game: &'a Game,
     pub seat: PlayerId,
     pub cam: Camera,
+    /// The viewport.
     pub size: (f32, f32),
+    /// How far the canvas reaches past each side of the viewport.
+    pub pad: (f32, f32),
     pub opts: &'a [Opt],
     pub mode: Mode,
     pub inspect: Option<Inspect>,
@@ -579,7 +606,18 @@ pub struct Scene<'a> {
 impl<'a> Scene<'a> {
     /// The board alone: nothing highlighted, chosen or animating.
     fn bare(game: &'a Game, seat: PlayerId, cam: Camera, size: (f32, f32)) -> Scene<'a> {
-        Scene { game, seat, cam, size, opts: &[], mode: Mode::Idle, inspect: None, anims: &[], now: 0.0 }
+        Scene {
+            game,
+            seat,
+            cam,
+            size,
+            pad: overscan(size),
+            opts: &[],
+            mode: Mode::Idle,
+            inspect: None,
+            anims: &[],
+            now: 0.0,
+        }
     }
 }
 
@@ -588,18 +626,18 @@ const SAND: u32 = 0xdcc893;
 /// Tiles smaller on screen than this radius (points) draw simpler scenery.
 const DETAIL_RADIUS: f32 = 30.0;
 
-/// Whether the world point `at` is within `margin` world units of the screen.
+/// Whether the world point `at` is within `margin` world units of the canvas.
 fn on_screen(s: &Scene, at: (f32, f32), margin: f32) -> bool {
-    let (w, h) = s.size;
+    let ((w, h), (pad_x, pad_y)) = (s.size, s.pad);
     let (x, y) = (s.cam.x + at.0 * s.cam.scale, s.cam.y + at.1 * s.cam.scale);
     let m = margin * s.cam.scale;
-    x > -m && x < w + m && y > -m && y < h + m
+    x > -pad_x - m && x < w + pad_x + m && y > -pad_y - m && y < h + pad_y + m
 }
 
 /// `p` moved into world space.
 fn world(s: &Scene, p: Painter) -> Painter {
     p.save()
-        .translate(s.cam.x, s.cam.y)
+        .translate(s.cam.x + s.pad.0, s.cam.y + s.pad.1)
         .scale(s.cam.scale, s.cam.scale)
         .line_join(LineJoin::Round)
         .line_cap(LineCap::Round)
@@ -625,25 +663,28 @@ pub fn jelly_tiles(anims: &[Anim]) -> Vec<TileId> {
 /// left out, and small ones get simpler scenery.
 pub fn draw_ground(s: &Scene, skip: &[TileId]) -> Painter {
     let g = s.game;
-    let (w, h) = s.size;
+    let ((w, h), (pad_x, pad_y)) = (s.size, s.pad);
     let px1 = 1.0 / s.cam.scale; // one screen point in world units
 
     // The sea, brightest around the island (the world origin is its center).
-    let center = point(px(s.cam.x), px(s.cam.y));
+    let center = point(px(s.cam.x + pad_x), px(s.cam.y + pad_y));
     let sea = CanvasGradient::radial(center, px(0.0), center, px(w.max(h) * 0.9))
         .add_color_stop(percentage(0.0), hex(0x3c8597))
         .add_color_stop(percentage(0.5), hex(0x2a6475))
         .add_color_stop(percentage(1.0), hex(0x163845));
-    let mut p = world(s, Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w, h));
+    let mut p = world(s, Painter::new().fill_style(sea).fill_rect(0.0, 0.0, w + 2.0 * pad_x, h + 2.0 * pad_y));
     let rings = g.board.tiles.iter().map(|t| t.q.abs().max(t.r.abs()).max((t.q + t.r).abs())).max().unwrap_or(2);
     p = waves(p, px1, rings as f32);
 
-    // Shallows and the beach.
+    // Shallows and the beach. Inland, the neighbours' beaches cover a tile's
+    // shallows and sand, so only the coast draws them; every tile draws its
+    // beach, which shows between the tiles.
     let visible: Vec<TileId> = g.board.tile_ids().filter(|&t| on_screen(s, tile_pos(g, t), 1.4 * S)).collect();
-    for &t in &visible {
+    let coast: Vec<TileId> = visible.iter().copied().filter(|&t| g.board.tile(t).neighbors.len() < 6).collect();
+    for &t in &coast {
         p = poly(p, &hex_points(tile_pos(g, t), S * 1.34)).fill_color(hexa(0x8fd3d0, 0.22)).fill();
     }
-    for &t in &visible {
+    for &t in &coast {
         p = poly(p, &hex_points(tile_pos(g, t), S * 1.14)).fill_color(hex(SAND)).fill();
     }
     for &t in &visible {
@@ -1433,6 +1474,22 @@ struct Gesture {
     multi: bool,
 }
 
+/// What is moving the camera now. While anything is, the layers move as
+/// drawn, and are drawn again only once they no longer cover the view.
+#[derive(Copy, Clone, Default, PartialEq)]
+struct Moving {
+    touch: bool,
+    pinch: bool,
+    wheel: bool,
+    flight: bool,
+}
+
+impl Moving {
+    fn any(self) -> bool {
+        self.touch || self.pinch || self.wheel || self.flight
+    }
+}
+
 fn centroid(f: &[(u32, (f32, f32))]) -> (f32, f32) {
     let n = f.len().max(1) as f32;
     (f.iter().map(|p| p.1.0).sum::<f32>() / n, f.iter().map(|p| p.1.1).sum::<f32>() / n)
@@ -1445,7 +1502,12 @@ fn spread(f: &[(u32, (f32, f32))]) -> f32 {
 
 pub fn board_view(app: AppState) -> impl IntoElement {
     let size = signal((0.0_f32, 0.0_f32));
+    // Where the camera is, and where the layers were drawn from: the layers
+    // move from one to the other on the GPU, and are drawn again with the
+    // camera once it settles, or once they no longer cover the view.
     let cam = signal(None::<Camera>);
+    let drawn = signal(None::<Camera>);
+    let moving = signal(Moving::default());
     let gesture = stored(Gesture::default());
     let owner = Owner::current();
     // The camera's flight to where it belongs, while it lasts.
@@ -1453,8 +1515,29 @@ pub fn board_view(app: AppState) -> impl IntoElement {
     let land = move || {
         if let Some(f) = flight.replace(None) {
             f.cancel();
+            moving.update(|m| m.flight = false);
         }
     };
+    // Ends a wheel scroll once its events stop.
+    let wheel_settle = stored(None::<Spawned<()>>);
+    effect(move || {
+        let (Some(c), still) = (cam.get(), !moving.get().any()) else { return };
+        let size = size.get_untracked();
+        if drawn.get_untracked().is_none_or(|d| d != c && (still || !d.covers(c, size, overscan(size)))) {
+            drawn.set(Some(c));
+        }
+    });
+    // The layers' transform from the drawn camera to the live one, about
+    // their top left corner.
+    let (shift_x, shift_y, stretch) = (animated_value(0.0), animated_value(0.0), animated_value(1.0));
+    effect(move || {
+        let (Some(c), Some(d)) = (cam.get(), drawn.get()) else { return };
+        let (pad_x, pad_y) = overscan(size.get());
+        let k = c.scale / d.scale;
+        shift_x.set(c.x + pad_x - k * (d.x + pad_x));
+        shift_y.set(c.y + pad_y - k * (d.y + pad_y));
+        stretch.set(k);
+    });
     // The band the HUD leaves clear, as laid out now.
     let band = move || clear_band(size.get_untracked().1, app.hud.get_untracked());
     // Where the camera belongs: close on the focused tile, else the whole
@@ -1496,6 +1579,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         land();
         let (Some(from), Some(to)) = (cam.get_untracked(), goal()) else { return };
         let start = now_ms();
+        moving.update(|m| m.flight = true);
         let task = owner.run(|| {
             spawn(async move {
                 loop {
@@ -1503,6 +1587,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
                     let k = ((now_ms() - start) / FLY_MS).min(1.0) as f32;
                     cam.set(Some(if k < 1.0 { from.toward(to, ease_in_out_sine(k)) } else { to }));
                     if k >= 1.0 {
+                        moving.update(|m| m.flight = false);
                         break;
                     }
                 }
@@ -1570,6 +1655,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
 
     let on_touch = move |e: &TouchEvent| {
         if e.phase == TouchPhase::Start {
+            moving.update(|m| m.touch = true);
             land();
         }
         let ended = matches!(e.phase, TouchPhase::End | TouchPhase::Cancel);
@@ -1579,6 +1665,9 @@ pub fn board_view(app: AppState) -> impl IntoElement {
             .filter(|p| !(ended && p.changed))
             .map(|p| (p.id, (p.location.x.0, p.location.y.0)))
             .collect();
+        if ended && now.is_empty() {
+            moving.update(|m| m.touch = false);
+        }
         gesture.with(|gs| {
             let same = gs.fingers.len() == now.len() && gs.fingers.iter().zip(&now).all(|(a, b)| a.0 == b.0);
             if e.phase == TouchPhase::Start && gs.fingers.is_empty() {
@@ -1619,9 +1708,12 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         app.view
             .with(|v| {
                 let v = v.as_ref()?;
-                Some(draw_ground(&Scene::bare(v.game.as_ref()?, v.seat, cam.get()?, (w, h)), &skip))
+                Some(draw_ground(&Scene::bare(v.game.as_ref()?, v.seat, drawn.get()?, (w, h)), &skip))
             })
-            .unwrap_or_else(|| Painter::new().fill_color(hex(palette::TABLE)).fill_rect(0.0, 0.0, w, h))
+            .unwrap_or_else(|| {
+                let (pad_x, pad_y) = overscan((w, h));
+                Painter::new().fill_color(hex(palette::TABLE)).fill_rect(0.0, 0.0, w + 2.0 * pad_x, h + 2.0 * pad_y)
+            })
     })
     .absolute()
     .inset_0()
@@ -1638,7 +1730,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
                     return None;
                 }
                 let now = app.clock.get();
-                Some(draw_spells(&Scene { anims: &anims, now, ..Scene::bare(g, v.seat, cam.get()?, size) }))
+                Some(draw_spells(&Scene { anims: &anims, now, ..Scene::bare(g, v.seat, drawn.get()?, size) }))
             })
             .unwrap_or_default()
     })
@@ -1660,7 +1752,7 @@ pub fn board_view(app: AppState) -> impl IntoElement {
         opts.with(|opts| {
             app.view.with(|v| {
                 let v = v.as_ref()?;
-                let base = Scene::bare(v.game.as_ref()?, v.seat, cam.get()?, size);
+                let base = Scene::bare(v.game.as_ref()?, v.seat, drawn.get()?, size);
                 Some(draw_pieces(&Scene { opts, mode, inspect, anims: &anims, now, ..base }))
             })
         })
@@ -1668,41 +1760,73 @@ pub fn board_view(app: AppState) -> impl IntoElement {
     })
     .absolute()
     .inset_0()
-    .test_id("board")
-    .on_layout(move |frame: &Bounds<Points>| {
-        size.set((frame.size.width.0, frame.size.height.0));
-        refit();
-    })
-    .on_touch(on_touch)
-    .on_press(move |e: &PressEvent| {
-        let was_gesture = gesture.with(|gs| gs.travelled > 8.0 || gs.multi);
-        if !was_gesture {
-            tap(e.position.x.0, e.position.y.0);
-        }
-    })
-    .on_wheel(move |e: &WheelEvent| {
-        land();
-        let (sx, sy) = (e.position.x.0, e.position.y.0);
-        cam.update(|c| {
-            let Some(c) = c else { return };
-            match e.delta {
-                WheelDelta::Points(d) if !e.modifiers.ctrl => {
-                    c.x -= d.x.0;
-                    c.y -= d.y.0;
+    .pointer_events(PointerEvents::None);
+    // The three layers, reaching past the viewport so a pan or pinch can
+    // move them as drawn.
+    let top_left = TransformOrigin { x: DefiniteLength::Fraction(Percentage(0.0)), ..TransformOrigin::CENTER };
+    let top_left = TransformOrigin { y: top_left.x, ..top_left };
+    let layers = view()
+        .absolute()
+        .left(move || px(-overscan(size.get()).0))
+        .right(move || px(-overscan(size.get()).0))
+        .top(move || px(-overscan(size.get()).1))
+        .bottom(move || px(-overscan(size.get()).1))
+        .pointer_events(PointerEvents::None)
+        .transform_origin(top_left)
+        .bind_translate_x(&shift_x)
+        .bind_translate_y(&shift_y)
+        .bind_scale(&stretch)
+        .child(ground)
+        .child(spells)
+        .child(pieces);
+    view()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .test_id("board")
+        .on_layout(move |frame: &Bounds<Points>| {
+            size.set((frame.size.width.0, frame.size.height.0));
+            refit();
+        })
+        .on_touch(on_touch)
+        .on_press(move |e: &PressEvent| {
+            let was_gesture = gesture.with(|gs| gs.travelled > 8.0 || gs.multi);
+            if !was_gesture {
+                tap(e.position.x.0, e.position.y.0);
+            }
+        })
+        .on_wheel(move |e: &WheelEvent| {
+            moving.update(|m| m.wheel = true);
+            land();
+            if let Some(t) = wheel_settle.replace(None) {
+                t.cancel();
+            }
+            let settle = owner.run(|| {
+                set_timeout(Duration::from_millis(WHEEL_SETTLE_MS), move || moving.update(|m| m.wheel = false))
+            });
+            wheel_settle.replace(Some(settle));
+            let (sx, sy) = (e.position.x.0, e.position.y.0);
+            cam.update(|c| {
+                let Some(c) = c else { return };
+                match e.delta {
+                    WheelDelta::Points(d) if !e.modifiers.ctrl => {
+                        c.x -= d.x.0;
+                        c.y -= d.y.0;
+                    }
+                    WheelDelta::Points(d) => c.zoom((1.0 - d.y.0 * 0.01).clamp(0.8, 1.25), sx, sy),
+                    WheelDelta::Lines(d) => c.zoom(if d.y > 0.0 { 1.0 / 1.1 } else { 1.1 }, sx, sy),
                 }
-                WheelDelta::Points(d) => c.zoom((1.0 - d.y.0 * 0.01).clamp(0.8, 1.25), sx, sy),
-                WheelDelta::Lines(d) => c.zoom(if d.y > 0.0 { 1.0 / 1.1 } else { 1.1 }, sx, sy),
-            }
-        });
-    })
-    .on_pinch(move |e: &PinchEvent| {
-        land();
-        let (sx, sy) = (e.position.x.0, e.position.y.0);
-        cam.update(|c| {
-            if let Some(c) = c {
-                c.zoom(1.0 + e.delta.0, sx, sy);
-            }
-        });
-    });
-    view().absolute().inset_0().child(ground).child(spells).child(pieces)
+            });
+        })
+        .on_pinch(move |e: &PinchEvent| {
+            moving.update(|m| m.pinch = e.phase != PinchPhase::End);
+            land();
+            let (sx, sy) = (e.position.x.0, e.position.y.0);
+            cam.update(|c| {
+                if let Some(c) = c {
+                    c.zoom(1.0 + e.delta.0, sx, sy);
+                }
+            });
+        })
+        .child(layers)
 }
